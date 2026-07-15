@@ -1,0 +1,63 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Cross-compile kidui
+    runs-on: ubuntu-latest
+    container:
+      image: aemiii91/miyoomini-toolchain:latest
+      options: --user root
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+      - name: Checkout Onion (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: OnionUI/Onion
+          ref: 07505ea58c7bba698d6b9220ff43946a43cac76b
+          path: onion
+      - name: Build
+        shell: bash
+        run: |
+          source /root/.bashrc
+          cp -r src/kidsMode onion/src/
+          cd onion/src/kidsMode
+          make
+          file kidui
+          cp kidui "$GITHUB_WORKSPACE/App/KidsMode/bin/kidui"
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KidsMode-app
+          path: App
+          if-no-files-found: error
+
+  release:
+    name: Package release zip
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: KidsMode-app
+          path: App
+      - name: Assemble zip
+        run: |
+          chmod +x App/KidsMode/bin/kidui App/KidsMode/*.sh
+          cp README.md App/KidsMode/
+          cd App && zip -r ../KidsMode.zip KidsMode
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: KidsMode.zip
