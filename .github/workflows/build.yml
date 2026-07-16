@@ -61,4 +61,6 @@ jobs:
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
+          name: Kids Mode ${{ github.ref_name }}
+          body_path: .github/release-notes.md
           files: KidsMode.zip
