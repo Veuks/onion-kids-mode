@@ -19,9 +19,10 @@ and an optional play timer.
 - **Auto power-off**: if the "Time's up!" screen is left alone for
   5 minutes (nobody turns the device off), it powers itself down cleanly
   instead of draining the battery.
-- **Parent menu** (hold **SELECT+START 3 s** → PIN): exit Kids Mode, or add
+- **Parent menu** (hold **SELECT+START 3 s** → PIN): exit Kids Mode, add
   play time right on the menu row — **◀ ▶** picks +5…+50 min, **A**/**START**
-  applies, and the screen previews the remaining time before and after.
+  applies, and the screen previews the remaining time before and after —
+  or **turn the timer off entirely** so the kid can play with no limit.
 - **Start over**: **X** on a game asks "Start over?" and launches from the
   beginning without touching in-game saves.
 - **MENU button in-game saves and exits** back to the carousel.
@@ -65,10 +66,12 @@ welcome.
    | everything else | does nothing — no dead ends |
 
 4. **Parent access:** hold **SELECT+START ~3 s**, enter the PIN →
-   *Exit Kids Mode / Add play time / Back*. On *Add play time*, press
-   **◀ ▶** to pick the amount (the info line shows what the remaining time
-   will become) and **A** or **START** to apply — you're dropped straight
-   back into the kid launcher.
+   *Exit Kids Mode / Add play time / Turn off timer / Back*. On *Add play
+   time*, press **◀ ▶** to pick the amount (the info line shows what the
+   remaining time will become) and **A** or **START** to apply — you're
+   dropped straight back into the kid launcher. *Turn off timer* removes
+   any running timer entirely (unlimited play until you re-arm or add
+   time again).
 5. **Time's up:** the kid sees a friendly "Time's up!" screen. If the
    device is left on there, it powers off by itself after 5 minutes.
 

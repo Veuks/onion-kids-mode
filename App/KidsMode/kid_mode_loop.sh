@@ -810,6 +810,17 @@ parent_menu() {
             UNLOCK)
                 return 0
                 ;;
+            NOTIMER)
+                # Turn the play timer off entirely: clear the configured
+                # minutes AND any bonus, so nothing keeps a budget alive.
+                # The kid can play with no limit until re-armed or time is
+                # added again.
+                set_timer_minutes 0
+                state_write 0 0
+                update_remaining_now
+                log "Play timer turned off from the parent menu."
+                return 1
+                ;;
             ADDTIME)
                 case "$menu_arg" in
                     '' | *[!0-9]*)

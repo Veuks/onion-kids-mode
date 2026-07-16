@@ -16,6 +16,7 @@
 //   exit 3:  "PIN" \n <4 digits>
 //   exit 5:  "MENU" \n "UNLOCK"
 //            "MENU" \n "ADDTIME" \n <minutes>   (inline add-time selector)
+//            "MENU" \n "NOTIMER"                (turn the play timer off)
 //            "TIMER" \n <minutes>               (--pick-timer mode)
 //   exit 7:  "POWEROFF"  (Time's up screen sat idle for 5 minutes)
 //   exit 1:  canceled / error / nothing selected (result file removed)
@@ -89,7 +90,8 @@ typedef enum { SCREEN_CAROUSEL,
 
 #define MENU_UNLOCK 0
 #define MENU_ADDTIME 1
-#define MENU_BACK 2
+#define MENU_NOTIMER 2
+#define MENU_BACK 3
 #define TIMER_STEP 5
 #define TIMER_MAX 50
 
@@ -553,6 +555,10 @@ static void renderMenu(List *list, int remaining)
             snprintf(info, sizeof(info), "No timer (%d min after adding)",
                      add_min);
     }
+    else if (list->active_pos == MENU_NOTIMER && rem_min >= 0) {
+        snprintf(info, sizeof(info), "Time left: %d min (no limit after)",
+                 rem_min);
+    }
     else {
         if (rem_min >= 0)
             snprintf(info, sizeof(info), "Time left: %d min", rem_min);
@@ -751,7 +757,7 @@ int main(int argc, char *argv[])
     int remaining = -1;
 
     // Parent menu list (native Onion list component)
-    List menu_list = list_create(3, LIST_SMALL);
+    List menu_list = list_create(4, LIST_SMALL);
     list_addItem(&menu_list,
                  (ListItem){.label = "Exit Kids Mode", .item_type = ACTION});
     list_addItem(&menu_list, (ListItem){.label = "Add play time",
@@ -760,6 +766,10 @@ int main(int argc, char *argv[])
                                         .value_max = TIMER_MAX / TIMER_STEP,
                                         .value = 1,
                                         .value_formatter = formatAddMinutes});
+    // Faded and skipped while no timer is running — nothing to turn off
+    list_addItem(&menu_list, (ListItem){.label = "Turn off timer",
+                                        .item_type = ACTION,
+                                        .disabled = menu_remaining < 0});
     list_addItem(&menu_list,
                  (ListItem){.label = "Back", .item_type = ACTION});
 
@@ -930,6 +940,11 @@ int main(int argc, char *argv[])
                                  menu_list.items[MENU_ADDTIME].value *
                                      TIMER_STEP);
                         writeResult("MENU", "ADDTIME", minutes_str);
+                        exit_code = 5;
+                        quit = true;
+                    }
+                    else if (menu_list.active_pos == MENU_NOTIMER) {
+                        writeResult("MENU", "NOTIMER", NULL);
                         exit_code = 5;
                         quit = true;
                     }
