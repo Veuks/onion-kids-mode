@@ -89,9 +89,10 @@ typedef enum { SCREEN_CAROUSEL,
 // list rows and hints via resource_getFont)
 #define GAME_LABEL_FONT_SIZE 30
 #define BIG_VALUE_FONT_SIZE 48
-// Longer helper sentences use the theme's hint family at a controlled size
-// (some themes set hint.size to 40, which overflows full-sentence lines)
-#define INFO_FONT_SIZE 20
+// Longer helper sentences use the theme's LIST font (the readable upright
+// face Onion pairs with its display font in the Apps menu) at a controlled
+// size — theme hint fonts are display faces sized for short labels
+#define INFO_FONT_SIZE 22
 
 static bool quit = false;
 
@@ -107,7 +108,7 @@ static int pin_cursor = 0;
 
 static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
 static TTF_Font *font_bigvalue = NULL;  // theme title font, large
-static TTF_Font *font_info = NULL;      // theme hint font, sentence-sized
+static TTF_Font *font_info = NULL;      // theme list font, sentence-sized
 
 // Solid panels drawn over the theme background (PIN boxes, art fallback).
 // Fixed dark slate so white text stays readable on any theme.
@@ -482,8 +483,8 @@ static void renderEmpty(void)
     drawText("No games yet!", cx, (int)(g_display.height * 0.42),
              font_bigvalue, theme()->list.color, g_display.width - 40);
     drawText("Ask a grown-up to add favorites", cx,
-             (int)(g_display.height * 0.58), resource_getFont(TITLE),
-             theme()->hint.color, g_display.width - 40);
+             (int)(g_display.height * 0.58), font_info,
+             theme()->list.color, g_display.width - 40);
     theme_renderFooter(screen);
 }
 
@@ -498,7 +499,7 @@ static void renderConfirmRestart(const char *label, int remaining)
     theme_renderDialog(screen, "Start over?", message, true);
 }
 
-static void renderTimesUp(int off_seconds)
+static void renderTimesUp(void)
 {
     renderBase();
     theme_renderHeader(screen, "Time's up!", false);
@@ -507,17 +508,9 @@ static void renderTimesUp(int off_seconds)
     drawText("Great playing!", cx, (int)(g_display.height * 0.4),
              font_bigvalue, accentColor(), g_display.width - 40);
     drawText("See you next time.", cx, (int)(g_display.height * 0.55),
-             resource_getFont(TITLE), theme()->list.color,
-             g_display.width - 40);
+             font_info, theme()->list.color, g_display.width - 40);
 
     theme_renderFooter(screen);
-    if (off_seconds >= 0) {
-        char countdown[64];
-        snprintf(countdown, sizeof(countdown), "Powering off in %d:%02d",
-                 off_seconds / 60, off_seconds % 60);
-        drawText(countdown, cx, (int)(449.0 * g_scale),
-                 resource_getFont(HINT), theme()->hint.color, 0);
-    }
 }
 
 static void formatAddMinutes(void *self, char *out_label)
@@ -532,12 +525,13 @@ static void formatAddMinutes(void *self, char *out_label)
 static void renderMenu(List *list, int remaining)
 {
     renderBase();
-    theme_renderHeader(screen, "Kids Mode", false);
+    theme_renderHeader(screen, "Kids Mode - Parent Menu", false);
     theme_renderHeaderBattery(screen, batteryPercentage());
     theme_renderList(screen, list);
 
-    // Info line: current remaining time, and — while the add-time row is
-    // selected — what it becomes when applied
+    // Status line: current remaining time, and — while the add-time row is
+    // selected — what it becomes when applied. Same font as the menu rows,
+    // tucked bottom-right above the footer.
     char info[STR_MAX] = "";
     int rem_min = remaining >= 0 ? (remaining + 59) / 60 : -1;
     if (list->active_pos == MENU_ADDTIME) {
@@ -556,8 +550,9 @@ static void renderMenu(List *list, int remaining)
         else
             snprintf(info, sizeof(info), "No timer set");
     }
-    drawText(info, g_display.width / 2, (int)(390.0 * g_scale), font_info,
-             theme()->hint.color, g_display.width - 40);
+    drawTextAlign(info, (int)(620.0 * g_scale), (int)(395.0 * g_scale),
+                  resource_getFont(LIST), theme()->list.color,
+                  g_display.width - 40, TEXT_RIGHT);
 
     theme_renderFooter(screen);
     theme_renderStandardHint(screen, "OK", "BACK");
@@ -660,8 +655,8 @@ static void renderPickTimer(const char *title, int minutes, bool no_off)
 
     drawText(no_off ? "How much play time to add?"
                     : "Play time for this session",
-             cx, (int)(g_display.height * 0.62), resource_getFont(HINT),
-             theme()->hint.color, g_display.width - 40);
+             cx, (int)(g_display.height * 0.62), font_info,
+             theme()->list.color, g_display.width - 40);
 
     theme_renderFooter(screen);
     theme_renderStandardHint(screen, no_off ? "CONFIRM" : "START",
@@ -734,7 +729,7 @@ int main(int argc, char *argv[])
         TTF_SetFontStyle(font_gamelabel, TTF_STYLE_BOLD);
     font_bigvalue =
         theme_loadFont(theme()->path, theme()->title.font, BIG_VALUE_FONT_SIZE);
-    font_info = theme_loadFont(theme()->path, theme()->hint.font,
+    font_info = theme_loadFont(theme()->path, theme()->list.font,
                                INFO_FONT_SIZE);
 
     Screen active_screen = SCREEN_CAROUSEL;
@@ -787,7 +782,6 @@ int main(int argc, char *argv[])
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
-    int timesup_countdown = -1; // seconds left until auto power-off
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
@@ -1059,27 +1053,18 @@ int main(int argc, char *argv[])
         // Nobody turned the device off after "Time's up!": power off after
         // 5 idle minutes so the battery isn't drained overnight. The
         // SELECT+START parent gesture still interrupts this (PIN screen
-        // pauses the countdown; it restarts fresh on return).
+        // pauses the timer; it restarts fresh on return).
         if (active_screen == SCREEN_TIMESUP) {
             if (timesup_since == 0)
                 timesup_since = ticks;
-            uint32_t elapsed = ticks - timesup_since;
-            if (elapsed >= TIMESUP_OFF_MS) {
+            if (ticks - timesup_since >= TIMESUP_OFF_MS) {
                 writeResult("POWEROFF", NULL, NULL);
                 exit_code = 7;
                 quit = true;
             }
-            else {
-                int secs = (int)((TIMESUP_OFF_MS - elapsed + 999) / 1000);
-                if (secs != timesup_countdown) {
-                    timesup_countdown = secs;
-                    dirty = true;
-                }
-            }
         }
         else {
             timesup_since = 0;
-            timesup_countdown = -1;
         }
 
         if (quit)
@@ -1097,7 +1082,7 @@ int main(int argc, char *argv[])
                 renderPin(pin_title, set_pin_mode);
                 break;
             case SCREEN_TIMESUP:
-                renderTimesUp(timesup_countdown);
+                renderTimesUp();
                 break;
             case SCREEN_MENU:
                 renderMenu(&menu_list, menu_remaining);
