@@ -7,13 +7,21 @@ and an optional play timer.
 
 - **Boots straight into a kid-proof carousel** showing only your ★ favorited
   games: box art, big label, left/right to browse, **A** to play.
+- **Native Onion look**: every screen renders through Onion's own theme
+  engine — your active theme's background, fonts, colors, header/footer
+  bars, button hints and full-width list rows — so Kids Mode feels like
+  part of the OS, not an app drawn on top of it.
 - **Exiting a game returns to the carousel — never to Onion's menus.**
 - **Play timer** (per session, optional): pick 5–50 minutes when arming.
   Countdown shows inside games via RetroArch's on-screen messages (pinned
   during the last 5 minutes); at zero the game is asked to quit gracefully,
   so Onion's auto-save keeps the exact spot.
-- **Parent menu** (hold **SELECT+START 3 s** → PIN): exit Kids Mode or add
-  play time (shows played / total / remaining).
+- **Auto power-off**: if the "Time's up!" screen is left alone for
+  5 minutes (nobody turns the device off), it powers itself down cleanly
+  instead of draining the battery.
+- **Parent menu** (hold **SELECT+START 3 s** → PIN): exit Kids Mode, or add
+  play time right on the menu row — **◀ ▶** picks +5…+50 min, **A**/**START**
+  applies, and the screen previews the remaining time before and after.
 - **Start over**: **X** on a game asks "Start over?" and launches from the
   beginning without touching in-game saves.
 - **MENU button in-game saves and exits** back to the carousel.
@@ -56,7 +64,12 @@ welcome.
    | everything else | does nothing — no dead ends |
 
 4. **Parent access:** hold **SELECT+START ~3 s**, enter the PIN →
-   *Exit Kids Mode / Add play time / Back*.
+   *Exit Kids Mode / Add play time / Back*. On *Add play time*, press
+   **◀ ▶** to pick the amount (the info line shows what the remaining time
+   will become) and **A** or **START** to apply — you're dropped straight
+   back into the kid launcher.
+5. **Time's up:** the kid sees a friendly "Time's up!" screen. If the
+   device is left on there, it powers off by itself after 5 minutes.
 
 Kids Mode stays armed across reboots until you exit it via the PIN.
 

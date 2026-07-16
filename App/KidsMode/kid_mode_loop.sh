@@ -739,8 +739,10 @@ pick_session_timer() {
 }
 
 # ------------------------------ parent menu --------------------------------
-# Shown after a correct PIN: exit Kid Mode, +5 minutes, or set the daily
-# timer. Returns 0 = unlock requested, 1 = stay in Kid Mode.
+# Shown after a correct PIN: exit Kids Mode or add play time. "Add play
+# time" is an inline value selector on the menu row itself (LEFT/RIGHT to
+# pick 5-50 min, A/START to apply) — kidui reports the chosen minutes on
+# line 3 of the result. Returns 0 = unlock requested, 1 = stay in Kid Mode.
 
 parent_menu() {
     while :; do
@@ -755,34 +757,37 @@ parent_menu() {
         fi
 
         menu_action="$(sed -n 2p "$uiresult")"
+        menu_arg="$(sed -n 3p "$uiresult")"
         rm -f "$uiresult"
         case "$menu_action" in
             UNLOCK)
                 return 0
                 ;;
             ADDTIME)
-                # Same horizontal picker as the arm screen; B cancels
-                rm -f "$uiresult"
-                "$kidui_bin" --pick-timer --no-off -t "Add play time" > "$uilog" 2>&1
-                if [ $? -eq 5 ] && [ "$(sed -n 1p "$uiresult")" = "TIMER" ]; then
-                    added_min="$(sed -n 2p "$uiresult")"
-                    rm -f "$uiresult"
-                    case "$added_min" in
-                        '' | *[!0-9]* | 0) ;;
-                        *)
-                            add_bonus $((added_min * 60))
-                            # Receipt: played / total granted / remaining
-                            rcpt_used="$(state_used)"
-                            rcpt_total=$(($(get_timer_minutes) * 60 + $(state_bonus)))
-                            rcpt_rem="$(timer_remaining)"
-                            [ "$rcpt_rem" -lt 0 ] && rcpt_rem=0
-                            infoPanel -t "Kids Mode" -m "Added $added_min min (total $((rcpt_total / 60)) min)\nPlayed: $((rcpt_used / 60)) min\nTime left: $(((rcpt_rem + 59) / 60)) min" --auto
-                            # Straight back to the kid so he can play
-                            return 1
-                            ;;
-                    esac
-                fi
-                # Canceled: back to the parent menu
+                case "$menu_arg" in
+                    '' | *[!0-9]*)
+                        # Older kidui without the inline selector: fall back
+                        # to the separate picker screen; B cancels
+                        rm -f "$uiresult"
+                        "$kidui_bin" --pick-timer --no-off -t "Add play time" > "$uilog" 2>&1
+                        if [ $? -eq 5 ] && [ "$(sed -n 1p "$uiresult")" = "TIMER" ]; then
+                            menu_arg="$(sed -n 2p "$uiresult")"
+                        else
+                            menu_arg=""
+                        fi
+                        rm -f "$uiresult"
+                        ;;
+                esac
+                case "$menu_arg" in
+                    '' | *[!0-9]* | 0) ;; # canceled: back to the parent menu
+                    *)
+                        [ "$menu_arg" -gt 50 ] && menu_arg=50
+                        add_bonus $((menu_arg * 60))
+                        # Straight back to the kid so they can play (the menu
+                        # already previewed the new remaining time)
+                        return 1
+                        ;;
+                esac
                 ;;
         esac
     done
@@ -865,6 +870,13 @@ cmd_run() {
                 fi
                 run_game_cmd
                 ui_fails=0
+                ;;
+            7) # "Time's up!" screen sat idle for 5 minutes: power off
+                # cleanly so the battery isn't drained (same path keymon's
+                # power button takes — checkoff scripts, save splash, off).
+                log "Times-up screen idle; powering off."
+                touch /tmp/.offOrder
+                check_off_order "End"
                 ;;
             3) # PIN entered
                 [ "$(sed -n 1p "$uiresult")" = "PIN" ] || continue
