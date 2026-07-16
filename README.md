@@ -50,7 +50,8 @@ welcome.
 ## Usage
 
 1. **Arm:** Apps tab → **Kids Mode**. First time, set + confirm a 4-digit
-   PIN (up/down changes a digit, A moves to the next, START confirms).
+   PIN (up/down changes a digit, left/right moves between digits,
+   A confirms).
 2. Pick a session timer (OFF / 5–50 min) — the device switches straight
    into the kid launcher.
 3. Hand it over:
@@ -80,14 +81,21 @@ or renamed:
 
 - **Forgot the PIN:** edit `App/KidsMode/kidmode.json` to
   `{ "pin_hash": "", "pin_salt": "", "pin_plain": "1234" }` — the new PIN
-  is accepted and re-hashed on next use.
+  is accepted and re-hashed on next use. Also delete
+  `Saves/kidmode/pin_backup.json` (the PIN's update-proof snapshot) so the
+  old PIN can't be restored from it.
+- **Updating the app while armed is safe:** the PIN survives replacing
+  `App/KidsMode` thanks to the snapshot in `Saves/kidmode/`. If there's
+  genuinely no PIN anywhere (e.g. fresh SD contents while armed), the
+  SELECT+START unlock asks you to set a **new** PIN instead of locking
+  you out.
 - **Force-disarm:** delete the hidden file `/.kidmode` at the SD root →
   next boot is normal Onion.
 - **RetroArch settings stuck hidden:** copy
   `Saves/kidmode/retroarch.cfg.backup` over
   `RetroArch/.retroarch/retroarch.cfg`.
-- **Uninstall:** delete `/App/KidsMode/`, `/.kidmode` (if present) and
-  `/.tmp_update/startup/kidmode_boot.sh`.
+- **Uninstall:** delete `/App/KidsMode/`, `/.kidmode` (if present),
+  `/.tmp_update/startup/kidmode_boot.sh` and `/Saves/kidmode/`.
 
 Fail-safes: if the launcher binary is missing or crashes repeatedly, Kids
 Mode disarms itself and boots normal Onion instead of brick-looping. A log

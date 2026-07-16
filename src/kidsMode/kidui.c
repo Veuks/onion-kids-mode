@@ -20,9 +20,17 @@
 //   exit 7:  "POWEROFF"  (Time's up screen sat idle for 5 minutes)
 //   exit 1:  canceled / error / nothing selected (result file removed)
 //
+// PIN screens: UP/DOWN changes the digit, LEFT/RIGHT moves, A confirms
+// (START is a silent alias). --notice "..." shows a short message under the
+// PIN boxes (e.g. "Wrong PIN - try again"); it clears when the screen is
+// left. --start-pin opens the carousel directly on its PIN screen, so a
+// failed attempt can retry in place instead of bouncing to the kid screen.
+//
 // Modes:
-//   kidui                          carousel (default)
-//   kidui --set-pin -t "..."       PIN entry only (for initial PIN setup)
+//   kidui [--start-pin] [-t "..."] [--notice "..."]
+//                                  carousel (default)
+//   kidui --set-pin -t "..." [--notice "..."]
+//                                  PIN entry only (for initial PIN setup)
 //   kidui --parent-menu --remaining S
 //                                  post-PIN parent menu (S = seconds left,
 //                                  -1 = timer off). "Add play time" is an
@@ -105,6 +113,7 @@ static int artwork_index = -1;
 
 static int pin_digits[PIN_LEN] = {0, 0, 0, 0};
 static int pin_cursor = 0;
+static char pin_notice[STR_MAX] = ""; // short message under the PIN boxes
 
 static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
 static TTF_Font *font_bigvalue = NULL;  // theme title font, large
@@ -597,20 +606,21 @@ static void renderPin(const char *title, bool show_intro)
                  i == pin_cursor ? accentColor() : COLOR_WHITE, 0);
     }
 
-    drawText("UP / DOWN to change each digit", cx,
-             (int)(g_display.height * 0.63), font_info, theme()->hint.color,
+    if (strlen(pin_notice) > 0)
+        drawText(pin_notice, cx, (int)(g_display.height * 0.585), font_info,
+                 accentColor(), g_display.width - 40);
+
+    drawText("UP / DOWN changes - LEFT / RIGHT moves", cx,
+             (int)(g_display.height * 0.645), font_info, theme()->hint.color,
              g_display.width - 40);
 
     if (show_intro)
         drawText("Hold SELECT+START in Kids Mode for the parent menu", cx,
-                 (int)(g_display.height * 0.72), font_info,
+                 (int)(g_display.height * 0.725), font_info,
                  theme()->hint.color, g_display.width - 30);
 
     theme_renderFooter(screen);
-    theme_renderStandardHint(screen, "NEXT", "BACK");
-    drawTextAlign("START : CONFIRM", (int)(620.0 * g_scale),
-                  (int)(449.0 * g_scale), font_info, theme()->hint.color, 0,
-                  TEXT_RIGHT);
+    theme_renderStandardHint(screen, "OK", "BACK");
 }
 
 static void renderHoldBar(uint32_t held_ms)
@@ -684,6 +694,7 @@ int main(int argc, char *argv[])
     bool menu_mode = false;
     bool pick_timer_mode = false;
     bool picker_no_off = false;
+    bool start_on_pin = false;
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
     char pin_title[STR_MAX] = "";
@@ -697,6 +708,10 @@ int main(int argc, char *argv[])
             pick_timer_mode = true;
         else if (strcmp(argv[i], "--no-off") == 0)
             picker_no_off = true;
+        else if (strcmp(argv[i], "--start-pin") == 0)
+            start_on_pin = true;
+        else if (strcmp(argv[i], "--notice") == 0 && i + 1 < argc)
+            strncpy(pin_notice, argv[++i], STR_MAX - 1);
         else if (strcmp(argv[i], "--timer") == 0 && i + 1 < argc)
             menu_timer_minutes = atoi(argv[++i]);
         else if (strcmp(argv[i], "--remaining") == 0 && i + 1 < argc)
@@ -769,6 +784,10 @@ int main(int argc, char *argv[])
             active_screen = SCREEN_TIMESUP;
         else if (games_count == 0)
             active_screen = SCREEN_EMPTY;
+        // Wrong-PIN retry: reopen straight on the PIN screen (B backs out
+        // to the kid screen decided above)
+        if (start_on_pin)
+            active_screen = SCREEN_PIN;
     }
 
     if (strlen(pin_title) == 0)
@@ -946,14 +965,9 @@ int main(int argc, char *argv[])
                     dirty = true;
                     break;
                 case SW_BTN_A:
-                    // A confirms the current digit and moves right — easy to
-                    // hit mid-entry, so it must never submit a partial PIN
-                    if (pin_cursor < PIN_LEN - 1) {
-                        pin_cursor++;
-                        dirty = true;
-                    }
-                    break;
                 case SW_BTN_START: {
+                    // A confirms, like everywhere else in Onion (START kept
+                    // as a silent alias for old muscle memory)
                     char pin_str[8];
                     snprintf(pin_str, sizeof(pin_str), "%d%d%d%d",
                              pin_digits[0], pin_digits[1], pin_digits[2],
@@ -975,6 +989,7 @@ int main(int argc, char *argv[])
                         pin_digits[0] = pin_digits[1] = pin_digits[2] =
                             pin_digits[3] = 0;
                         pin_cursor = 0;
+                        pin_notice[0] = '\0';
                         dirty = true;
                     }
                     break;
@@ -1022,6 +1037,7 @@ int main(int argc, char *argv[])
                                               : SCREEN_EMPTY;
             pin_digits[0] = pin_digits[1] = pin_digits[2] = pin_digits[3] = 0;
             pin_cursor = 0;
+            pin_notice[0] = '\0';
             dirty = true;
         }
 
