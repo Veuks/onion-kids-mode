@@ -41,6 +41,10 @@ keymapnone="$backupdir/keymap-was-absent"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidmode.log
 
 timer_state="$backupdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
+# The PIN also lives in kidmode.json inside the app folder, which an app
+# update replaces. Keep a copy outside so updating while armed can't cause
+# a lockout (see restore_pin_backup).
+pin_backup="$backupdir/pin_backup.json"
 remaining_file=/tmp/kidmode_remaining
 ticker_pid_file=/tmp/kidmode_ticker.pid
 
@@ -118,7 +122,42 @@ store_pin() {
         config_merge --arg p "$new_pin" \
             '.pin_hash = "" | .pin_salt = "" | .pin_plain = $p'
     fi
+    backup_pin
     log "PIN updated."
+}
+
+# Snapshot the PIN fields outside the app folder, so replacing App/KidsMode
+# (an update) while armed can't lose the PIN.
+backup_pin() {
+    [ -f "$configfile" ] || return 1
+    mkdir -p "$backupdir"
+    if jq '{pin_hash: (.pin_hash // ""), pin_salt: (.pin_salt // ""), pin_plain: (.pin_plain // "")}' \
+        "$configfile" > "$pin_backup.tmp" 2> /dev/null; then
+        mv -f "$pin_backup.tmp" "$pin_backup"
+        sync
+    else
+        rm -f "$pin_backup.tmp"
+        return 1
+    fi
+}
+
+# The config has no PIN (fresh kidmode.json after an app update): bring it
+# back from the snapshot in Saves/kidmode. Returns 0 if a PIN is on file
+# afterwards.
+restore_pin_backup() {
+    [ -f "$pin_backup" ] || return 1
+    bk_hash="$(jq -r '.pin_hash // ""' "$pin_backup" 2> /dev/null)"
+    bk_salt="$(jq -r '.pin_salt // ""' "$pin_backup" 2> /dev/null)"
+    bk_plain="$(jq -r '.pin_plain // ""' "$pin_backup" 2> /dev/null)"
+    if [ -n "$bk_hash" ] || is_4_digits "$bk_plain"; then
+        config_merge --arg h "$bk_hash" --arg s "$bk_salt" --arg p "$bk_plain" \
+            '.pin_hash = $h | .pin_salt = $s | .pin_plain = $p'
+        log "PIN restored from $pin_backup (app folder replaced?)."
+        migrate_plain_pin
+        has_pin
+        return $?
+    fi
+    return 1
 }
 
 has_pin() {
@@ -154,9 +193,14 @@ verify_pin() {
 }
 
 run_pin_entry() {
-    # $1 = title; echoes the PIN on success
+    # $1 = title, $2 = optional notice shown under the PIN boxes;
+    # echoes the PIN on success
     rm -f "$uiresult"
-    "$kidui_bin" --set-pin -t "$1" > "$uilog" 2>&1
+    if [ -n "$2" ]; then
+        "$kidui_bin" --set-pin -t "$1" --notice "$2" > "$uilog" 2>&1
+    else
+        "$kidui_bin" --set-pin -t "$1" > "$uilog" 2>&1
+    fi
     [ $? -eq 3 ] || return 1
     [ "$(sed -n 1p "$uiresult")" = "PIN" ] || return 1
     entered="$(sed -n 2p "$uiresult")"
@@ -167,20 +211,23 @@ run_pin_entry() {
 
 ensure_pin() {
     migrate_plain_pin
+    has_pin || restore_pin_backup
     if has_pin; then
+        [ -f "$pin_backup" ] || backup_pin
         return 0
     fi
 
-    pin1="$(run_pin_entry "Set Kids Mode PIN")" || return 1
-    pin2="$(run_pin_entry "Confirm PIN")" || return 1
-
-    if [ "$pin1" != "$pin2" ]; then
-        infoPanel -t "Kids Mode" -m "PINs did not match.\nTry again." --auto
-        return 1
-    fi
-
-    store_pin "$pin1"
-    return 0
+    # First-time setup; a mismatch retries in place (B cancels)
+    setup_notice=""
+    while :; do
+        pin1="$(run_pin_entry "Set Kids Mode PIN" "$setup_notice")" || return 1
+        pin2="$(run_pin_entry "Confirm PIN")" || return 1
+        if [ "$pin1" = "$pin2" ]; then
+            store_pin "$pin1"
+            return 0
+        fi
+        setup_notice="PINs did not match - try again"
+    done
 }
 
 # ----------------------- RetroArch kiosk lock ------------------------------
@@ -739,8 +786,10 @@ pick_session_timer() {
 }
 
 # ------------------------------ parent menu --------------------------------
-# Shown after a correct PIN: exit Kid Mode, +5 minutes, or set the daily
-# timer. Returns 0 = unlock requested, 1 = stay in Kid Mode.
+# Shown after a correct PIN: exit Kids Mode or add play time. "Add play
+# time" is an inline value selector on the menu row itself (LEFT/RIGHT to
+# pick 5-50 min, A/START to apply) — kidui reports the chosen minutes on
+# line 3 of the result. Returns 0 = unlock requested, 1 = stay in Kid Mode.
 
 parent_menu() {
     while :; do
@@ -755,34 +804,48 @@ parent_menu() {
         fi
 
         menu_action="$(sed -n 2p "$uiresult")"
+        menu_arg="$(sed -n 3p "$uiresult")"
         rm -f "$uiresult"
         case "$menu_action" in
             UNLOCK)
                 return 0
                 ;;
+            NOTIMER)
+                # Turn the play timer off entirely: clear the configured
+                # minutes AND any bonus, so nothing keeps a budget alive.
+                # The kid can play with no limit until re-armed or time is
+                # added again.
+                set_timer_minutes 0
+                state_write 0 0
+                update_remaining_now
+                log "Play timer turned off from the parent menu."
+                return 1
+                ;;
             ADDTIME)
-                # Same horizontal picker as the arm screen; B cancels
-                rm -f "$uiresult"
-                "$kidui_bin" --pick-timer --no-off -t "Add play time" > "$uilog" 2>&1
-                if [ $? -eq 5 ] && [ "$(sed -n 1p "$uiresult")" = "TIMER" ]; then
-                    added_min="$(sed -n 2p "$uiresult")"
-                    rm -f "$uiresult"
-                    case "$added_min" in
-                        '' | *[!0-9]* | 0) ;;
-                        *)
-                            add_bonus $((added_min * 60))
-                            # Receipt: played / total granted / remaining
-                            rcpt_used="$(state_used)"
-                            rcpt_total=$(($(get_timer_minutes) * 60 + $(state_bonus)))
-                            rcpt_rem="$(timer_remaining)"
-                            [ "$rcpt_rem" -lt 0 ] && rcpt_rem=0
-                            infoPanel -t "Kids Mode" -m "Added $added_min min (total $((rcpt_total / 60)) min)\nPlayed: $((rcpt_used / 60)) min\nTime left: $(((rcpt_rem + 59) / 60)) min" --auto
-                            # Straight back to the kid so he can play
-                            return 1
-                            ;;
-                    esac
-                fi
-                # Canceled: back to the parent menu
+                case "$menu_arg" in
+                    '' | *[!0-9]*)
+                        # Older kidui without the inline selector: fall back
+                        # to the separate picker screen; B cancels
+                        rm -f "$uiresult"
+                        "$kidui_bin" --pick-timer --no-off -t "Add play time" > "$uilog" 2>&1
+                        if [ $? -eq 5 ] && [ "$(sed -n 1p "$uiresult")" = "TIMER" ]; then
+                            menu_arg="$(sed -n 2p "$uiresult")"
+                        else
+                            menu_arg=""
+                        fi
+                        rm -f "$uiresult"
+                        ;;
+                esac
+                case "$menu_arg" in
+                    '' | *[!0-9]* | 0) ;; # canceled: back to the parent menu
+                    *)
+                        [ "$menu_arg" -gt 50 ] && menu_arg=50
+                        add_bonus $((menu_arg * 60))
+                        # Straight back to the kid so they can play (the menu
+                        # already previewed the new remaining time)
+                        return 1
+                        ;;
+                esac
                 ;;
         esac
     done
@@ -817,7 +880,16 @@ cmd_run() {
     chmod a+x "$kidui_bin" 2> /dev/null
 
     ui_fails=0
+    pin_fails=0
+    pin_notice=""
     update_remaining_now
+
+    # Existing installs from before the PIN snapshot existed: take one now,
+    # so the next app update can't lose the PIN either
+    if has_pin && [ ! -f "$pin_backup" ]; then
+        backup_pin
+    fi
+
     start_ticker
 
     # A game left in cmd_to_run.sh means the device powered off mid-game:
@@ -838,9 +910,28 @@ cmd_run() {
         rm -f "$sysdir/.runGameSwitcher" 2> /dev/null
         pgrep keymon > /dev/null 2>&1 || keymon &
 
+        # No PIN on file (armed, but the app folder was replaced and no
+        # snapshot existed): the unlock gesture sets a NEW pin instead of
+        # rejecting everything — never lock the parent out.
+        no_pin_recovery=0
+        if ! has_pin; then
+            no_pin_recovery=1
+        fi
+
         rm -f "$uiresult"
-        "$kidui_bin" > "$uilog" 2>&1
+        if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
+            "$kidui_bin" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
+        elif [ "$no_pin_recovery" = "1" ]; then
+            "$kidui_bin" -t "Set a new PIN" > "$uilog" 2>&1
+        elif [ -n "$pin_notice" ]; then
+            # Wrong PIN last time: reopen straight on the PIN screen so the
+            # parent can try again in place
+            "$kidui_bin" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
+        else
+            "$kidui_bin" > "$uilog" 2>&1
+        fi
         ui_rc=$?
+        pin_notice=""
 
         check_off_order "End"
 
@@ -866,16 +957,48 @@ cmd_run() {
                 run_game_cmd
                 ui_fails=0
                 ;;
+            7) # "Time's up!" screen sat idle for 5 minutes: power off
+                # cleanly so the battery isn't drained (same path keymon's
+                # power button takes — checkoff scripts, save splash, off).
+                log "Times-up screen idle; powering off."
+                touch /tmp/.offOrder
+                check_off_order "End"
+                ;;
             3) # PIN entered
                 [ "$(sed -n 1p "$uiresult")" = "PIN" ] || continue
-                if verify_pin "$(sed -n 2p "$uiresult")"; then
+                entered_pin="$(sed -n 2p "$uiresult")"
+                rm -f "$uiresult"
+                is_4_digits "$entered_pin" || continue
+
+                if [ "$no_pin_recovery" = "1" ]; then
+                    # The PIN just entered becomes the new PIN (after a
+                    # confirm step)
+                    confirm_pin="$(run_pin_entry "Confirm new PIN")"
+                    if [ -n "$confirm_pin" ] && [ "$confirm_pin" = "$entered_pin" ]; then
+                        store_pin "$entered_pin"
+                        pin_fails=0
+                        if parent_menu; then
+                            disarm
+                            return 0
+                        fi
+                    elif [ -n "$confirm_pin" ]; then
+                        pin_notice="PINs did not match - try again"
+                    fi
+                elif verify_pin "$entered_pin"; then
+                    pin_fails=0
                     if parent_menu; then
                         disarm
                         return 0
                     fi
                 else
-                    # Also rate-limits guessing: the message takes ~4s
-                    infoPanel -t "Kids Mode" -m "Wrong PIN\n \nForgot it? On a computer, set\npin_plain in App/KidsMode/kidmode.json" --auto
+                    pin_fails=$((pin_fails + 1))
+                    log "Wrong PIN attempt ($pin_fails)."
+                    sleep 1 # slow down guessing
+                    if [ "$pin_fails" -ge 3 ]; then
+                        pin_notice="Wrong PIN - to reset it, see the README"
+                    else
+                        pin_notice="Wrong PIN - try again"
+                    fi
                 fi
                 ;;
             *) # UI crashed or won't start
@@ -944,6 +1067,9 @@ case "${1:-run}" in
     run)
         [ -f "$flagfile" ] || exit 0
         migrate_plain_pin
+        # App updated while armed? kidmode.json ships blank — bring the PIN
+        # back from the snapshot in Saves/kidmode
+        has_pin || restore_pin_backup
         cmd_run
         ;;
     *)

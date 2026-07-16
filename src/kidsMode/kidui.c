@@ -4,28 +4,49 @@
 // at a time: big box art, big label, left/right to browse, A to play.
 // Holding SELECT+START for 3 seconds opens a 4-digit PIN entry.
 //
+// All screens render through Onion's own theme engine (common/theme/*):
+// the active theme's fonts, colors, background, header/footer bars, list
+// rows and button hints — so Kids Mode looks native next to MainUI/Tweaks.
+//
 // Output protocol (written to /tmp/kidmode_ui_result, consumed by
 // kid_mode_loop.sh; stdout is NOT used for results because the device's
 // SDL/driver stack prints noise there):
 //   exit 0:  "LAUNCH" \n <launch path> \n <rom path>        (resume)
 //            "LAUNCH_FRESH" \n <launch path> \n <rom path>  (start over)
 //   exit 3:  "PIN" \n <4 digits>
-//   exit 5:  "MENU" \n <UNLOCK|ADDTIME|TIMER> [\n <minutes>]
+//   exit 5:  "MENU" \n "UNLOCK"
+//            "MENU" \n "ADDTIME" \n <minutes>   (inline add-time selector)
+//            "MENU" \n "NOTIMER"                (turn the play timer off)
+//            "TIMER" \n <minutes>               (--pick-timer mode)
+//   exit 7:  "POWEROFF"  (Time's up screen sat idle for 5 minutes)
 //   exit 1:  canceled / error / nothing selected (result file removed)
 //
+// PIN screens: UP/DOWN changes the digit, LEFT/RIGHT moves, A confirms
+// (START is a silent alias). --notice "..." shows a short message under the
+// PIN boxes (e.g. "Wrong PIN - try again"); it clears when the screen is
+// left. --start-pin opens the carousel directly on its PIN screen, so a
+// failed attempt can retry in place instead of bouncing to the kid screen.
+//
 // Modes:
-//   kidui                          carousel (default)
-//   kidui --set-pin -t "..."       PIN entry only (for initial PIN setup)
-//   kidui --parent-menu --timer N --remaining S
-//                                  post-PIN parent menu (N = configured
-//                                  minutes/day, S = seconds left, -1 = off)
-//   kidui --pick-timer --no-off -t "Add play time"
-//                                  minutes picker without an OFF option;
-//                                  B cancels (exit 1) instead of choosing 0
+//   kidui [--start-pin] [-t "..."] [--notice "..."]
+//                                  carousel (default)
+//   kidui --set-pin -t "..." [--notice "..."]
+//                                  PIN entry only (for initial PIN setup)
+//   kidui --parent-menu --remaining S
+//                                  post-PIN parent menu (S = seconds left,
+//                                  -1 = timer off). "Add play time" is an
+//                                  Onion-style value selector: LEFT/RIGHT
+//                                  picks 5-50 min, A/START applies, and the
+//                                  info line previews the new remaining time.
+//   kidui --pick-timer [--no-off] -t "..."
+//                                  minutes picker; with --no-off B cancels
+//                                  (exit 1) instead of choosing 0
 //
 // Play timer: kid_mode_loop.sh's ticker writes the remaining seconds to
 // /tmp/kidmode_remaining. The carousel shows it as a small chip and flips
 // to a friendly "Time's up!" screen at zero (SELECT+START still works).
+// If that screen is left alone for 5 minutes, kidui exits with code 7 and
+// the loop powers the device off cleanly.
 
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
@@ -38,7 +59,11 @@
 #include <unistd.h>
 
 #include "components/JsonGameEntry.h"
+#include "components/list.h"
+#include "system/battery.h"
 #include "system/keymap_sw.h"
+#include "theme/background.h"
+#include "theme/theme.h"
 #include "utils/keystate.h"
 #include "utils/log.h"
 #include "utils/msleep.h"
@@ -51,10 +76,9 @@
 #define UNLOCK_BAR_SHOW_MS 800
 #define PIN_IDLE_TIMEOUT_MS 30000
 #define REMAINING_POLL_MS 2000
+#define TIMESUP_OFF_MS (5 * 60 * 1000)
 #define REMAINING_FILE "/tmp/kidmode_remaining"
 #define RESULT_FILE "/tmp/kidmode_ui_result"
-#define FONT_MAIN "/customer/app/Exo-2-Bold-Italic.ttf"
-#define FONT_FALLBACK "/mnt/SDCARD/miyoo/app/Exo-2-Bold-Italic.ttf"
 
 typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
@@ -66,11 +90,19 @@ typedef enum { SCREEN_CAROUSEL,
 
 #define MENU_UNLOCK 0
 #define MENU_ADDTIME 1
-#define MENU_BACK 2
-#define MENU_COUNT 3
+#define MENU_NOTIMER 2
+#define MENU_BACK 3
 #define TIMER_STEP 5
 #define TIMER_MAX 50
-#define SYSTEM_JSON "/mnt/SDCARD/system.json"
+
+// Big kid-facing text sizes (the theme's own sizes are used for header,
+// list rows and hints via resource_getFont)
+#define GAME_LABEL_FONT_SIZE 30
+#define BIG_VALUE_FONT_SIZE 48
+// Longer helper sentences use the theme's LIST font (the readable upright
+// face Onion pairs with its display font in the Apps menu) at a controlled
+// size — theme hint fonts are display faces sized for short labels
+#define INFO_FONT_SIZE 22
 
 static bool quit = false;
 
@@ -83,91 +115,45 @@ static int artwork_index = -1;
 
 static int pin_digits[PIN_LEN] = {0, 0, 0, 0};
 static int pin_cursor = 0;
+static char pin_notice[STR_MAX] = ""; // short message under the PIN boxes
 
+static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
+static TTF_Font *font_bigvalue = NULL;  // theme title font, large
+static TTF_Font *font_info = NULL;      // theme list font, sentence-sized
+
+// Solid panels drawn over the theme background (PIN boxes, art fallback).
+// Fixed dark slate so white text stays readable on any theme.
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
-static const SDL_Color COLOR_DIM = {130, 140, 160};
-static SDL_Color COLOR_ACCENT = {255, 200, 60}; // replaced by theme color
-static uint32_t ACCENT_HEX = 0xFFC83C;
-static const uint32_t BG_COLOR = 0x1A1B26;      // dark navy
-static const uint32_t PIN_BOX_COLOR = 0x2E3350; // slate
+static const uint32_t FALLBACK_BG = 0x1A1B26; // if the theme background fails
+static const uint32_t PIN_BOX_COLOR = 0x2E3350;
 static const uint32_t PIN_BOX_ACTIVE = 0x4A5480;
 
-// Pick up the accent color of the active Onion theme so the PIN pad and
-// highlights match the rest of the system (falls back to amber).
-static bool parseHexColor(const char *hex, SDL_Color *out)
+// Accent = the active theme's "current page" color (what MainUI uses to
+// highlight the active tab number)
+static SDL_Color accentColor(void)
 {
-    if (hex == NULL)
-        return false;
-    if (hex[0] == '#')
-        hex++;
-    if (strlen(hex) < 6)
-        return false;
-    unsigned int r, g, b;
-    if (sscanf(hex, "%02x%02x%02x", &r, &g, &b) != 3)
-        return false;
-    out->r = (Uint8)r;
-    out->g = (Uint8)g;
-    out->b = (Uint8)b;
-    return true;
+    return theme()->currentpage.color;
 }
 
-static bool themeColorFromKey(cJSON *root, const char *section, SDL_Color *out)
+static uint32_t accentHex(void)
 {
-    cJSON *json_section = cJSON_GetObjectItem(root, section);
-    if (json_section == NULL)
-        return false;
-    cJSON *json_color = cJSON_GetObjectItem(json_section, "color");
-    if (json_color == NULL)
-        json_color = cJSON_GetObjectItem(json_section, "selectedcolor");
-    if (json_color == NULL)
-        return false;
-    return parseHexColor(cJSON_GetStringValue(json_color), out);
+    SDL_Color c = accentColor();
+    return ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
 }
 
-static void loadThemeAccent(void)
+static int s_battery = -1;
+
+static int batteryPercentage(void)
 {
-    char *system_json = file_read(SYSTEM_JSON);
-    if (system_json == NULL)
-        return;
-
-    char theme_path[STR_MAX] = "";
-    cJSON *system_root = cJSON_Parse(system_json);
-    free(system_json);
-    if (system_root == NULL)
-        return;
-    json_getString(system_root, "theme", theme_path);
-    cJSON_Delete(system_root);
-
-    if (strlen(theme_path) == 0)
-        return;
-
-    char config_path[STR_MAX * 2];
-    snprintf(config_path, sizeof(config_path), "%s%sconfig.json", theme_path,
-             theme_path[strlen(theme_path) - 1] == '/' ? "" : "/");
-
-    char *theme_json = file_read(config_path);
-    if (theme_json == NULL)
-        return;
-    cJSON *theme_root = cJSON_Parse(theme_json);
-    free(theme_json);
-    if (theme_root == NULL)
-        return;
-
-    SDL_Color accent;
-    if (themeColorFromKey(theme_root, "currentpage", &accent) ||
-        themeColorFromKey(theme_root, "grid", &accent) ||
-        themeColorFromKey(theme_root, "title", &accent)) {
-        COLOR_ACCENT = accent;
-        ACCENT_HEX = ((uint32_t)accent.r << 16) | ((uint32_t)accent.g << 8) |
-                     accent.b;
-    }
-    cJSON_Delete(theme_root);
+    if (s_battery < 0)
+        s_battery = battery_getPercentage();
+    return s_battery;
 }
 
 // On the Miyoo, image files come out of the loader 180°-rotated relative
 // to text rendering — Onion's own theme_backgroundLoad() corrects this by
-// rotating every loaded image (see common/theme/background.h). Do the same
-// for box art. Rects and TTF text must NOT be rotated.
+// rotating the loaded background (see common/theme/background.h). Do the
+// same for box art. Rects and TTF text must NOT be rotated.
 static void rotate180InPlace(SDL_Surface *surface)
 {
     if (surface == NULL || surface->format->BytesPerPixel != 4)
@@ -307,16 +293,13 @@ static void loadFavorites(void)
     fclose(fp);
 }
 
-static TTF_Font *openFont(int size)
-{
-    const char *path = FONT_MAIN;
-    if (access(path, F_OK) != 0)
-        path = FONT_FALLBACK;
-    return TTF_OpenFont(path, size);
-}
+typedef enum { TEXT_LEFT,
+               TEXT_CENTER,
+               TEXT_RIGHT } TextAlignMode;
 
-static void drawText(const char *text, int center_x, int center_y,
-                     TTF_Font *font, SDL_Color color, int max_width)
+static void drawTextAlign(const char *text, int x, int center_y,
+                          TTF_Font *font, SDL_Color color, int max_width,
+                          TextAlignMode align)
 {
     if (font == NULL || text == NULL || strlen(text) == 0)
         return;
@@ -340,9 +323,20 @@ static void drawText(const char *text, int center_x, int center_y,
     if (surface == NULL)
         return;
 
-    SDL_Rect pos = {center_x - surface->w / 2, center_y - surface->h / 2};
+    SDL_Rect pos = {x, center_y - surface->h / 2};
+    if (align == TEXT_CENTER)
+        pos.x = x - surface->w / 2;
+    else if (align == TEXT_RIGHT)
+        pos.x = x - surface->w;
     SDL_BlitSurface(surface, NULL, screen, &pos);
     SDL_FreeSurface(surface);
+}
+
+static void drawText(const char *text, int center_x, int center_y,
+                     TTF_Font *font, SDL_Color color, int max_width)
+{
+    drawTextAlign(text, center_x, center_y, font, color, max_width,
+                  TEXT_CENTER);
 }
 
 static void loadArtwork(void)
@@ -369,7 +363,7 @@ static void loadArtwork(void)
 
     // Scale to fit the art box while keeping aspect ratio
     double max_w = g_display.width * 0.62;
-    double max_h = g_display.height * 0.64;
+    double max_h = g_display.height * 0.58;
     double scale_w = max_w / raw->w;
     double scale_h = max_h / raw->h;
     double scale = scale_w < scale_h ? scale_w : scale_h;
@@ -402,56 +396,15 @@ static void fillRect(int x, int y, int w, int h, uint32_t color)
                             (color >> 8) & 0xFF, color & 0xFF));
 }
 
-static void renderCarousel(TTF_Font *font_title, TTF_Font *font_arrow,
-                           TTF_Font *font_small)
+// Active theme background, like every native Onion screen (guarded: a
+// broken theme must not crash the kid launcher)
+static void renderBase(void)
 {
-    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
-    loadArtwork();
-
-    int cx = g_display.width / 2;
-    int art_cy = (int)(g_display.height * 0.42);
-
-    if (artwork != NULL) {
-        SDL_Rect pos = {cx - artwork->w / 2, art_cy - artwork->h / 2};
-        SDL_BlitSurface(artwork, NULL, screen, &pos);
-    }
-    else {
-        // Fallback tile: colored panel, label drawn on top by title below
-        int tile_w = (int)(g_display.width * 0.55);
-        int tile_h = (int)(g_display.height * 0.5);
-        fillRect(cx - tile_w / 2, art_cy - tile_h / 2, tile_w, tile_h,
-                 PIN_BOX_COLOR);
-        drawText("?", cx, art_cy, font_arrow, COLOR_DIM, 0);
-    }
-
-    // Game title
-    drawText(games[current].label, cx, (int)(g_display.height * 0.84),
-             font_title, COLOR_WHITE, g_display.width - 90);
-
-    // Arrows (browsing wraps around)
-    if (games_count > 1) {
-        drawText("<", (int)(g_display.width * 0.05), art_cy, font_arrow,
-                 COLOR_DIM, 0);
-        drawText(">", (int)(g_display.width * 0.95), art_cy, font_arrow,
-                 COLOR_DIM, 0);
-
-        char counter[32];
-        snprintf(counter, sizeof(counter), "%d / %d", current + 1,
-                 games_count);
-        drawText(counter, cx, (int)(g_display.height * 0.945), font_small,
-                 COLOR_DIM, 0);
-    }
-}
-
-static void renderEmpty(TTF_Font *font_title, TTF_Font *font_small)
-{
-    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
-    int cx = g_display.width / 2;
-    drawText("No games yet!", cx, (int)(g_display.height * 0.4), font_title,
-             COLOR_WHITE, g_display.width - 40);
-    drawText("Ask a grown-up to add favorites", cx,
-             (int)(g_display.height * 0.55), font_small, COLOR_DIM,
-             g_display.width - 40);
+    SDL_Surface *bg = theme_background();
+    if (bg != NULL)
+        SDL_BlitSurface(bg, NULL, screen, NULL);
+    else
+        fillRect(0, 0, g_display.width, g_display.height, FALLBACK_BG);
 }
 
 // Remaining play time in seconds; -1 = timer off (file absent/invalid)
@@ -469,100 +422,173 @@ static int readRemaining(void)
     return result;
 }
 
-static void renderTimeChip(int remaining, TTF_Font *font_small)
+// Small "12 min" chip in the top-right corner (where MainUI keeps its
+// battery), switching to the accent color for the last 5 minutes
+static void renderTimeChip(int remaining)
 {
     if (remaining < 0)
         return;
     int mins = (remaining + 59) / 60;
     char chip[32];
     snprintf(chip, sizeof(chip), "%d min", mins);
-    SDL_Color color = mins <= 5 ? COLOR_ACCENT : COLOR_DIM;
-    drawText(chip, (int)(g_display.width * 0.085),
-             (int)(g_display.height * 0.045), font_small, color, 0);
+    SDL_Color color = mins <= 5 ? accentColor() : theme()->hint.color;
+    drawTextAlign(chip, (int)(620.0 * g_scale), (int)(30.0 * g_scale),
+                  resource_getFont(HINT), color, 0, TEXT_RIGHT);
 }
 
-static void renderConfirmRestart(const char *label, TTF_Font *font_title,
-                                 TTF_Font *font_menu, TTF_Font *font_small)
+static void renderCarousel(int remaining)
 {
-    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
+    renderBase();
+    loadArtwork();
+
     int cx = g_display.width / 2;
-    drawText("Start over?", cx, (int)(g_display.height * 0.3), font_title,
-             COLOR_ACCENT, g_display.width - 40);
-    drawText(label, cx, (int)(g_display.height * 0.45), font_menu,
-             COLOR_WHITE, g_display.width - 60);
-    drawText("A: yes - from the beginning", cx,
-             (int)(g_display.height * 0.65), font_small, COLOR_DIM,
-             g_display.width - 40);
-    drawText("B: no - keep my place", cx, (int)(g_display.height * 0.72),
-             font_small, COLOR_DIM, g_display.width - 40);
-}
+    int art_cy = (int)(g_display.height * 0.40);
 
-static void renderTimesUp(TTF_Font *font_title, TTF_Font *font_small)
-{
-    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
-    int cx = g_display.width / 2;
-    drawText("Time's up!", cx, (int)(g_display.height * 0.38), font_title,
-             COLOR_ACCENT, g_display.width - 40);
-    drawText("Great playing! See you next time.", cx,
-             (int)(g_display.height * 0.54), font_small, COLOR_WHITE,
-             g_display.width - 40);
-}
-
-static void renderMenu(int selected, int remaining, TTF_Font *font_title,
-                       TTF_Font *font_menu, TTF_Font *font_small)
-{
-    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
-    int cx = g_display.width / 2;
-
-    drawText("Parent Menu", cx, (int)(g_display.height * 0.14), font_title,
-             COLOR_WHITE, g_display.width - 40);
-
-    if (remaining >= 0) {
-        char info[64];
-        snprintf(info, sizeof(info), "Time left: %d min",
-                 (remaining + 59) / 60);
-        drawText(info, cx, (int)(g_display.height * 0.24), font_small,
-                 COLOR_DIM, g_display.width - 40);
+    if (artwork != NULL) {
+        SDL_Rect pos = {cx - artwork->w / 2, art_cy - artwork->h / 2};
+        SDL_BlitSurface(artwork, NULL, screen, &pos);
+    }
+    else {
+        // Fallback tile: colored panel, label drawn on top by title below
+        int tile_w = (int)(g_display.width * 0.55);
+        int tile_h = (int)(g_display.height * 0.5);
+        fillRect(cx - tile_w / 2, art_cy - tile_h / 2, tile_w, tile_h,
+                 PIN_BOX_COLOR);
+        drawText("?", cx, art_cy, font_bigvalue, theme()->hint.color, 0);
     }
 
-    const char *items[MENU_COUNT];
-    items[MENU_UNLOCK] = "Exit Kid Mode";
-    items[MENU_ADDTIME] = "Add play time";
-    items[MENU_BACK] = "Back";
+    // Game title in the theme's list font (big + bold)
+    drawText(games[current].label, cx, (int)(400.0 * g_scale), font_gamelabel,
+             theme()->list.color, g_display.width - (int)(90.0 * g_scale));
 
-    for (int i = 0; i < MENU_COUNT; i++) {
-        int y = (int)(g_display.height * (0.38 + 0.12 * i));
-        if (i == selected) {
-            int row_h = (int)(g_display.height * 0.1);
-            fillRect((int)(g_display.width * 0.14), y - row_h / 2,
-                     (int)(g_display.width * 0.72), row_h, PIN_BOX_ACTIVE);
+    // Browse arrows (theme's own list arrows; browsing wraps around)
+    if (games_count > 1) {
+        SDL_Surface *arrow_left = resource_getSurface(LEFT_ARROW);
+        SDL_Surface *arrow_right = resource_getSurface(RIGHT_ARROW);
+        if (arrow_left != NULL) {
+            SDL_Rect pos = {(int)(10.0 * g_scale), art_cy - arrow_left->h / 2};
+            SDL_BlitSurface(arrow_left, NULL, screen, &pos);
         }
-        drawText(items[i], cx, y, font_menu,
-                 i == selected ? COLOR_WHITE : COLOR_DIM,
-                 (int)(g_display.width * 0.7));
+        if (arrow_right != NULL) {
+            SDL_Rect pos = {g_display.width - (int)(10.0 * g_scale) -
+                                arrow_right->w,
+                            art_cy - arrow_right->h / 2};
+            SDL_BlitSurface(arrow_right, NULL, screen, &pos);
+        }
     }
+
+    // Native footer: A = PLAY plus the "2/8" position indicator
+    theme_renderFooter(screen);
+    theme_renderStandardHint(screen, "PLAY", NULL);
+    if (games_count > 1)
+        theme_renderFooterStatus(screen, current + 1, games_count);
+
+    renderTimeChip(remaining);
 }
 
-static void renderPin(const char *title, bool show_intro,
-                      TTF_Font *font_title, TTF_Font *font_digit,
-                      TTF_Font *font_small)
+static void renderEmpty(void)
 {
-    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
+    renderBase();
+    theme_renderHeader(screen, "Kids Mode", false);
     int cx = g_display.width / 2;
+    drawText("No games yet!", cx, (int)(g_display.height * 0.42),
+             font_bigvalue, theme()->list.color, g_display.width - 40);
+    drawText("Ask a grown-up to add favorites", cx,
+             (int)(g_display.height * 0.58), font_info,
+             theme()->list.color, g_display.width - 40);
+    theme_renderFooter(screen);
+}
 
-    drawText(title, cx, (int)(g_display.height * 0.22), font_title,
-             COLOR_WHITE, g_display.width - 40);
+static void renderConfirmRestart(const char *label, int remaining)
+{
+    // Dialog pops over the carousel, exactly like Onion's own prompts
+    renderCarousel(remaining);
+
+    char message[STR_MAX];
+    snprintf(message, sizeof(message),
+             "Play %s from the beginning?\nIn-game saves are kept.", label);
+    theme_renderDialog(screen, "Start over?", message, true);
+}
+
+static void renderTimesUp(void)
+{
+    renderBase();
+    theme_renderHeader(screen, "Time's up!", false);
+
+    int cx = g_display.width / 2;
+    drawText("Great playing!", cx, (int)(g_display.height * 0.4),
+             font_bigvalue, accentColor(), g_display.width - 40);
+    drawText("See you next time.", cx, (int)(g_display.height * 0.55),
+             font_info, theme()->list.color, g_display.width - 40);
+
+    theme_renderFooter(screen);
+}
+
+static void formatAddMinutes(void *self, char *out_label)
+{
+    ListItem *item = (ListItem *)self;
+    sprintf(out_label, "+%d min", item->value * TIMER_STEP);
+}
+
+// The parent menu is a real Onion list: full-width rows, the theme's list
+// font and selection background, and an Apps-menu-style value selector on
+// the "Add play time" row.
+static void renderMenu(List *list, int remaining)
+{
+    renderBase();
+    theme_renderHeader(screen, "Kids Mode - Parent Menu", false);
+    theme_renderHeaderBattery(screen, batteryPercentage());
+    theme_renderList(screen, list);
+
+    // Status line: current remaining time, and — while the add-time row is
+    // selected — what it becomes when applied. Same font as the menu rows,
+    // tucked bottom-right above the footer.
+    char info[STR_MAX] = "";
+    int rem_min = remaining >= 0 ? (remaining + 59) / 60 : -1;
+    if (list->active_pos == MENU_ADDTIME) {
+        int add_min = list->items[MENU_ADDTIME].value * TIMER_STEP;
+        if (rem_min >= 0)
+            snprintf(info, sizeof(info),
+                     "Time left: %d min (%d min after adding)", rem_min,
+                     rem_min + add_min);
+        else
+            snprintf(info, sizeof(info), "No timer (%d min after adding)",
+                     add_min);
+    }
+    else if (list->active_pos == MENU_NOTIMER && rem_min >= 0) {
+        snprintf(info, sizeof(info), "Time left: %d min (no limit after)",
+                 rem_min);
+    }
+    else {
+        if (rem_min >= 0)
+            snprintf(info, sizeof(info), "Time left: %d min", rem_min);
+        else
+            snprintf(info, sizeof(info), "No timer set");
+    }
+    drawTextAlign(info, (int)(620.0 * g_scale), (int)(395.0 * g_scale),
+                  resource_getFont(LIST), theme()->list.color,
+                  g_display.width - 40, TEXT_RIGHT);
+
+    theme_renderFooter(screen);
+    theme_renderStandardHint(screen, "OK", "BACK");
+    theme_renderFooterStatus(screen, list->active_pos + 1, list->item_count);
+}
+
+static void renderPin(const char *title, bool show_intro)
+{
+    renderBase();
+    theme_renderHeader(screen, title, false);
+    theme_renderHeaderBattery(screen, batteryPercentage());
+
+    int cx = g_display.width / 2;
 
     if (show_intro) {
-        drawText("Kids Mode shows only your favorited games", cx,
-                 (int)(g_display.height * 0.3), font_small, COLOR_DIM,
+        drawText("Kids Mode shows only your favorited games,", cx,
+                 (int)(88.0 * g_scale), font_info, theme()->hint.color,
                  g_display.width - 40);
-        drawText("Timer, start-over, and kid-simple controls", cx,
-                 (int)(g_display.height * 0.84), font_small, COLOR_DIM,
+        drawText("with a play timer and kid-simple controls.", cx,
+                 (int)(114.0 * g_scale), font_info, theme()->hint.color,
                  g_display.width - 40);
-        drawText("Hold SELECT+START in Kids Mode for the parent menu", cx,
-                 (int)(g_display.height * 0.9), font_small, COLOR_DIM,
-                 g_display.width - 30);
     }
 
     int box_w = (int)(g_display.width * 0.11);
@@ -570,7 +596,7 @@ static void renderPin(const char *title, bool show_intro,
     int gap = box_w / 4;
     int total_w = PIN_LEN * box_w + (PIN_LEN - 1) * gap;
     int x0 = cx - total_w / 2;
-    int box_cy = (int)(g_display.height * 0.47);
+    int box_cy = (int)(g_display.height * 0.45);
 
     for (int i = 0; i < PIN_LEN; i++) {
         int x = x0 + i * (box_w + gap);
@@ -582,15 +608,25 @@ static void renderPin(const char *title, bool show_intro,
             snprintf(digit, sizeof(digit), "%d", pin_digits[i]);
         else
             snprintf(digit, sizeof(digit), "*");
-        drawText(digit, x + box_w / 2, box_cy, font_digit,
-                 i == pin_cursor ? COLOR_ACCENT : COLOR_WHITE, 0);
+        drawText(digit, x + box_w / 2, box_cy, font_bigvalue,
+                 i == pin_cursor ? accentColor() : COLOR_WHITE, 0);
     }
 
-    drawText("UP/DOWN: change    A: next digit", cx,
-             (int)(g_display.height * 0.68), font_small, COLOR_DIM,
+    if (strlen(pin_notice) > 0)
+        drawText(pin_notice, cx, (int)(g_display.height * 0.585), font_info,
+                 accentColor(), g_display.width - 40);
+
+    drawText("UP / DOWN changes - LEFT / RIGHT moves", cx,
+             (int)(g_display.height * 0.645), font_info, theme()->hint.color,
              g_display.width - 40);
-    drawText("START: confirm    B: back", cx, (int)(g_display.height * 0.75),
-             font_small, COLOR_DIM, g_display.width - 40);
+
+    if (show_intro)
+        drawText("Hold SELECT+START in Kids Mode for the parent menu", cx,
+                 (int)(g_display.height * 0.725), font_info,
+                 theme()->hint.color, g_display.width - 30);
+
+    theme_renderFooter(screen);
+    theme_renderStandardHint(screen, "OK", "BACK");
 }
 
 static void renderHoldBar(uint32_t held_ms)
@@ -601,45 +637,61 @@ static void renderHoldBar(uint32_t held_ms)
     int w = (int)((double)full_w * ((double)held_ms / UNLOCK_HOLD_MS));
     if (w > full_w)
         w = full_w;
-    fillRect(0, 0, w, 6, ACCENT_HEX);
+    fillRect(0, 0, w, 6, accentHex());
 }
 
-static void renderPickTimer(const char *title, int minutes, bool no_off,
-                            TTF_Font *font_title, TTF_Font *font_big,
-                            TTF_Font *font_small)
+static void renderPickTimer(const char *title, int minutes, bool no_off)
 {
-    fillRect(0, 0, g_display.width, g_display.height, BG_COLOR);
-    int cx = g_display.width / 2;
+    renderBase();
+    theme_renderHeader(screen, title, false);
+    theme_renderHeaderBattery(screen, batteryPercentage());
 
-    drawText(title, cx, (int)(g_display.height * 0.2), font_title,
-             COLOR_WHITE, g_display.width - 40);
+    int cx = g_display.width / 2;
+    int value_cy = (int)(g_display.height * 0.42);
 
     char value[32];
     if (minutes > 0)
         snprintf(value, sizeof(value), "%d min", minutes);
     else
         snprintf(value, sizeof(value), "OFF");
-    drawText(value, cx, (int)(g_display.height * 0.45), font_big,
-             COLOR_ACCENT, 0);
+    drawText(value, cx, value_cy, font_bigvalue, accentColor(), 0);
 
-    drawText("<", (int)(g_display.width * 0.18), (int)(g_display.height * 0.45),
-             font_title, COLOR_DIM, 0);
-    drawText(">", (int)(g_display.width * 0.82), (int)(g_display.height * 0.45),
-             font_title, COLOR_DIM, 0);
+    SDL_Surface *arrow_left = resource_getSurface(LEFT_ARROW);
+    SDL_Surface *arrow_right = resource_getSurface(RIGHT_ARROW);
+    if (arrow_left != NULL) {
+        SDL_Rect pos = {(int)(g_display.width * 0.24),
+                        value_cy - arrow_left->h / 2};
+        SDL_BlitSurface(arrow_left, NULL, screen, &pos);
+    }
+    if (arrow_right != NULL) {
+        SDL_Rect pos = {(int)(g_display.width * 0.76) - arrow_right->w,
+                        value_cy - arrow_right->h / 2};
+        SDL_BlitSurface(arrow_right, NULL, screen, &pos);
+    }
 
-    drawText(no_off ? "LEFT/RIGHT: change    A: confirm"
-                    : "LEFT/RIGHT: change    A: start",
-             cx, (int)(g_display.height * 0.72), font_small, COLOR_DIM,
-             g_display.width - 40);
-    drawText(no_off ? "B: cancel" : "B: no timer", cx,
-             (int)(g_display.height * 0.79), font_small, COLOR_DIM,
-             g_display.width - 40);
+    drawText(no_off ? "How much play time to add?"
+                    : "Play time for this session",
+             cx, (int)(g_display.height * 0.62), font_info,
+             theme()->list.color, g_display.width - 40);
+
+    theme_renderFooter(screen);
+    theme_renderStandardHint(screen, no_off ? "CONFIRM" : "START",
+                             no_off ? "CANCEL" : "NO TIMER");
 }
 
 static void flip(void)
 {
     SDL_BlitSurface(screen, NULL, video, NULL);
     SDL_Flip(video);
+#ifdef KIDUI_SCREENSHOT_DIR
+    // Dev/preview builds only (never defined on device): dump every
+    // rendered frame so screens can be inspected without hardware
+    static int frame_no = 0;
+    char shot_path[512];
+    snprintf(shot_path, sizeof(shot_path), KIDUI_SCREENSHOT_DIR "/frame%03d.bmp",
+             ++frame_no);
+    SDL_SaveBMP(screen, shot_path);
+#endif
 }
 
 int main(int argc, char *argv[])
@@ -648,6 +700,7 @@ int main(int argc, char *argv[])
     bool menu_mode = false;
     bool pick_timer_mode = false;
     bool picker_no_off = false;
+    bool start_on_pin = false;
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
     char pin_title[STR_MAX] = "";
@@ -661,6 +714,10 @@ int main(int argc, char *argv[])
             pick_timer_mode = true;
         else if (strcmp(argv[i], "--no-off") == 0)
             picker_no_off = true;
+        else if (strcmp(argv[i], "--start-pin") == 0)
+            start_on_pin = true;
+        else if (strcmp(argv[i], "--notice") == 0 && i + 1 < argc)
+            strncpy(pin_notice, argv[++i], STR_MAX - 1);
         else if (strcmp(argv[i], "--timer") == 0 && i + 1 < argc)
             menu_timer_minutes = atoi(argv[++i]);
         else if (strcmp(argv[i], "--remaining") == 0 && i + 1 < argc)
@@ -685,17 +742,36 @@ int main(int argc, char *argv[])
     if (!SDL_InitDefault())
         return 1;
 
-    TTF_Font *font_title = openFont(g_display.height / 13); // ~36px @480
-    TTF_Font *font_arrow = openFont(g_display.height / 8);  // ~60px @480
-    TTF_Font *font_digit = openFont(g_display.height / 9);  // ~53px @480
-    TTF_Font *font_menu = openFont(g_display.height / 17);  // ~28px @480
-    TTF_Font *font_small = openFont(g_display.height / 24); // ~20px @480
+    // Theme fonts: header/list/hint come straight from the active theme via
+    // resource_getFont; these two are the same families at kid-friendly sizes
+    font_gamelabel =
+        theme_loadFont(theme()->path, theme()->list.font, GAME_LABEL_FONT_SIZE);
+    if (font_gamelabel != NULL)
+        TTF_SetFontStyle(font_gamelabel, TTF_STYLE_BOLD);
+    font_bigvalue =
+        theme_loadFont(theme()->path, theme()->title.font, BIG_VALUE_FONT_SIZE);
+    font_info = theme_loadFont(theme()->path, theme()->list.font,
+                               INFO_FONT_SIZE);
 
     Screen active_screen = SCREEN_CAROUSEL;
-    int menu_selected = 0;
     int remaining = -1;
 
-    loadThemeAccent();
+    // Parent menu list (native Onion list component)
+    List menu_list = list_create(4, LIST_SMALL);
+    list_addItem(&menu_list,
+                 (ListItem){.label = "Exit Kids Mode", .item_type = ACTION});
+    list_addItem(&menu_list, (ListItem){.label = "Add play time",
+                                        .item_type = MULTIVALUE,
+                                        .value_min = 1,
+                                        .value_max = TIMER_MAX / TIMER_STEP,
+                                        .value = 1,
+                                        .value_formatter = formatAddMinutes});
+    // Faded and skipped while no timer is running — nothing to turn off
+    list_addItem(&menu_list, (ListItem){.label = "Turn off timer",
+                                        .item_type = ACTION,
+                                        .disabled = menu_remaining < 0});
+    list_addItem(&menu_list,
+                 (ListItem){.label = "Back", .item_type = ACTION});
 
     if (set_pin_mode) {
         active_screen = SCREEN_PIN;
@@ -718,6 +794,10 @@ int main(int argc, char *argv[])
             active_screen = SCREEN_TIMESUP;
         else if (games_count == 0)
             active_screen = SCREEN_EMPTY;
+        // Wrong-PIN retry: reopen straight on the PIN screen (B backs out
+        // to the kid screen decided above)
+        if (start_on_pin)
+            active_screen = SCREEN_PIN;
     }
 
     if (strlen(pin_title) == 0)
@@ -730,6 +810,7 @@ int main(int argc, char *argv[])
     uint32_t last_hold_ms = 0;
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
+    uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
@@ -830,22 +911,40 @@ int main(int argc, char *argv[])
             else if (active_screen == SCREEN_MENU) {
                 switch (changed_key) {
                 case SW_BTN_UP:
-                    menu_selected =
-                        (menu_selected + MENU_COUNT - 1) % MENU_COUNT;
+                    list_keyUp(&menu_list, false);
                     dirty = true;
                     break;
                 case SW_BTN_DOWN:
-                    menu_selected = (menu_selected + 1) % MENU_COUNT;
+                    list_keyDown(&menu_list, false);
                     dirty = true;
                     break;
+                case SW_BTN_LEFT:
+                    // Value selector on the add-time row (Apps-menu style)
+                    if (list_keyLeft(&menu_list, false))
+                        dirty = true;
+                    break;
+                case SW_BTN_RIGHT:
+                    if (list_keyRight(&menu_list, false))
+                        dirty = true;
+                    break;
                 case SW_BTN_A:
-                    if (menu_selected == MENU_UNLOCK) {
+                case SW_BTN_START:
+                    if (menu_list.active_pos == MENU_UNLOCK) {
                         writeResult("MENU", "UNLOCK", NULL);
                         exit_code = 5;
                         quit = true;
                     }
-                    else if (menu_selected == MENU_ADDTIME) {
-                        writeResult("MENU", "ADDTIME", NULL);
+                    else if (menu_list.active_pos == MENU_ADDTIME) {
+                        char minutes_str[16];
+                        snprintf(minutes_str, sizeof(minutes_str), "%d",
+                                 menu_list.items[MENU_ADDTIME].value *
+                                     TIMER_STEP);
+                        writeResult("MENU", "ADDTIME", minutes_str);
+                        exit_code = 5;
+                        quit = true;
+                    }
+                    else if (menu_list.active_pos == MENU_NOTIMER) {
+                        writeResult("MENU", "NOTIMER", NULL);
                         exit_code = 5;
                         quit = true;
                     }
@@ -881,14 +980,9 @@ int main(int argc, char *argv[])
                     dirty = true;
                     break;
                 case SW_BTN_A:
-                    // A confirms the current digit and moves right — easy to
-                    // hit mid-entry, so it must never submit a partial PIN
-                    if (pin_cursor < PIN_LEN - 1) {
-                        pin_cursor++;
-                        dirty = true;
-                    }
-                    break;
                 case SW_BTN_START: {
+                    // A confirms, like everywhere else in Onion (START kept
+                    // as a silent alias for old muscle memory)
                     char pin_str[8];
                     snprintf(pin_str, sizeof(pin_str), "%d%d%d%d",
                              pin_digits[0], pin_digits[1], pin_digits[2],
@@ -910,6 +1004,7 @@ int main(int argc, char *argv[])
                         pin_digits[0] = pin_digits[1] = pin_digits[2] =
                             pin_digits[3] = 0;
                         pin_cursor = 0;
+                        pin_notice[0] = '\0';
                         dirty = true;
                     }
                     break;
@@ -957,6 +1052,7 @@ int main(int argc, char *argv[])
                                               : SCREEN_EMPTY;
             pin_digits[0] = pin_digits[1] = pin_digits[2] = pin_digits[3] = 0;
             pin_cursor = 0;
+            pin_notice[0] = '\0';
             dirty = true;
         }
 
@@ -985,36 +1081,48 @@ int main(int argc, char *argv[])
                 dirty = true;
         }
 
+        // Nobody turned the device off after "Time's up!": power off after
+        // 5 idle minutes so the battery isn't drained overnight. The
+        // SELECT+START parent gesture still interrupts this (PIN screen
+        // pauses the timer; it restarts fresh on return).
+        if (active_screen == SCREEN_TIMESUP) {
+            if (timesup_since == 0)
+                timesup_since = ticks;
+            if (ticks - timesup_since >= TIMESUP_OFF_MS) {
+                writeResult("POWEROFF", NULL, NULL);
+                exit_code = 7;
+                quit = true;
+            }
+        }
+        else {
+            timesup_since = 0;
+        }
+
         if (quit)
             break;
 
         if (dirty) {
             switch (active_screen) {
             case SCREEN_CAROUSEL:
-                renderCarousel(font_title, font_arrow, font_small);
-                renderTimeChip(remaining, font_small);
+                renderCarousel(remaining);
                 break;
             case SCREEN_EMPTY:
-                renderEmpty(font_title, font_small);
+                renderEmpty();
                 break;
             case SCREEN_PIN:
-                renderPin(pin_title, set_pin_mode, font_title, font_digit,
-                          font_small);
+                renderPin(pin_title, set_pin_mode);
                 break;
             case SCREEN_TIMESUP:
-                renderTimesUp(font_title, font_menu);
+                renderTimesUp();
                 break;
             case SCREEN_MENU:
-                renderMenu(menu_selected, menu_remaining, font_title,
-                           font_menu, font_small);
+                renderMenu(&menu_list, menu_remaining);
                 break;
             case SCREEN_PICKTIMER:
-                renderPickTimer(pin_title, menu_timer_minutes, picker_no_off,
-                                font_title, font_digit, font_small);
+                renderPickTimer(pin_title, menu_timer_minutes, picker_no_off);
                 break;
             case SCREEN_CONFIRM_RESTART:
-                renderConfirmRestart(games[current].label, font_title,
-                                     font_menu, font_small);
+                renderConfirmRestart(games[current].label, remaining);
                 break;
             }
             if (hold_started != 0)
@@ -1028,16 +1136,14 @@ int main(int argc, char *argv[])
 
     if (artwork != NULL)
         SDL_FreeSurface(artwork);
-    if (font_title != NULL)
-        TTF_CloseFont(font_title);
-    if (font_arrow != NULL)
-        TTF_CloseFont(font_arrow);
-    if (font_digit != NULL)
-        TTF_CloseFont(font_digit);
-    if (font_menu != NULL)
-        TTF_CloseFont(font_menu);
-    if (font_small != NULL)
-        TTF_CloseFont(font_small);
+    if (font_gamelabel != NULL)
+        TTF_CloseFont(font_gamelabel);
+    if (font_bigvalue != NULL)
+        TTF_CloseFont(font_bigvalue);
+    if (font_info != NULL)
+        TTF_CloseFont(font_info);
+    list_free(&menu_list);
+    resources_free();
 
     // NB: deliberately no final clear+flip here — an extra page flip on the
     // device can leave the visible framebuffer page out of sync with the
