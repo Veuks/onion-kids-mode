@@ -36,7 +36,7 @@
 //                                  post-PIN parent menu (S = seconds left,
 //                                  -1 = timer off). "Add play time" is an
 //                                  Onion-style value selector: LEFT/RIGHT
-//                                  picks 5-50 min, A/START applies, and the
+//                                  picks 5-120 min, A/START applies, and the
 //                                  info line previews the new remaining time.
 //   kidui --pick-timer [--no-off] -t "..."
 //                                  minutes picker; with --no-off B cancels
@@ -51,6 +51,7 @@
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
 #include <SDL/SDL_ttf.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -93,7 +94,7 @@ typedef enum { SCREEN_CAROUSEL,
 #define MENU_NOTIMER 2
 #define MENU_BACK 3
 #define TIMER_STEP 5
-#define TIMER_MAX 50
+#define TIMER_MAX 120
 
 // Big kid-facing text sizes (the theme's own sizes are used for header,
 // list rows and hints via resource_getFont)
@@ -339,9 +340,65 @@ static void drawText(const char *text, int center_x, int center_y,
                   TEXT_CENTER);
 }
 
+// Onion's own dialog textbox (theme_textboxSurface) only splits on explicit
+// \n — it never breaks a single long line by width, it only shrinks the
+// font as a last resort if the whole block doesn't fit. For a long game
+// title, that means one giant unbroken line. This inserts \n at word
+// boundaries so the title itself wraps to fit max_width, the same way a
+// normal text box would.
+static void wordWrap(const char *text, TTF_Font *font, int max_width,
+                     char *out, size_t out_size)
+{
+    out[0] = '\0';
+    char line[STR_MAX] = "";
+    char word[STR_MAX] = "";
+    size_t wi = 0;
+    size_t len = strlen(text);
+
+    for (size_t i = 0; i <= len; i++) {
+        if (text[i] != ' ' && text[i] != '\0') {
+            if (wi < sizeof(word) - 1)
+                word[wi++] = text[i];
+            continue;
+        }
+        word[wi] = '\0';
+        wi = 0;
+        if (word[0] == '\0')
+            continue;
+
+        char trial[STR_MAX];
+        if (line[0] == '\0')
+            snprintf(trial, sizeof(trial), "%s", word);
+        else
+            snprintf(trial, sizeof(trial), "%s %s", line, word);
+
+        int w = 0, h = 0;
+        TTF_SizeUTF8(font, trial, &w, &h);
+        if (w > max_width && line[0] != '\0') {
+            if (out[0] != '\0')
+                strncat(out, "\n", out_size - strlen(out) - 1);
+            strncat(out, line, out_size - strlen(out) - 1);
+            snprintf(line, sizeof(line), "%s", word);
+        }
+        else {
+            snprintf(line, sizeof(line), "%s", trial);
+        }
+    }
+    if (line[0] != '\0') {
+        if (out[0] != '\0')
+            strncat(out, "\n", out_size - strlen(out) - 1);
+        strncat(out, line, out_size - strlen(out) - 1);
+    }
+}
+
 static void loadArtwork(void)
 {
-    if (artwork_index == current)
+    // Only skip reloading if we already have artwork loaded for this exact
+    // slot. If a previous attempt found nothing (e.g. the scraper hadn't
+    // finished writing the image yet when this favorite was added), retry
+    // on every visit instead of caching that miss for the rest of the run —
+    // otherwise a newly-scraped image never appears until kidui restarts.
+    if (artwork_index == current && artwork != NULL)
         return;
 
     if (artwork != NULL) {
@@ -394,6 +451,20 @@ static void fillRect(int x, int y, int w, int h, uint32_t color)
     SDL_FillRect(screen, &rect,
                  SDL_MapRGB(screen->format, (color >> 16) & 0xFF,
                             (color >> 8) & 0xFF, color & 0xFF));
+}
+
+// SDL 1.2 has no circle primitive, so we fake a small button-badge icon by
+// filling one horizontal scanline per row (cheap enough at this size to
+// call every frame; no external drawing library needed).
+static void fillCircle(int cx, int cy, int radius, uint32_t color)
+{
+    uint32_t mapped = SDL_MapRGB(screen->format, (color >> 16) & 0xFF,
+                                 (color >> 8) & 0xFF, color & 0xFF);
+    for (int dy = -radius; dy <= radius; dy++) {
+        int dx = (int)(sqrt((double)(radius * radius - dy * dy)) + 0.5);
+        SDL_Rect line = {cx - dx, cy + dy, dx * 2 + 1, 1};
+        SDL_FillRect(screen, &line, mapped);
+    }
 }
 
 // Active theme background, like every native Onion screen (guarded: a
@@ -480,6 +551,21 @@ static void renderCarousel(int remaining)
     // Native footer: A = PLAY plus the "2/8" position indicator
     theme_renderFooter(screen);
     theme_renderStandardHint(screen, "PLAY", NULL);
+    // No X-button icon ships with Onion's theme (only BUTTON_A/BUTTON_B),
+    // so we draw a small badge ourselves — same accent color as everything
+    // else that's meant to draw the eye (5-min warning, PIN cursor) — to
+    // read as a real button hint rather than plain text.
+    {
+        int badge_cx = (int)(230.0 * g_scale);
+        int badge_cy = (int)(450.0 * g_scale);
+        int badge_r = (int)(14.0 * g_scale);
+        fillCircle(badge_cx, badge_cy, badge_r, accentHex());
+        drawText("X", badge_cx, badge_cy, resource_getFont(HINT),
+                 COLOR_WHITE, 0);
+        drawTextAlign("RESTART", badge_cx + badge_r + (int)(8.0 * g_scale),
+                      badge_cy, resource_getFont(HINT), theme()->hint.color,
+                      0, TEXT_LEFT);
+    }
     if (games_count > 1)
         theme_renderFooterStatus(screen, current + 1, games_count);
 
@@ -504,9 +590,14 @@ static void renderConfirmRestart(const char *label, int remaining)
     // Dialog pops over the carousel, exactly like Onion's own prompts
     renderCarousel(remaining);
 
+    char wrapped_label[STR_MAX];
+    wordWrap(label, resource_getFont(TITLE), (int)(DIALOG_WIDTH * g_scale),
+             wrapped_label, sizeof(wrapped_label));
+
     char message[STR_MAX];
     snprintf(message, sizeof(message),
-             "Play %s from the beginning?\nIn-game saves are kept.", label);
+             "%s\n\nStart from the beginning?\nIn-game saves are kept.",
+             wrapped_label);
     theme_renderDialog(screen, "Start over?", message, true);
 }
 
@@ -704,6 +795,7 @@ int main(int argc, char *argv[])
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
     char pin_title[STR_MAX] = "";
+    char select_rompath[STR_MAX] = "";
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--set-pin") == 0)
@@ -722,6 +814,8 @@ int main(int argc, char *argv[])
             menu_timer_minutes = atoi(argv[++i]);
         else if (strcmp(argv[i], "--remaining") == 0 && i + 1 < argc)
             menu_remaining = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--select") == 0 && i + 1 < argc)
+            strncpy(select_rompath, argv[++i], STR_MAX - 1);
         else if ((strcmp(argv[i], "-t") == 0 ||
                   strcmp(argv[i], "--title") == 0) &&
                  i + 1 < argc)
@@ -789,6 +883,14 @@ int main(int argc, char *argv[])
     else {
         loadFavorites();
         fprintf(stderr, "kidui: loaded %d favorites\n", games_count);
+        if (strlen(select_rompath) > 0) {
+            for (int i = 0; i < games_count; i++) {
+                if (strcmp(games[i].rompath, select_rompath) == 0) {
+                    current = i;
+                    break;
+                }
+            }
+        }
         remaining = readRemaining();
         if (remaining == 0)
             active_screen = SCREEN_TIMESUP;
