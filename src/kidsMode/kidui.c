@@ -106,6 +106,9 @@ typedef enum { SCREEN_CAROUSEL,
 #define INFO_FONT_SIZE 22
 
 static bool quit = false;
+static bool dirty = true; // set by any render function that needs to keep
+                          // animating (e.g. a scrolling title) on the next
+                          // loop tick, even with no new input
 
 static JsonGameEntry games[MAX_GAMES];
 static int games_count = 0;
@@ -113,6 +116,15 @@ static int current = 0;
 
 static SDL_Surface *artwork = NULL;
 static int artwork_index = -1;
+
+// Marquee state for a game title too long to fit: scrolls left to reveal
+// the end, pauses, scrolls back, pauses, repeats. Resets whenever the
+// selected game changes.
+static int marquee_for_index = -1;
+static float marquee_x = 0.0f;
+static int marquee_dir = 1; // +1 scrolling right-to-left, -1 scrolling back
+static uint32_t marquee_pause_until = 0;
+static uint32_t marquee_last_tick = 0;
 
 static int pin_digits[PIN_LEN] = {0, 0, 0, 0};
 static int pin_cursor = 0;
@@ -140,6 +152,18 @@ static uint32_t accentHex(void)
 {
     SDL_Color c = accentColor();
     return ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
+}
+
+// Some themes' accent color (used for the X badge fill) is itself light —
+// white text on it would be nearly invisible. Pick readable text against
+// whatever that color turns out to be, instead of assuming it's always
+// dark enough for white.
+static const SDL_Color COLOR_DARK = {20, 20, 20};
+
+static SDL_Color contrastColor(SDL_Color bg)
+{
+    double luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
+    return luminance > 150.0 ? COLOR_DARK : COLOR_WHITE;
 }
 
 static int s_battery = -1;
@@ -528,9 +552,66 @@ static void renderCarousel(int remaining)
         drawText("?", cx, art_cy, font_bigvalue, theme()->hint.color, 0);
     }
 
-    // Game title in the theme's list font (big + bold)
-    drawText(games[current].label, cx, (int)(400.0 * g_scale), font_gamelabel,
-             theme()->list.color, g_display.width - (int)(90.0 * g_scale));
+    // Game title in the theme's list font (big + bold). Long titles scroll
+    // (right-to-left, pause, back, pause, repeat) instead of being cut off
+    // with an ellipsis, so the full name stays readable.
+    {
+        int avail_w = g_display.width - (int)(90.0 * g_scale);
+        int label_y = (int)(400.0 * g_scale);
+        SDL_Surface *label_surf =
+            TTF_RenderUTF8_Blended(font_gamelabel, games[current].label,
+                                   theme()->list.color);
+
+        if (label_surf == NULL) {
+            // Fall back to the plain (truncating) draw if rendering failed
+            drawText(games[current].label, cx, label_y, font_gamelabel,
+                     theme()->list.color, avail_w);
+        }
+        else if (label_surf->w <= avail_w) {
+            // Fits — draw centered as usual, no animation
+            SDL_Rect pos = {cx - label_surf->w / 2, label_y - label_surf->h / 2};
+            SDL_BlitSurface(label_surf, NULL, screen, &pos);
+            SDL_FreeSurface(label_surf);
+            marquee_for_index = -1;
+        }
+        else {
+            // Doesn't fit — scroll it
+            uint32_t now = SDL_GetTicks();
+            if (marquee_for_index != current) {
+                marquee_for_index = current;
+                marquee_x = 0.0f;
+                marquee_dir = 1;
+                marquee_pause_until = now + 900; // pause on the full start
+                marquee_last_tick = now;
+            }
+
+            float max_scroll = (float)(label_surf->w - avail_w);
+            uint32_t elapsed = now - marquee_last_tick;
+            marquee_last_tick = now;
+
+            if (now >= marquee_pause_until) {
+                // ~45px/sec, independent of actual redraw rate
+                marquee_x += marquee_dir * (elapsed * 0.045f);
+                if (marquee_x >= max_scroll) {
+                    marquee_x = max_scroll;
+                    marquee_dir = -1;
+                    marquee_pause_until = now + 900; // pause at the end
+                }
+                else if (marquee_x <= 0.0f) {
+                    marquee_x = 0.0f;
+                    marquee_dir = 1;
+                    marquee_pause_until = now + 900; // pause at the start
+                }
+            }
+
+            SDL_Rect srcrect = {(int)marquee_x, 0, avail_w, label_surf->h};
+            SDL_Rect dstrect = {cx - avail_w / 2, label_y - label_surf->h / 2};
+            SDL_BlitSurface(label_surf, &srcrect, screen, &dstrect);
+            SDL_FreeSurface(label_surf);
+
+            dirty = true; // keep redrawing so the scroll keeps moving
+        }
+    }
 
     // Browse arrows (theme's own list arrows; browsing wraps around)
     if (games_count > 1) {
@@ -552,17 +633,28 @@ static void renderCarousel(int remaining)
     theme_renderFooter(screen);
     theme_renderStandardHint(screen, "PLAY", NULL);
     // No X-button icon ships with Onion's theme (only BUTTON_A/BUTTON_B),
-    // so we draw a small badge ourselves — same accent color as everything
-    // else that's meant to draw the eye (5-min warning, PIN cursor) — to
-    // read as a real button hint rather than plain text.
+    // so we draw a small badge ourselves. To guarantee it lands in the
+    // right spot regardless of theme (icon size and "PLAY" label width
+    // both vary per theme/font), we replicate theme_renderStandardHint's
+    // own offset math exactly rather than guessing a fixed pixel position
+    // — same formula Onion itself uses to place a second (B) hint after
+    // the first.
     {
-        int badge_cx = (int)(230.0 * g_scale);
-        int badge_cy = (int)(450.0 * g_scale);
+        int offsetX = (int)(20.0 * g_scale);
+        SDL_Surface *button_a = resource_getSurface(BUTTON_A);
+        if (button_a)
+            offsetX += button_a->w + 5;
+        int play_w = 0, play_h = 0;
+        TTF_SizeUTF8(resource_getFont(HINT), "PLAY", &play_w, &play_h);
+        offsetX += play_w + (int)(30.0 * g_scale);
+
         int badge_r = (int)(14.0 * g_scale);
+        int badge_cx = offsetX + badge_r;
+        int badge_cy = (int)(450.0 * g_scale);
         fillCircle(badge_cx, badge_cy, badge_r, accentHex());
         drawText("X", badge_cx, badge_cy, resource_getFont(HINT),
-                 COLOR_WHITE, 0);
-        drawTextAlign("RESTART", badge_cx + badge_r + (int)(8.0 * g_scale),
+                 contrastColor(accentColor()), 0);
+        drawTextAlign("RESTART", badge_cx + badge_r + 5 + (int)(5.0 * g_scale),
                       badge_cy, resource_getFont(HINT), theme()->hint.color,
                       0, TEXT_LEFT);
     }
@@ -907,7 +999,7 @@ int main(int argc, char *argv[])
 
     KeyState keystate[320] = {(KeyState)0};
     int exit_code = 1;
-    bool dirty = true;
+    dirty = true;
     uint32_t hold_started = 0;
     uint32_t last_hold_ms = 0;
     uint32_t pin_last_input = SDL_GetTicks();
