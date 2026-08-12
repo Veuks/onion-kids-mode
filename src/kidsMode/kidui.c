@@ -517,23 +517,29 @@ static void renderTimeChip(int remaining)
     bool select_held = keystate[SW_BTN_SELECT] != RELEASED;
     if (remaining < 0 && !select_held)
         return;
-    char chip[32];
-    SDL_Color color;
+
     if (select_held) {
-        // SELECT held: show battery %, in the same spot, whether or not a
-        // timer is running. Read live rather than the cached startup
-        // value, since a play session can run long enough for it to
-        // actually change. (Continued redraw while held is re-armed in
-        // main()'s loop, same reasoning as the scrolling title above.)
-        snprintf(chip, sizeof(chip), "Battery: %d%%",
-                 battery_getPercentage());
-        color = theme()->hint.color;
+        // SELECT held: show the theme's own battery gauge (icon + %),
+        // same as MainUI's own header — in the same top-right spot,
+        // whether or not a timer is running. Read live rather than a
+        // cached value, since a play session can run long enough for it
+        // to actually change. (Continued redraw while held is re-armed
+        // in main()'s loop, same reasoning as the scrolling title above.)
+        int pct = battery_isCharging() ? 500 : battery_getPercentage();
+        SDL_Surface *batt = theme_batterySurface(pct);
+        if (batt != NULL) {
+            SDL_Rect pos = {(int)(620.0 * g_scale) - batt->w,
+                            (int)(30.0 * g_scale) - batt->h / 2};
+            SDL_BlitSurface(batt, NULL, screen, &pos);
+            SDL_FreeSurface(batt);
+        }
+        return;
     }
-    else {
-        int mins = (remaining + 59) / 60;
-        snprintf(chip, sizeof(chip), "%d min", mins);
-        color = mins <= 5 ? accentColor() : theme()->hint.color;
-    }
+
+    int mins = (remaining + 59) / 60;
+    char chip[32];
+    snprintf(chip, sizeof(chip), "%d min", mins);
+    SDL_Color color = mins <= 5 ? accentColor() : theme()->hint.color;
     drawTextAlign(chip, (int)(620.0 * g_scale), (int)(30.0 * g_scale),
                   resource_getFont(HINT), color, 0, TEXT_RIGHT);
 }
