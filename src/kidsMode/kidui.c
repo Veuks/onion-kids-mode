@@ -109,6 +109,7 @@ static bool quit = false;
 static bool dirty = true; // set by any render function that needs to keep
                           // animating (e.g. a scrolling title) on the next
                           // loop tick, even with no new input
+static KeyState keystate[320] = {(KeyState)0};
 
 static JsonGameEntry games[MAX_GAMES];
 static int games_count = 0;
@@ -121,6 +122,8 @@ static int artwork_index = -1;
 // the end, pauses, scrolls back, pauses, repeats. Resets whenever the
 // selected game changes.
 static int marquee_for_index = -1;
+static SDL_Surface *marquee_surf = NULL; // cached — only re-rendered when
+                                         // marquee_for_index changes
 static float marquee_x = 0.0f;
 static int marquee_dir = 1; // +1 scrolling right-to-left, -1 scrolling back
 static uint32_t marquee_pause_until = 0;
@@ -511,12 +514,26 @@ static int readRemaining(void)
 // battery), switching to the accent color for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
-    if (remaining < 0)
+    bool select_held = keystate[SW_BTN_SELECT] != RELEASED;
+    if (remaining < 0 && !select_held)
         return;
-    int mins = (remaining + 59) / 60;
     char chip[32];
-    snprintf(chip, sizeof(chip), "%d min", mins);
-    SDL_Color color = mins <= 5 ? accentColor() : theme()->hint.color;
+    SDL_Color color;
+    if (select_held) {
+        // SELECT held: show battery %, in the same spot, whether or not a
+        // timer is running. Read live rather than the cached startup
+        // value, since a play session can run long enough for it to
+        // actually change. (Continued redraw while held is re-armed in
+        // main()'s loop, same reasoning as the scrolling title above.)
+        snprintf(chip, sizeof(chip), "Battery: %d%%",
+                 battery_getPercentage());
+        color = theme()->hint.color;
+    }
+    else {
+        int mins = (remaining + 59) / 60;
+        snprintf(chip, sizeof(chip), "%d min", mins);
+        color = mins <= 5 ? accentColor() : theme()->hint.color;
+    }
     drawTextAlign(chip, (int)(620.0 * g_scale), (int)(30.0 * g_scale),
                   resource_getFont(HINT), color, 0, TEXT_RIGHT);
 }
@@ -548,41 +565,48 @@ static void renderCarousel(int remaining)
     {
         int avail_w = g_display.width - (int)(90.0 * g_scale);
         int label_y = (int)(400.0 * g_scale);
-        SDL_Surface *label_surf =
-            TTF_RenderUTF8_Blended(font_gamelabel, games[current].label,
-                                   theme()->list.color);
 
-        if (label_surf == NULL) {
+        // Re-render the title only when the selection actually changes —
+        // TTF rendering is expensive, and doing it every single frame
+        // while scrolling (rather than once, then reusing the same
+        // surface) was the real cause of the choppy motion.
+        if (marquee_for_index != current) {
+            if (marquee_surf != NULL) {
+                SDL_FreeSurface(marquee_surf);
+                marquee_surf = NULL;
+            }
+            marquee_surf = TTF_RenderUTF8_Blended(
+                font_gamelabel, games[current].label, theme()->list.color);
+            marquee_for_index = current;
+            marquee_x = 0.0f;
+            marquee_dir = 1;
+            marquee_pause_until = SDL_GetTicks() + 900; // pause on the start
+            marquee_last_tick = SDL_GetTicks();
+        }
+
+        if (marquee_surf == NULL) {
             // Fall back to the plain (truncating) draw if rendering failed
             drawText(games[current].label, cx, label_y, font_gamelabel,
                      theme()->list.color, avail_w);
+            marquee_scrolling = false;
         }
-        else if (label_surf->w <= avail_w) {
+        else if (marquee_surf->w <= avail_w) {
             // Fits — draw centered as usual, no animation
-            SDL_Rect pos = {cx - label_surf->w / 2, label_y - label_surf->h / 2};
-            SDL_BlitSurface(label_surf, NULL, screen, &pos);
-            SDL_FreeSurface(label_surf);
-            marquee_for_index = -1;
+            SDL_Rect pos = {cx - marquee_surf->w / 2,
+                            label_y - marquee_surf->h / 2};
+            SDL_BlitSurface(marquee_surf, NULL, screen, &pos);
             marquee_scrolling = false;
         }
         else {
             // Doesn't fit — scroll it
             uint32_t now = SDL_GetTicks();
-            if (marquee_for_index != current) {
-                marquee_for_index = current;
-                marquee_x = 0.0f;
-                marquee_dir = 1;
-                marquee_pause_until = now + 900; // pause on the full start
-                marquee_last_tick = now;
-            }
-
-            float max_scroll = (float)(label_surf->w - avail_w);
+            float max_scroll = (float)(marquee_surf->w - avail_w);
             uint32_t elapsed = now - marquee_last_tick;
             marquee_last_tick = now;
 
             if (now >= marquee_pause_until) {
-                // ~45px/sec, independent of actual redraw rate
-                marquee_x += marquee_dir * (elapsed * 0.045f);
+                // ~70px/sec, independent of actual redraw rate
+                marquee_x += marquee_dir * (elapsed * 0.07f);
                 if (marquee_x >= max_scroll) {
                     marquee_x = max_scroll;
                     marquee_dir = -1;
@@ -595,10 +619,10 @@ static void renderCarousel(int remaining)
                 }
             }
 
-            SDL_Rect srcrect = {(int)marquee_x, 0, avail_w, label_surf->h};
-            SDL_Rect dstrect = {cx - avail_w / 2, label_y - label_surf->h / 2};
-            SDL_BlitSurface(label_surf, &srcrect, screen, &dstrect);
-            SDL_FreeSurface(label_surf);
+            SDL_Rect srcrect = {(int)marquee_x, 0, avail_w, marquee_surf->h};
+            SDL_Rect dstrect = {cx - avail_w / 2,
+                                label_y - marquee_surf->h / 2};
+            SDL_BlitSurface(marquee_surf, &srcrect, screen, &dstrect);
 
             dirty = true; // keep redrawing so the scroll keeps moving
             marquee_scrolling = true;
@@ -998,7 +1022,6 @@ int main(int argc, char *argv[])
     if (strlen(pin_title) == 0)
         strncpy(pin_title, "Enter PIN", STR_MAX - 1);
 
-    KeyState keystate[320] = {(KeyState)0};
     int exit_code = 1;
     dirty = true;
     uint32_t hold_started = 0;
@@ -1326,9 +1349,12 @@ int main(int argc, char *argv[])
             dirty = false;
         }
         // dirty=false above would otherwise cancel the animation request
-        // renderCarousel makes when a title needs to keep scrolling —
-        // re-arm it here, after that reset, so the next loop tick redraws.
-        if (marquee_scrolling &&
+        // renderCarousel makes when a title needs to keep scrolling, or
+        // the battery chip needs to keep checking whether SELECT is still
+        // held — re-arm it here, after that reset, so the next loop tick
+        // redraws.
+        if ((marquee_scrolling ||
+             keystate[SW_BTN_SELECT] != RELEASED) &&
             (active_screen == SCREEN_CAROUSEL ||
              active_screen == SCREEN_CONFIRM_RESTART))
             dirty = true;
