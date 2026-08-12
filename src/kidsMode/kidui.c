@@ -125,6 +125,8 @@ static float marquee_x = 0.0f;
 static int marquee_dir = 1; // +1 scrolling right-to-left, -1 scrolling back
 static uint32_t marquee_pause_until = 0;
 static uint32_t marquee_last_tick = 0;
+static bool marquee_scrolling = false; // true only while the current title
+                                       // actually needs to keep animating
 
 static int pin_digits[PIN_LEN] = {0, 0, 0, 0};
 static int pin_cursor = 0;
@@ -152,18 +154,6 @@ static uint32_t accentHex(void)
 {
     SDL_Color c = accentColor();
     return ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
-}
-
-// Some themes' accent color (used for the X badge fill) is itself light —
-// white text on it would be nearly invisible. Pick readable text against
-// whatever that color turns out to be, instead of assuming it's always
-// dark enough for white.
-static const SDL_Color COLOR_DARK = {20, 20, 20};
-
-static SDL_Color contrastColor(SDL_Color bg)
-{
-    double luminance = 0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b;
-    return luminance > 150.0 ? COLOR_DARK : COLOR_WHITE;
 }
 
 static int s_battery = -1;
@@ -573,6 +563,7 @@ static void renderCarousel(int remaining)
             SDL_BlitSurface(label_surf, NULL, screen, &pos);
             SDL_FreeSurface(label_surf);
             marquee_for_index = -1;
+            marquee_scrolling = false;
         }
         else {
             // Doesn't fit — scroll it
@@ -610,6 +601,7 @@ static void renderCarousel(int remaining)
             SDL_FreeSurface(label_surf);
 
             dirty = true; // keep redrawing so the scroll keeps moving
+            marquee_scrolling = true;
         }
     }
 
@@ -648,12 +640,21 @@ static void renderCarousel(int remaining)
         TTF_SizeUTF8(resource_getFont(HINT), "PLAY", &play_w, &play_h);
         offsetX += play_w + (int)(30.0 * g_scale);
 
-        int badge_r = (int)(14.0 * g_scale);
+        // Match the real A icon's size exactly rather than guessing —
+        // some themes' accent color (used for other UI bits like the
+        // 5-min warning) turns out to be white/near-white itself, so a
+        // fixed, deliberately saturated color is used here instead of
+        // relying on the theme.
+        int badge_r = button_a ? button_a->h / 2 : (int)(11.0 * g_scale);
+        // Sampled directly from this theme's icon-A-54.png / icon-B-54.png
+        // (both use the same purple) — matches the real button icons
+        // exactly rather than an unrelated guessed color.
+        const uint32_t BADGE_COLOR = 0x7247C2;
         int badge_cx = offsetX + badge_r;
         int badge_cy = (int)(450.0 * g_scale);
-        fillCircle(badge_cx, badge_cy, badge_r, accentHex());
+        fillCircle(badge_cx, badge_cy, badge_r, BADGE_COLOR);
         drawText("X", badge_cx, badge_cy, resource_getFont(HINT),
-                 contrastColor(accentColor()), 0);
+                 COLOR_WHITE, 0);
         drawTextAlign("RESTART", badge_cx + badge_r + 5 + (int)(5.0 * g_scale),
                       badge_cy, resource_getFont(HINT), theme()->hint.color,
                       0, TEXT_LEFT);
@@ -1324,6 +1325,13 @@ int main(int argc, char *argv[])
             flip();
             dirty = false;
         }
+        // dirty=false above would otherwise cancel the animation request
+        // renderCarousel makes when a title needs to keep scrolling —
+        // re-arm it here, after that reset, so the next loop tick redraws.
+        if (marquee_scrolling &&
+            (active_screen == SCREEN_CAROUSEL ||
+             active_screen == SCREEN_CONFIRM_RESTART))
+            dirty = true;
 
         msleep(10);
     }
