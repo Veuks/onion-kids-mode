@@ -128,6 +128,7 @@ static float marquee_x = 0.0f;
 static int marquee_dir = 1; // +1 scrolling right-to-left, -1 scrolling back
 static uint32_t marquee_pause_until = 0;
 static uint32_t marquee_last_tick = 0;
+static uint32_t marquee_next_frame = 0; // throttles redraw pacing (see below)
 static bool marquee_scrolling = false; // true only while the current title
                                        // actually needs to keep animating
 
@@ -520,15 +521,17 @@ static void renderTimeChip(int remaining)
 
     if (select_held) {
         // SELECT held: show the theme's own battery gauge (icon + %),
-        // same as MainUI's own header — in the same top-right spot,
-        // whether or not a timer is running. Read live rather than a
-        // cached value, since a play session can run long enough for it
-        // to actually change. (Continued redraw while held is re-armed
-        // in main()'s loop, same reasoning as the scrolling title above.)
+        // at the exact same coordinates Onion's own MainUI header uses
+        // (theme_renderHeaderBattery: centered at 596*scale, 30*scale) —
+        // not a guessed position — whether or not a timer is running.
+        // Read live rather than a cached value, since a play session can
+        // run long enough for it to actually change. (Continued redraw
+        // while held is re-armed in main()'s loop, same reasoning as the
+        // scrolling title above.)
         int pct = battery_isCharging() ? 500 : battery_getPercentage();
         SDL_Surface *batt = theme_batterySurface(pct);
         if (batt != NULL) {
-            SDL_Rect pos = {(int)(620.0 * g_scale) - batt->w,
+            SDL_Rect pos = {(int)(596.0 * g_scale) - batt->w / 2,
                             (int)(30.0 * g_scale) - batt->h / 2};
             SDL_BlitSurface(batt, NULL, screen, &pos);
             SDL_FreeSurface(batt);
@@ -604,25 +607,31 @@ static void renderCarousel(int remaining)
             marquee_scrolling = false;
         }
         else {
-            // Doesn't fit — scroll it
+            // Doesn't fit — scroll it, paced to a fixed ~30fps rather
+            // than attempting a full-screen redraw as fast as the input
+            // loop allows (~100/sec): a steady, moderate rate reads as
+            // smoother than a fast-but-uneven one on slower hardware,
+            // where a full carousel redraw's cost can vary tick to tick.
             uint32_t now = SDL_GetTicks();
-            float max_scroll = (float)(marquee_surf->w - avail_w);
-            uint32_t elapsed = now - marquee_last_tick;
-            marquee_last_tick = now;
-
-            if (now >= marquee_pause_until) {
-                // ~70px/sec, independent of actual redraw rate
-                marquee_x += marquee_dir * (elapsed * 0.07f);
-                if (marquee_x >= max_scroll) {
-                    marquee_x = max_scroll;
-                    marquee_dir = -1;
-                    marquee_pause_until = now + 900; // pause at the end
+            if (now >= marquee_next_frame) {
+                marquee_next_frame = now + 33;
+                float max_scroll = (float)(marquee_surf->w - avail_w);
+                if (now >= marquee_pause_until) {
+                    uint32_t elapsed = now - marquee_last_tick;
+                    // ~70px/sec, independent of actual redraw rate
+                    marquee_x += marquee_dir * (elapsed * 0.07f);
+                    if (marquee_x >= max_scroll) {
+                        marquee_x = max_scroll;
+                        marquee_dir = -1;
+                        marquee_pause_until = now + 900; // pause at the end
+                    }
+                    else if (marquee_x <= 0.0f) {
+                        marquee_x = 0.0f;
+                        marquee_dir = 1;
+                        marquee_pause_until = now + 900; // pause at start
+                    }
                 }
-                else if (marquee_x <= 0.0f) {
-                    marquee_x = 0.0f;
-                    marquee_dir = 1;
-                    marquee_pause_until = now + 900; // pause at the start
-                }
+                marquee_last_tick = now;
             }
 
             SDL_Rect srcrect = {(int)marquee_x, 0, avail_w, marquee_surf->h};
@@ -670,11 +679,9 @@ static void renderCarousel(int remaining)
         TTF_SizeUTF8(resource_getFont(HINT), "PLAY", &play_w, &play_h);
         offsetX += play_w + (int)(30.0 * g_scale);
 
-        // Match the real A icon's size exactly rather than guessing —
-        // some themes' accent color (used for other UI bits like the
-        // 5-min warning) turns out to be white/near-white itself, so a
-        // fixed, deliberately saturated color is used here instead of
-        // relying on the theme.
+        // Match the real A/B icon's size exactly — the circle itself was
+        // confirmed correctly sized; it was the "X" glyph inside that
+        // looked oversized (see below).
         int badge_r = button_a ? button_a->h / 2 : (int)(11.0 * g_scale);
         // Sampled directly from this theme's icon-A-54.png / icon-B-54.png
         // (both use the same purple) — matches the real button icons
@@ -683,11 +690,31 @@ static void renderCarousel(int remaining)
         int badge_cx = offsetX + badge_r;
         int badge_cy = (int)(450.0 * g_scale);
         fillCircle(badge_cx, badge_cy, badge_r, BADGE_COLOR);
-        drawText("X", badge_cx, badge_cy, resource_getFont(HINT),
-                 COLOR_WHITE, 0);
-        drawTextAlign("RESTART", badge_cx + badge_r + 5 + (int)(5.0 * g_scale),
-                      badge_cy, resource_getFont(HINT), theme()->hint.color,
-                      0, TEXT_LEFT);
+
+        // The baked-in "A"/"B" letters were clearly drawn smaller than a
+        // straight resource_getFont(HINT) render of "X" — render then
+        // shrink the glyph itself (not the circle) to roughly match.
+        SDL_Surface *x_glyph =
+            TTF_RenderUTF8_Blended(resource_getFont(HINT), "X", COLOR_WHITE);
+        if (x_glyph != NULL) {
+            SDL_Surface *x_small = scaleSurface(
+                x_glyph, (int)(x_glyph->w * 0.6 + 0.5),
+                (int)(x_glyph->h * 0.6 + 0.5));
+            SDL_FreeSurface(x_glyph);
+            if (x_small != NULL) {
+                SDL_Rect xpos = {badge_cx - x_small->w / 2,
+                                 badge_cy - x_small->h / 2};
+                SDL_BlitSurface(x_small, NULL, screen, &xpos);
+                SDL_FreeSurface(x_small);
+            }
+        }
+
+        // Same single unscaled +5px gap Onion's own footer uses between
+        // an icon and its label (was accidentally adding an extra scaled
+        // gap on top of that, throwing off the rhythm vs "A : PLAY").
+        drawTextAlign("RESTART", badge_cx + badge_r + 5, badge_cy,
+                      resource_getFont(HINT), theme()->hint.color, 0,
+                      TEXT_LEFT);
     }
     if (games_count > 1)
         theme_renderFooterStatus(screen, current + 1, games_count);
@@ -1358,8 +1385,12 @@ int main(int argc, char *argv[])
         // renderCarousel makes when a title needs to keep scrolling, or
         // the battery chip needs to keep checking whether SELECT is still
         // held — re-arm it here, after that reset, so the next loop tick
-        // redraws.
-        if ((marquee_scrolling ||
+        // redraws. The marquee's own redraw request is throttled to its
+        // ~30fps pace (marquee_next_frame) rather than every 10ms tick —
+        // a full carousel redraw is costly enough on this hardware that
+        // attempting it as fast as the input loop allows was itself the
+        // cause of uneven-looking motion, not just the position math.
+        if (((marquee_scrolling && SDL_GetTicks() >= marquee_next_frame) ||
              keystate[SW_BTN_SELECT] != RELEASED) &&
             (active_screen == SCREEN_CAROUSEL ||
              active_screen == SCREEN_CONFIRM_RESTART))
