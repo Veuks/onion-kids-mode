@@ -123,19 +123,13 @@ static SDL_Surface *icon_x = NULL; // optional theme icon-X-54.png, loaded
 static bool icon_x_checked = false;
 static int artwork_index = -1;
 
-// Marquee state for a game title too long to fit: scrolls left to reveal
-// the end, pauses, scrolls back, pauses, repeats. Resets whenever the
-// selected game changes.
-static int marquee_for_index = -1;
-static SDL_Surface *marquee_surf = NULL; // cached — only re-rendered when
-                                         // marquee_for_index changes
-static float marquee_x = 0.0f;
-static int marquee_dir = 1; // +1 scrolling right-to-left, -1 scrolling back
-static uint32_t marquee_pause_until = 0;
-static uint32_t marquee_last_tick = 0;
-static uint32_t marquee_next_frame = 0; // throttles redraw pacing (see below)
-static bool marquee_scrolling = false; // true only while the current title
-                                       // actually needs to keep animating
+// Cached title layout: a game title too long for one line is split into
+// two balanced lines instead (see splitTwoLines below). Recomputed only
+// when the selected game changes.
+static int title_for_index = -1;
+static bool title_two_lines = false;
+static char title_line1[STR_MAX] = "";
+static char title_line2[STR_MAX] = "";
 
 static int pin_digits[PIN_LEN] = {0, 0, 0, 0};
 static int pin_cursor = 0;
@@ -259,19 +253,15 @@ static SDL_Surface *scaleSurface(SDL_Surface *src, int dst_w, int dst_h)
     return dst;
 }
 
-// Optional icon-X-54.png in the active theme's skin/ folder (same location
-// and naming convention as Onion's own icon-A-54.png / icon-B-54.png —
-// see theme_getImagePath). No such asset ships with any theme by default
-// (Onion only defines BUTTON_A/BUTTON_B), so this is opt-in: a parent can
-// drop a matching icon-X-54.png into their theme to get a pixel-perfect,
-// properly anti-aliased match instead of the drawn circle fallback below.
-static SDL_Surface *loadThemeIconX(void)
+// icon-X-54.png ships inside the app itself (App/KidsMode/icon-X-54.png)
+// rather than living in the active theme's folder — no dependency on the
+// person having added anything to their theme, and the file travels with
+// the app on every install/update.
+#define ICON_X_PATH "/mnt/SDCARD/App/KidsMode/icon-X-54.png"
+
+static SDL_Surface *loadIconX(void)
 {
-    char path[512];
-    snprintf(path, sizeof(path), "%sskin/icon-X-54.png", theme()->path);
-    if (access(path, F_OK) != 0)
-        return NULL;
-    SDL_Surface *img = IMG_Load(path);
+    SDL_Surface *img = IMG_Load(ICON_X_PATH);
     if (img == NULL)
         return NULL;
     if (img->format->BitsPerPixel != 32) {
@@ -395,54 +385,55 @@ static void drawText(const char *text, int center_x, int center_y,
                   TEXT_CENTER);
 }
 
-// Onion's own dialog textbox (theme_textboxSurface) only splits on explicit
-// \n — it never breaks a single long line by width, it only shrinks the
-// font as a last resort if the whole block doesn't fit. For a long game
-// title, that means one giant unbroken line. This inserts \n at word
-// boundaries so the title itself wraps to fit max_width, the same way a
-// normal text box would.
-static void wordWrap(const char *text, TTF_Font *font, int max_width,
-                     char *out, size_t out_size)
+// Splits a too-long title into exactly two lines, breaking at whichever
+// space lands closest to balancing the two lines' rendered widths (not
+// just character count) — used by both the carousel and the "Start over?"
+// dialog so long titles wrap the same way in both places. Falls back to a
+// plain middle-of-string split if there's no space to break at (a single
+// very long word).
+static void splitTwoLines(const char *text, TTF_Font *font, char *out1,
+                          size_t out1_size, char *out2, size_t out2_size)
 {
-    out[0] = '\0';
-    char line[STR_MAX] = "";
-    char word[STR_MAX] = "";
-    size_t wi = 0;
     size_t len = strlen(text);
+    size_t best_split = 0;
+    int best_diff = -1;
+    bool found = false;
 
-    for (size_t i = 0; i <= len; i++) {
-        if (text[i] != ' ' && text[i] != '\0') {
-            if (wi < sizeof(word) - 1)
-                word[wi++] = text[i];
-            continue;
-        }
-        word[wi] = '\0';
-        wi = 0;
-        if (word[0] == '\0')
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] != ' ')
             continue;
 
-        char trial[STR_MAX];
-        if (line[0] == '\0')
-            snprintf(trial, sizeof(trial), "%s", word);
-        else
-            snprintf(trial, sizeof(trial), "%s %s", line, word);
+        char part1[STR_MAX], part2[STR_MAX];
+        size_t l1 = i < sizeof(part1) - 1 ? i : sizeof(part1) - 1;
+        memcpy(part1, text, l1);
+        part1[l1] = '\0';
+        snprintf(part2, sizeof(part2), "%s", text + i + 1);
 
-        int w = 0, h = 0;
-        TTF_SizeUTF8(font, trial, &w, &h);
-        if (w > max_width && line[0] != '\0') {
-            if (out[0] != '\0')
-                strncat(out, "\n", out_size - strlen(out) - 1);
-            strncat(out, line, out_size - strlen(out) - 1);
-            snprintf(line, sizeof(line), "%s", word);
-        }
-        else {
-            snprintf(line, sizeof(line), "%s", trial);
+        int w1 = 0, h1 = 0, w2 = 0, h2 = 0;
+        TTF_SizeUTF8(font, part1, &w1, &h1);
+        TTF_SizeUTF8(font, part2, &w2, &h2);
+        int diff = w1 > w2 ? w1 - w2 : w2 - w1;
+
+        if (!found || diff < best_diff) {
+            found = true;
+            best_diff = diff;
+            best_split = i;
         }
     }
-    if (line[0] != '\0') {
-        if (out[0] != '\0')
-            strncat(out, "\n", out_size - strlen(out) - 1);
-        strncat(out, line, out_size - strlen(out) - 1);
+
+    if (found) {
+        size_t l1 = best_split < out1_size - 1 ? best_split : out1_size - 1;
+        memcpy(out1, text, l1);
+        out1[l1] = '\0';
+        snprintf(out2, out2_size, "%s", text + best_split + 1);
+    }
+    else {
+        // No space anywhere (one long word) — split at the middle char
+        size_t mid = len / 2;
+        size_t l1 = mid < out1_size - 1 ? mid : out1_size - 1;
+        memcpy(out1, text, l1);
+        out1[l1] = '\0';
+        snprintf(out2, out2_size, "%s", text + mid);
     }
 }
 
@@ -508,20 +499,6 @@ static void fillRect(int x, int y, int w, int h, uint32_t color)
                             (color >> 8) & 0xFF, color & 0xFF));
 }
 
-// SDL 1.2 has no circle primitive, so we fake a small button-badge icon by
-// filling one horizontal scanline per row (cheap enough at this size to
-// call every frame; no external drawing library needed).
-static void fillCircle(int cx, int cy, int radius, uint32_t color)
-{
-    uint32_t mapped = SDL_MapRGB(screen->format, (color >> 16) & 0xFF,
-                                 (color >> 8) & 0xFF, color & 0xFF);
-    for (int dy = -radius; dy <= radius; dy++) {
-        int dx = (int)(sqrt((double)(radius * radius - dy * dy)) + 0.5);
-        SDL_Rect line = {cx - dx, cy + dy, dx * 2 + 1, 1};
-        SDL_FillRect(screen, &line, mapped);
-    }
-}
-
 // Active theme background, like every native Onion screen (guarded: a
 // broken theme must not crash the kid launcher)
 static void renderBase(void)
@@ -552,13 +529,14 @@ static int readRemaining(void)
 // battery), switching to the accent color for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
-    bool select_held = keystate[SW_BTN_SELECT] != RELEASED;
-    if (remaining < 0 && !select_held)
+    bool battery_peek = keystate[SW_BTN_Y] != RELEASED &&
+                        keystate[SW_BTN_B] != RELEASED;
+    if (remaining < 0 && !battery_peek)
         return;
 
-    if (select_held) {
-        // SELECT held: show the theme's own battery gauge (icon + %),
-        // at the exact same coordinates Onion's own MainUI header uses
+    if (battery_peek) {
+        // Y+B held: show the theme's own battery gauge (icon + %), at
+        // the exact same coordinates Onion's own MainUI header uses
         // (theme_renderHeaderBattery: centered at 596*scale, 30*scale) —
         // not a guessed position — whether or not a timer is running.
         // Read live rather than a cached value, since a play session can
@@ -605,83 +583,44 @@ static void renderCarousel(int remaining)
         drawText("?", cx, art_cy, font_bigvalue, theme()->hint.color, 0);
     }
 
-    // Game title in the theme's list font (big + bold). Long titles scroll
-    // (right-to-left, pause, back, pause, repeat) instead of being cut off
-    // with an ellipsis, so the full name stays readable.
+    // Game title in the theme's list font (big + bold). Short titles sit
+    // on the usual single line; a title too long to fit gets split into
+    // two balanced-width lines instead of scrolling or truncating — the
+    // second line stays right where the (single) line normally sits, and
+    // the first line is added just above it.
     {
         int avail_w = g_display.width - (int)(90.0 * g_scale);
-        int label_y = (int)(400.0 * g_scale);
+        int label_y = (int)(400.0 * g_scale); // unchanged anchor position
 
-        // Re-render the title only when the selection actually changes —
-        // TTF rendering is expensive, and doing it every single frame
-        // while scrolling (rather than once, then reusing the same
-        // surface) was the real cause of the choppy motion.
-        if (marquee_for_index != current) {
-            if (marquee_surf != NULL) {
-                SDL_FreeSurface(marquee_surf);
-                marquee_surf = NULL;
+        // Recompute only when the selection changes — TTF measuring/
+        // rendering isn't free, no need to redo it every frame.
+        if (title_for_index != current) {
+            title_for_index = current;
+            int w = 0, h = 0;
+            TTF_SizeUTF8(font_gamelabel, games[current].label, &w, &h);
+            if (w <= avail_w) {
+                title_two_lines = false;
+                snprintf(title_line1, sizeof(title_line1), "%s",
+                        games[current].label);
             }
-            marquee_surf = TTF_RenderUTF8_Blended(
-                font_gamelabel, games[current].label, theme()->list.color);
-            marquee_for_index = current;
-            marquee_x = 0.0f;
-            marquee_dir = 1;
-            marquee_pause_until = SDL_GetTicks() + 900; // pause on the start
-            marquee_last_tick = SDL_GetTicks();
+            else {
+                title_two_lines = true;
+                splitTwoLines(games[current].label, font_gamelabel,
+                             title_line1, sizeof(title_line1), title_line2,
+                             sizeof(title_line2));
+            }
         }
 
-        if (marquee_surf == NULL) {
-            // Fall back to the plain (truncating) draw if rendering failed
-            drawText(games[current].label, cx, label_y, font_gamelabel,
+        if (!title_two_lines) {
+            drawText(title_line1, cx, label_y, font_gamelabel,
                      theme()->list.color, avail_w);
-            marquee_scrolling = false;
-        }
-        else if (marquee_surf->w <= avail_w) {
-            // Fits — draw centered as usual, no animation
-            SDL_Rect pos = {cx - marquee_surf->w / 2,
-                            label_y - marquee_surf->h / 2};
-            SDL_BlitSurface(marquee_surf, NULL, screen, &pos);
-            marquee_scrolling = false;
         }
         else {
-            // Doesn't fit — scroll it, paced to a fixed ~30fps rather
-            // than attempting a full-screen redraw as fast as the input
-            // loop allows (~100/sec): a steady, moderate rate reads as
-            // smoother than a fast-but-uneven one on slower hardware,
-            // where a full carousel redraw's cost can vary tick to tick.
-            uint32_t now = SDL_GetTicks();
-            if (now >= marquee_next_frame) {
-                marquee_next_frame = now + 50; // ~20fps: more headroom, since
-                                               // Onion's own PLAY-label
-                                               // render (uncached, out of
-                                               // our control) adds cost
-                                               // to every redraw too
-                float max_scroll = (float)(marquee_surf->w - avail_w);
-                if (now >= marquee_pause_until) {
-                    uint32_t elapsed = now - marquee_last_tick;
-                    // ~70px/sec, independent of actual redraw rate
-                    marquee_x += marquee_dir * (elapsed * 0.07f);
-                    if (marquee_x >= max_scroll) {
-                        marquee_x = max_scroll;
-                        marquee_dir = -1;
-                        marquee_pause_until = now + 900; // pause at the end
-                    }
-                    else if (marquee_x <= 0.0f) {
-                        marquee_x = 0.0f;
-                        marquee_dir = 1;
-                        marquee_pause_until = now + 900; // pause at start
-                    }
-                }
-                marquee_last_tick = now;
-            }
-
-            SDL_Rect srcrect = {(int)marquee_x, 0, avail_w, marquee_surf->h};
-            SDL_Rect dstrect = {cx - avail_w / 2,
-                                label_y - marquee_surf->h / 2};
-            SDL_BlitSurface(marquee_surf, &srcrect, screen, &dstrect);
-
-            dirty = true; // keep redrawing so the scroll keeps moving
-            marquee_scrolling = true;
+            int line_h = TTF_FontLineSkip(font_gamelabel);
+            drawText(title_line1, cx, label_y - line_h, font_gamelabel,
+                     theme()->list.color, avail_w);
+            drawText(title_line2, cx, label_y, font_gamelabel,
+                     theme()->list.color, avail_w);
         }
     }
 
@@ -721,45 +660,18 @@ static void renderCarousel(int remaining)
         offsetX += play_w + (int)(30.0 * g_scale);
 
         if (!icon_x_checked) {
-            icon_x = loadThemeIconX();
+            icon_x = loadIconX();
             icon_x_checked = true;
         }
 
-        int badge_r = button_a ? button_a->h / 2 : (int)(11.0 * g_scale);
-        int badge_cx, badge_cy = (int)(450.0 * g_scale);
+        int badge_r = 0, badge_cx = offsetX;
+        int badge_cy = (int)(450.0 * g_scale);
 
         if (icon_x != NULL) {
-            // Real theme asset — pixel-perfect match to A/B, same as
-            // Onion's own icon rendering (no drawing/approximation).
-            badge_cx = offsetX + icon_x->w / 2;
+            badge_r = icon_x->w / 2;
+            badge_cx = offsetX + badge_r;
             SDL_Rect pos = {offsetX, badge_cy - icon_x->h / 2};
             SDL_BlitSurface(icon_x, NULL, screen, &pos);
-            badge_r = icon_x->w / 2;
-        }
-        else {
-            // Fallback: no icon-X-54.png in this theme yet — draw an
-            // approximation (same purple sampled from icon-A-54.png /
-            // icon-B-54.png, sized to match A/B, with a shrunk "X" glyph
-            // since a straight font render looked oversized next to the
-            // baked-in A/B letters).
-            const uint32_t BADGE_COLOR = 0x7247C2;
-            badge_cx = offsetX + badge_r;
-            fillCircle(badge_cx, badge_cy, badge_r, BADGE_COLOR);
-
-            SDL_Surface *x_glyph = TTF_RenderUTF8_Blended(
-                resource_getFont(HINT), "X", COLOR_WHITE);
-            if (x_glyph != NULL) {
-                SDL_Surface *x_small = scaleSurface(
-                    x_glyph, (int)(x_glyph->w * 0.6 + 0.5),
-                    (int)(x_glyph->h * 0.6 + 0.5));
-                SDL_FreeSurface(x_glyph);
-                if (x_small != NULL) {
-                    SDL_Rect xpos = {badge_cx - x_small->w / 2,
-                                     badge_cy - x_small->h / 2};
-                    SDL_BlitSurface(x_small, NULL, screen, &xpos);
-                    SDL_FreeSurface(x_small);
-                }
-            }
         }
 
         // Same single unscaled +5px gap Onion's own footer uses between
@@ -793,9 +705,19 @@ static void renderConfirmRestart(const char *label, int remaining)
     // Dialog pops over the carousel, exactly like Onion's own prompts
     renderCarousel(remaining);
 
+    TTF_Font *title_font = resource_getFont(TITLE);
+    int dialog_w = (int)(DIALOG_WIDTH * g_scale);
     char wrapped_label[STR_MAX];
-    wordWrap(label, resource_getFont(TITLE), (int)(DIALOG_WIDTH * g_scale),
-             wrapped_label, sizeof(wrapped_label));
+    int w = 0, h = 0;
+    TTF_SizeUTF8(title_font, label, &w, &h);
+    if (w <= dialog_w) {
+        snprintf(wrapped_label, sizeof(wrapped_label), "%s", label);
+    }
+    else {
+        char l1[STR_MAX], l2[STR_MAX];
+        splitTwoLines(label, title_font, l1, sizeof(l1), l2, sizeof(l2));
+        snprintf(wrapped_label, sizeof(wrapped_label), "%s\n%s", l1, l2);
+    }
 
     char message[STR_MAX];
     snprintf(message, sizeof(message),
@@ -1434,17 +1356,11 @@ int main(int argc, char *argv[])
             flip();
             dirty = false;
         }
-        // dirty=false above would otherwise cancel the animation request
-        // renderCarousel makes when a title needs to keep scrolling, or
-        // the battery chip needs to keep checking whether SELECT is still
-        // held — re-arm it here, after that reset, so the next loop tick
-        // redraws. The marquee's own redraw request is throttled to its
-        // ~30fps pace (marquee_next_frame) rather than every 10ms tick —
-        // a full carousel redraw is costly enough on this hardware that
-        // attempting it as fast as the input loop allows was itself the
-        // cause of uneven-looking motion, not just the position math.
-        if (((marquee_scrolling && SDL_GetTicks() >= marquee_next_frame) ||
-             keystate[SW_BTN_SELECT] != RELEASED) &&
+        // dirty=false above would otherwise cancel the battery chip's
+        // need to keep checking whether Y+B is still held — re-arm it
+        // here, after that reset, so the next loop tick redraws and the
+        // display swaps back the instant the combo is released.
+        if (keystate[SW_BTN_Y] != RELEASED && keystate[SW_BTN_B] != RELEASED &&
             (active_screen == SCREEN_CAROUSEL ||
              active_screen == SCREEN_CONFIRM_RESTART))
             dirty = true;
