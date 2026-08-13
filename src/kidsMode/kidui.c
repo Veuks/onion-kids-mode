@@ -116,6 +116,11 @@ static int games_count = 0;
 static int current = 0;
 
 static SDL_Surface *artwork = NULL;
+static SDL_Surface *icon_x = NULL; // optional theme icon-X-54.png, loaded
+                                   // once on first use; NULL if the theme
+                                   // doesn't have one (checked, not
+                                   // missing-file-error)
+static bool icon_x_checked = false;
 static int artwork_index = -1;
 
 // Marquee state for a game title too long to fit: scrolls left to reveal
@@ -252,6 +257,38 @@ static SDL_Surface *scaleSurface(SDL_Surface *src, int dst_w, int dst_h)
 
     SDL_FreeSurface(src32);
     return dst;
+}
+
+// Optional icon-X-54.png in the active theme's skin/ folder (same location
+// and naming convention as Onion's own icon-A-54.png / icon-B-54.png —
+// see theme_getImagePath). No such asset ships with any theme by default
+// (Onion only defines BUTTON_A/BUTTON_B), so this is opt-in: a parent can
+// drop a matching icon-X-54.png into their theme to get a pixel-perfect,
+// properly anti-aliased match instead of the drawn circle fallback below.
+static SDL_Surface *loadThemeIconX(void)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%sskin/icon-X-54.png", theme()->path);
+    if (access(path, F_OK) != 0)
+        return NULL;
+    SDL_Surface *img = IMG_Load(path);
+    if (img == NULL)
+        return NULL;
+    if (img->format->BitsPerPixel != 32) {
+        SDL_Surface *converted = SDL_CreateRGBSurface(
+            SDL_SWSURFACE, img->w, img->h, 32, 0x000000ff, 0x0000ff00,
+            0x00ff0000, 0xff000000);
+        SDL_BlitSurface(img, NULL, converted, NULL);
+        SDL_FreeSurface(img);
+        img = converted;
+    }
+    if (g_scale != 1.0) {
+        SDL_Surface *scaled = scaleSurface(
+            img, (int)(img->w * g_scale + 0.5), (int)(img->h * g_scale + 0.5));
+        SDL_FreeSurface(img);
+        img = scaled;
+    }
+    return img;
 }
 
 // Results go through a file: stdout is unreliable on-device (SDL/driver
@@ -614,7 +651,11 @@ static void renderCarousel(int remaining)
             // where a full carousel redraw's cost can vary tick to tick.
             uint32_t now = SDL_GetTicks();
             if (now >= marquee_next_frame) {
-                marquee_next_frame = now + 33;
+                marquee_next_frame = now + 50; // ~20fps: more headroom, since
+                                               // Onion's own PLAY-label
+                                               // render (uncached, out of
+                                               // our control) adds cost
+                                               // to every redraw too
                 float max_scroll = (float)(marquee_surf->w - avail_w);
                 if (now >= marquee_pause_until) {
                     uint32_t elapsed = now - marquee_last_tick;
@@ -679,33 +720,45 @@ static void renderCarousel(int remaining)
         TTF_SizeUTF8(resource_getFont(HINT), "PLAY", &play_w, &play_h);
         offsetX += play_w + (int)(30.0 * g_scale);
 
-        // Match the real A/B icon's size exactly — the circle itself was
-        // confirmed correctly sized; it was the "X" glyph inside that
-        // looked oversized (see below).
-        int badge_r = button_a ? button_a->h / 2 : (int)(11.0 * g_scale);
-        // Sampled directly from this theme's icon-A-54.png / icon-B-54.png
-        // (both use the same purple) — matches the real button icons
-        // exactly rather than an unrelated guessed color.
-        const uint32_t BADGE_COLOR = 0x7247C2;
-        int badge_cx = offsetX + badge_r;
-        int badge_cy = (int)(450.0 * g_scale);
-        fillCircle(badge_cx, badge_cy, badge_r, BADGE_COLOR);
+        if (!icon_x_checked) {
+            icon_x = loadThemeIconX();
+            icon_x_checked = true;
+        }
 
-        // The baked-in "A"/"B" letters were clearly drawn smaller than a
-        // straight resource_getFont(HINT) render of "X" — render then
-        // shrink the glyph itself (not the circle) to roughly match.
-        SDL_Surface *x_glyph =
-            TTF_RenderUTF8_Blended(resource_getFont(HINT), "X", COLOR_WHITE);
-        if (x_glyph != NULL) {
-            SDL_Surface *x_small = scaleSurface(
-                x_glyph, (int)(x_glyph->w * 0.6 + 0.5),
-                (int)(x_glyph->h * 0.6 + 0.5));
-            SDL_FreeSurface(x_glyph);
-            if (x_small != NULL) {
-                SDL_Rect xpos = {badge_cx - x_small->w / 2,
-                                 badge_cy - x_small->h / 2};
-                SDL_BlitSurface(x_small, NULL, screen, &xpos);
-                SDL_FreeSurface(x_small);
+        int badge_r = button_a ? button_a->h / 2 : (int)(11.0 * g_scale);
+        int badge_cx, badge_cy = (int)(450.0 * g_scale);
+
+        if (icon_x != NULL) {
+            // Real theme asset — pixel-perfect match to A/B, same as
+            // Onion's own icon rendering (no drawing/approximation).
+            badge_cx = offsetX + icon_x->w / 2;
+            SDL_Rect pos = {offsetX, badge_cy - icon_x->h / 2};
+            SDL_BlitSurface(icon_x, NULL, screen, &pos);
+            badge_r = icon_x->w / 2;
+        }
+        else {
+            // Fallback: no icon-X-54.png in this theme yet — draw an
+            // approximation (same purple sampled from icon-A-54.png /
+            // icon-B-54.png, sized to match A/B, with a shrunk "X" glyph
+            // since a straight font render looked oversized next to the
+            // baked-in A/B letters).
+            const uint32_t BADGE_COLOR = 0x7247C2;
+            badge_cx = offsetX + badge_r;
+            fillCircle(badge_cx, badge_cy, badge_r, BADGE_COLOR);
+
+            SDL_Surface *x_glyph = TTF_RenderUTF8_Blended(
+                resource_getFont(HINT), "X", COLOR_WHITE);
+            if (x_glyph != NULL) {
+                SDL_Surface *x_small = scaleSurface(
+                    x_glyph, (int)(x_glyph->w * 0.6 + 0.5),
+                    (int)(x_glyph->h * 0.6 + 0.5));
+                SDL_FreeSurface(x_glyph);
+                if (x_small != NULL) {
+                    SDL_Rect xpos = {badge_cx - x_small->w / 2,
+                                     badge_cy - x_small->h / 2};
+                    SDL_BlitSurface(x_small, NULL, screen, &xpos);
+                    SDL_FreeSurface(x_small);
+                }
             }
         }
 
