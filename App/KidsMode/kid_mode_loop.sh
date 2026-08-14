@@ -244,14 +244,6 @@ ensure_pin() {
 # change cores, shaders, mappings, etc. Restored from backup on unlock.
 # (Approach borrowed from OnionUI PR #1910.)
 
-ra_set() {
-    if grep -q "^[[:space:]]*$1[[:space:]]*=" "$racfg" 2> /dev/null; then
-        sed -i "s|^[[:space:]]*$1[[:space:]]*=.*|$1 = \"$2\"|" "$racfg"
-    else
-        printf '%s = "%s"\n' "$1" "$2" >> "$racfg"
-    fi
-}
-
 apply_ra_lock() {
     [ -f "$racfg" ] || return 0
     mkdir -p "$backupdir"
@@ -259,84 +251,103 @@ apply_ra_lock() {
         cp "$racfg" "$rabackup"
     fi
 
-    ra_set kiosk_mode_enable true
-    # Timer countdown arrives via RetroArch's OSD (SHOW_MSG); make sure
-    # on-screen notifications are enabled while armed
-    ra_set video_font_enable true
-    ra_set quick_menu_show_options false
-    ra_set quick_menu_show_cheats false
-    ra_set quick_menu_show_shaders false
-    ra_set quick_menu_show_start_recording false
-    ra_set quick_menu_show_start_streaming false
-    for section in configuration core directory drivers file_browser input \
-        latency network recording user user_interface video audio; do
-        ra_set "settings_show_$section" false
-    done
+    # Every setting below used to go through ra_set (one grep + one sed —
+    # a full read+rewrite of retroarch.cfg — per call). With ~70 settings
+    # that was up to 140 full passes over the file, adding a multi-second
+    # stall between confirming the timer and reaching the carousel. This
+    # applies all of them in a single awk pass instead: one read, one
+    # write, regardless of how many settings there are.
+    #
+    #   kiosk_mode_enable true — locks down the in-game quick menu
+    #   video_font_enable true — timer countdown arrives via RA's OSD
+    #     (SHOW_MSG), so on-screen notifications must stay on
+    #   quick_menu_show_* false — hide options/cheats/shaders/record/stream
+    #     from the (already locked-down) quick menu
+    #   settings_show_* false — hide every settings category
+    #   input_*_btn nul — every documented RetroArch hotkey action,
+    #     disabled. MENU is input_enable_hotkey_btn, held with another
+    #     button: this covers MENU+SELECT (open RA's menu), MENU+L2/R2
+    #     (save/load state), MENU+L/R (rewind/fast-forward), MENU+LEFT/
+    #     RIGHT (save-slot change), MENU+START (fullscreen), and every
+    #     other hotkey RetroArch documents — even ones not expected by
+    #     default, so nothing is left reachable via MENU+<button>. The
+    #     individual actions are cleared rather than input_enable_hotkey_btn
+    #     itself, because unbinding the enable button would make each of
+    #     these fire on a single un-combo'd press instead. MENU+VOLUME for
+    #     brightness is handled outside RetroArch (by the system's button
+    #     daemon) and is unaffected by any of this.
+    ra_keys="kiosk_mode_enable video_font_enable quick_menu_show_options
+        quick_menu_show_cheats quick_menu_show_shaders
+        quick_menu_show_start_recording quick_menu_show_start_streaming
+        settings_show_configuration settings_show_core
+        settings_show_directory settings_show_drivers
+        settings_show_file_browser settings_show_input
+        settings_show_latency settings_show_network settings_show_recording
+        settings_show_user settings_show_user_interface settings_show_video
+        settings_show_audio input_menu_toggle_btn input_save_state_btn
+        input_load_state_btn input_rewind_btn input_toggle_fast_forward_btn
+        input_hold_fast_forward_btn input_state_slot_increase_btn
+        input_state_slot_decrease_btn input_toggle_fullscreen_btn
+        input_shader_toggle_btn input_shader_next_btn input_shader_prev_btn
+        input_reset_btn input_screenshot_btn input_pause_toggle_btn
+        input_frame_advance_btn input_cheat_toggle_btn
+        input_movie_record_toggle_btn input_recording_toggle_btn
+        input_streaming_toggle_btn input_netplay_game_watch_btn
+        input_ai_service_btn input_audio_mute_btn
+        input_cheat_index_minus_btn input_cheat_index_plus_btn
+        input_close_content_btn input_desktop_menu_toggle_btn
+        input_disk_eject_toggle_btn input_disk_next_btn input_disk_prev_btn
+        input_exit_emulator_btn input_fps_toggle_btn
+        input_game_focus_toggle_btn input_grab_mouse_toggle_btn
+        input_hold_slowmotion_btn input_osk_toggle_btn
+        input_overlay_next_btn input_preempt_toggle_btn
+        input_runahead_toggle_btn input_send_debug_info_btn
+        input_toggle_slowmotion_btn input_toggle_statistics_btn
+        input_toggle_vrr_runloop_btn input_volume_up_btn
+        input_volume_down_btn input_netplay_fade_chat_toggle_btn
+        input_netplay_host_toggle_btn input_netplay_ping_toggle_btn
+        input_netplay_player_chat_btn"
 
-    # Disable every in-game MENU-button hotkey combo (MENU is
-    # input_enable_hotkey_btn, held together with another button): this
-    # blocks MENU+SELECT (open RetroArch's own menu), MENU+L2/R2 (save/load
-    # state), MENU+L/R (rewind/fast-forward), MENU+LEFT/RIGHT (save-slot
-    # change), MENU+START (fullscreen toggle) and shader/reset/screenshot
-    # hotkeys. We clear the individual action bindings rather than
-    # input_enable_hotkey_btn itself, because unbinding the enable button
-    # would make each of these fire on a single un-combo'd press instead.
-    # MENU+VOLUME UP/DOWN for brightness is handled outside RetroArch (by
-    # the system's button daemon) and is unaffected by this.
-    ra_set input_menu_toggle_btn nul
-    ra_set input_save_state_btn nul
-    ra_set input_load_state_btn nul
-    ra_set input_rewind_btn nul
-    ra_set input_toggle_fast_forward_btn nul
-    ra_set input_hold_fast_forward_btn nul
-    ra_set input_state_slot_increase_btn nul
-    ra_set input_state_slot_decrease_btn nul
-    ra_set input_toggle_fullscreen_btn nul
-    ra_set input_shader_toggle_btn nul
-    ra_set input_shader_next_btn nul
-    ra_set input_shader_prev_btn nul
-    ra_set input_reset_btn nul
-    ra_set input_screenshot_btn nul
-    ra_set input_pause_toggle_btn nul
-    ra_set input_frame_advance_btn nul
-    ra_set input_cheat_toggle_btn nul
-    ra_set input_movie_record_toggle_btn nul
-    ra_set input_recording_toggle_btn nul
-    ra_set input_streaming_toggle_btn nul
-    ra_set input_netplay_game_watch_btn nul
-    # The rest of RetroArch's documented hotkey actions, nulled out for
-    # completeness so nothing on this device's actual config is left
-    # reachable via MENU+<button>, even ones not expected by default.
-    ra_set input_ai_service_btn nul
-    ra_set input_audio_mute_btn nul
-    ra_set input_cheat_index_minus_btn nul
-    ra_set input_cheat_index_plus_btn nul
-    ra_set input_close_content_btn nul
-    ra_set input_desktop_menu_toggle_btn nul
-    ra_set input_disk_eject_toggle_btn nul
-    ra_set input_disk_next_btn nul
-    ra_set input_disk_prev_btn nul
-    ra_set input_exit_emulator_btn nul
-    ra_set input_fps_toggle_btn nul
-    ra_set input_game_focus_toggle_btn nul
-    ra_set input_grab_mouse_toggle_btn nul
-    ra_set input_hold_slowmotion_btn nul
-    ra_set input_osk_toggle_btn nul
-    ra_set input_overlay_next_btn nul
-    ra_set input_preempt_toggle_btn nul
-    ra_set input_runahead_toggle_btn nul
-    ra_set input_send_debug_info_btn nul
-    ra_set input_toggle_slowmotion_btn nul
-    ra_set input_toggle_statistics_btn nul
-    ra_set input_toggle_vrr_runloop_btn nul
-    ra_set input_volume_up_btn nul
-    ra_set input_volume_down_btn nul
-    ra_set input_netplay_fade_chat_toggle_btn nul
-    ra_set input_netplay_host_toggle_btn nul
-    ra_set input_netplay_ping_toggle_btn nul
-    ra_set input_netplay_player_chat_btn nul
+    tmpra=/tmp/kidmode_ra.$$
+    awkprog=/tmp/kidmode_ra_awk.$$
+    {
+        echo 'BEGIN {'
+        i=0
+        for k in $ra_keys; do
+            i=$((i + 1))
+            case "$k" in
+                kiosk_mode_enable | video_font_enable) v=true ;;
+                quick_menu_show_* | settings_show_*) v=false ;;
+                *) v=nul ;;
+            esac
+            printf '  key[%d]="%s"; val[%d]="%s";\n' "$i" "$k" "$i" "$v"
+        done
+        echo "  n=$i"
+        echo '}'
+        cat << 'AWKEOF'
+{
+    matched = 0
+    for (i = 1; i <= n; i++) {
+        if (!done[i] && $0 ~ ("^[ \t]*" key[i] "[ \t]*=")) {
+            print key[i] " = \"" val[i] "\""
+            done[i] = 1
+            matched = 1
+            break
+        }
+    }
+    if (!matched) print $0
+}
+END {
+    for (i = 1; i <= n; i++)
+        if (!done[i]) print key[i] " = \"" val[i] "\""
+}
+AWKEOF
+    } > "$awkprog"
+
+    awk -f "$awkprog" "$racfg" > "$tmpra" && mv -f "$tmpra" "$racfg"
+    rm -f "$awkprog"
     sync
-    log "RetroArch kiosk lock applied (in-game hotkeys disabled)."
+    log "RetroArch kiosk lock applied (in-game hotkeys disabled), single pass."
 }
 
 restore_ra_lock() {
