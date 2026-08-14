@@ -92,7 +92,9 @@ typedef enum { SCREEN_CAROUSEL,
 #define MENU_UNLOCK 0
 #define MENU_ADDTIME 1
 #define MENU_NOTIMER 2
-#define MENU_BACK 3
+#define MENU_AUTORESUME 3
+#define MENU_BACK 4
+#define AUTORESUME_RESULT_FILE "/tmp/kidmode_autoresume_result"
 #define TIMER_STEP 5
 #define TIMER_MAX 120
 
@@ -740,6 +742,20 @@ static void renderTimesUp(void)
     theme_renderFooter(screen);
 }
 
+// Called automatically (by list_keyLeft/list_keyRight/list_activateItem)
+// the instant the toggle's value changes — written immediately rather
+// than only on some specific exit path, so it's picked up correctly
+// whether the parent leaves via Back, B, or any other menu action.
+static void onAutoresumeToggle(void *self)
+{
+    ListItem *item = (ListItem *)self;
+    FILE *fp = fopen(AUTORESUME_RESULT_FILE, "w");
+    if (fp != NULL) {
+        fprintf(fp, "%d\n", item->value);
+        fclose(fp);
+    }
+}
+
 static void formatAddMinutes(void *self, char *out_label)
 {
     ListItem *item = (ListItem *)self;
@@ -919,6 +935,7 @@ int main(int argc, char *argv[])
     bool start_on_pin = false;
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
+    int menu_autoresume = 0;
     char pin_title[STR_MAX] = "";
     char select_rompath[STR_MAX] = "";
 
@@ -939,6 +956,8 @@ int main(int argc, char *argv[])
             menu_timer_minutes = atoi(argv[++i]);
         else if (strcmp(argv[i], "--remaining") == 0 && i + 1 < argc)
             menu_remaining = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--autoresume") == 0 && i + 1 < argc)
+            menu_autoresume = atoi(argv[++i]);
         else if (strcmp(argv[i], "--select") == 0 && i + 1 < argc)
             strncpy(select_rompath, argv[++i], STR_MAX - 1);
         else if ((strcmp(argv[i], "-t") == 0 ||
@@ -976,7 +995,7 @@ int main(int argc, char *argv[])
     int remaining = -1;
 
     // Parent menu list (native Onion list component)
-    List menu_list = list_create(4, LIST_SMALL);
+    List menu_list = list_create(5, LIST_SMALL);
     list_addItem(&menu_list,
                  (ListItem){.label = "Exit Kids Mode", .item_type = ACTION});
     list_addItem(&menu_list, (ListItem){.label = "Add play time",
@@ -989,6 +1008,10 @@ int main(int argc, char *argv[])
     list_addItem(&menu_list, (ListItem){.label = "Turn off timer",
                                         .item_type = ACTION,
                                         .disabled = menu_remaining < 0});
+    list_addItem(&menu_list, (ListItem){.label = "Auto-resume last game",
+                                        .item_type = TOGGLE,
+                                        .value = menu_autoresume ? 1 : 0,
+                                        .action = onAutoresumeToggle});
     list_addItem(&menu_list,
                  (ListItem){.label = "Back", .item_type = ACTION});
 
@@ -1173,6 +1196,13 @@ int main(int argc, char *argv[])
                         writeResult("MENU", "NOTIMER", NULL);
                         exit_code = 5;
                         quit = true;
+                    }
+                    else if (menu_list.active_pos == MENU_AUTORESUME) {
+                        // Flip in place and keep the menu open, same as
+                        // Onion's own Tweaks toggles — no need to leave
+                        // the menu just to change one setting.
+                        list_activateItem(&menu_list);
+                        dirty = true;
                     }
                     else {
                         exit_code = 1;
