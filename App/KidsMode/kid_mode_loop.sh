@@ -54,6 +54,7 @@ ticker_pid_file=/tmp/kidmode_ticker.pid
 # kidui reports results via this file, NOT stdout — the device's SDL/driver
 # stack prints noise on stdout, which broke first-line parsing on hardware.
 uiresult=/tmp/kidmode_ui_result
+autoresume_result=/tmp/kidmode_autoresume_result
 uilog=/tmp/kidmode_ui_log
 
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
@@ -964,10 +965,32 @@ pick_session_timer() {
 
 parent_menu() {
     while :; do
-        rm -f "$uiresult"
+        rm -f "$uiresult" "$autoresume_result"
+        ar_val=0
+        [ "$(config_get auto_resume_last_game)" = "true" ] && ar_val=1
         "$kidui_bin" --parent-menu \
-            --remaining "$(timer_remaining)" > "$uilog" 2>&1
+            --remaining "$(timer_remaining)" \
+            --autoresume "$ar_val" > "$uilog" 2>&1
         menu_rc=$?
+
+        # The toggle is written the instant the parent flips it (not
+        # deferred to some specific exit action), so sync it into
+        # kidmode.json regardless of how the menu was left — Back, B, or
+        # any other action below.
+        if [ -f "$autoresume_result" ]; then
+            new_ar_val="$(sed -n 1p "$autoresume_result")"
+            rm -f "$autoresume_result"
+            case "$new_ar_val" in
+                1)
+                    config_merge '.auto_resume_last_game = true'
+                    log "Auto-resume last game turned ON from the parent menu."
+                    ;;
+                0)
+                    config_merge '.auto_resume_last_game = false'
+                    log "Auto-resume last game turned OFF from the parent menu."
+                    ;;
+            esac
+        fi
 
         if [ "$menu_rc" -ne 5 ] || [ "$(sed -n 1p "$uiresult")" != "MENU" ]; then
             rm -f "$uiresult"
