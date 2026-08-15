@@ -40,6 +40,9 @@ keymapbackup="$backupdir/keymap.json.backup"
 keymapnone="$backupdir/keymap-was-absent"
 blfscript=/mnt/SDCARD/.tmp_update/script/blue_light.sh
 blfbackup="$backupdir/blue_light.sh.backup"
+current_profile=/mnt/SDCARD/Saves/CurrentProfile
+kids_profile=/mnt/SDCARD/Saves/KidsProfile
+isolated_subdirs="saves states romScreens"
 last_game_file="$backupdir/last_game.txt"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidmode.log
 
@@ -346,7 +349,6 @@ AWKEOF
 
     awk -f "$awkprog" "$racfg" > "$tmpra" && mv -f "$tmpra" "$racfg"
     rm -f "$awkprog"
-    sync
     log "RetroArch kiosk lock applied (in-game hotkeys disabled), single pass."
 }
 
@@ -354,12 +356,10 @@ restore_ra_lock() {
     if [ -f "$rabackup" ]; then
         cp "$rabackup" "$racfg"
         rm -f "$rabackup"
-        sync
         log "RetroArch config restored."
     elif [ -f "$legacy_rabackup" ]; then
         cp "$legacy_rabackup" "$racfg"
         rm -f "$legacy_rabackup"
-        sync
         log "RetroArch config restored (legacy backup)."
     fi
 }
@@ -390,7 +390,6 @@ apply_blf_lock() {
         } > "$tmpblf"
         mv -f "$tmpblf" "$blfscript"
         chmod +x "$blfscript" 2> /dev/null
-        sync
         log "MENU+B blue-light toggle disabled while armed."
     fi
 }
@@ -400,7 +399,6 @@ restore_blf_lock() {
         cp "$blfbackup" "$blfscript"
         rm -f "$blfbackup"
         chmod +x "$blfscript" 2> /dev/null
-        sync
         log "blue_light.sh restored."
     fi
 }
@@ -427,14 +425,10 @@ restore_blf_lock() {
 # know which) is parked untouched in between. A plain directory rename
 # can't partially fail or leave mismatched data the way editing files in
 # place could.
-current_profile=/mnt/SDCARD/Saves/CurrentProfile
-kids_profile=/mnt/SDCARD/Saves/KidsProfile
-isolated_subdirs="saves states romScreens"
-
 apply_profile_isolation() {
     mkdir -p "$kids_profile" "$current_profile" "$backupdir"
     for d in $isolated_subdirs; do
-        rm -rf "$backupdir/profile-parked-$d"
+        rm -rf "${backupdir:?}/profile-parked-$d"
         if [ -d "$current_profile/$d" ]; then
             mv "$current_profile/$d" "$backupdir/profile-parked-$d"
         fi
@@ -444,14 +438,13 @@ apply_profile_isolation() {
             mkdir -p "$current_profile/$d"
         fi
     done
-    sync
     log "Switched to the kid's own saves/states/thumbnails for this session."
 }
 
 restore_profile_isolation() {
     mkdir -p "$kids_profile"
     for d in $isolated_subdirs; do
-        rm -rf "$kids_profile/$d"
+        rm -rf "${kids_profile:?}/$d"
         if [ -d "$current_profile/$d" ]; then
             mv "$current_profile/$d" "$kids_profile/$d" # keep kid's progress for next time
         fi
@@ -459,7 +452,6 @@ restore_profile_isolation() {
             mv "$backupdir/profile-parked-$d" "$current_profile/$d"
         fi
     done
-    sync
     log "Restored the previous saves/states/thumbnails."
 }
 
@@ -525,7 +517,6 @@ get_timer_minutes() {
     esac
 }
 
-state_day() { sed -n 1p "$timer_state" 2> /dev/null; }
 state_used() {
     v="$(sed -n 2p "$timer_state" 2> /dev/null)"
     case "$v" in '' | *[!0-9]*) echo 0 ;; *) echo "$v" ;; esac
@@ -626,7 +617,6 @@ save_quit_game() {
 }
 
 ticker_loop() {
-    prev_rem=999999
     while [ -f "$flagfile" ]; do
         sleep 10
         [ -f "$flagfile" ] || break
@@ -635,7 +625,6 @@ ticker_loop() {
         budget=$(($(get_timer_minutes) * 60 + $(state_bonus)))
         if [ "$budget" -le 0 ]; then
             rm -f "$remaining_file"
-            prev_rem=999999
             continue
         fi
 
@@ -680,7 +669,6 @@ ticker_loop() {
             game_seen=0
             last_notified_min=""
         fi
-        prev_rem=$rem
     done
     rm -f "$remaining_file"
 }
@@ -912,7 +900,6 @@ repair_favourites() {
     if grep -q '}{' "$favfile"; then
         awk '{gsub(/\}\{/, "}\n{"); print}' "$favfile" > "$favfile.tmp" &&
             mv -f "$favfile.tmp" "$favfile"
-        sync
         log "Repaired glued lines in favourite.json."
     fi
 }
@@ -926,7 +913,6 @@ ensure_fav_shortcut() {
         if grep -qF "/App/KidsMode/launch.sh" "$favfile" 2> /dev/null; then
             grep -vF "/App/KidsMode/launch.sh" "$favfile" > "$favfile.tmp" &&
                 mv -f "$favfile.tmp" "$favfile"
-            sync
             log "Removed Kid Mode shortcut from favorites."
         fi
         return 0
@@ -938,7 +924,6 @@ ensure_fav_shortcut() {
             echo >> "$favfile"
         fi
         printf '%s\n' "$fav_entry" >> "$favfile"
-        sync
         log "Added Kid Mode shortcut to favorites."
     fi
 }
