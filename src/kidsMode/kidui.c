@@ -51,7 +51,6 @@
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
 #include <SDL/SDL_ttf.h>
-#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -1226,7 +1225,7 @@ int main(int argc, char *argv[])
                         list_activateItem(&menu_list);
                         dirty = true;
                     }
-                    else {
+                    else if (menu_list.active_pos == MENU_BACK) {
                         exit_code = 1;
                         quit = true;
                     }
@@ -1422,6 +1421,8 @@ int main(int argc, char *argv[])
 
     if (artwork != NULL)
         SDL_FreeSurface(artwork);
+    if (icon_x != NULL)
+        SDL_FreeSurface(icon_x);
     if (font_gamelabel != NULL)
         TTF_CloseFont(font_gamelabel);
     if (font_bigvalue != NULL)
