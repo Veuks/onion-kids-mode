@@ -141,6 +141,39 @@ static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
 static TTF_Font *font_bigvalue = NULL;  // theme title font, large
 static TTF_Font *font_info = NULL;      // theme list font, sentence-sized
 
+// Fonts are loaded lazily (on first actual use) rather than all three
+// unconditionally at startup: each screen (PIN, timer picker, menu,
+// carousel...) only needs one or two of them, and every kidui invocation
+// is a separate process — loading all three every single time, even for
+// screens that use none of them, was pure waste that added up across the
+// several process launches a single arm sequence goes through.
+static TTF_Font *getFontGameLabel(void)
+{
+    if (font_gamelabel == NULL) {
+        font_gamelabel = theme_loadFont(theme()->path, theme()->list.font,
+                                        GAME_LABEL_FONT_SIZE);
+        if (font_gamelabel != NULL)
+            TTF_SetFontStyle(font_gamelabel, TTF_STYLE_BOLD);
+    }
+    return font_gamelabel;
+}
+
+static TTF_Font *getFontBigValue(void)
+{
+    if (font_bigvalue == NULL)
+        font_bigvalue = theme_loadFont(theme()->path, theme()->title.font,
+                                       BIG_VALUE_FONT_SIZE);
+    return font_bigvalue;
+}
+
+static TTF_Font *getFontInfo(void)
+{
+    if (font_info == NULL)
+        font_info =
+            theme_loadFont(theme()->path, theme()->list.font, INFO_FONT_SIZE);
+    return font_info;
+}
+
 // Solid panels drawn over the theme background (PIN boxes, art fallback).
 // Fixed dark slate so white text stays readable on any theme.
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
@@ -582,7 +615,7 @@ static void renderCarousel(int remaining)
         int tile_h = (int)(g_display.height * 0.5);
         fillRect(cx - tile_w / 2, art_cy - tile_h / 2, tile_w, tile_h,
                  PIN_BOX_COLOR);
-        drawText("?", cx, art_cy, font_bigvalue, theme()->hint.color, 0);
+        drawText("?", cx, art_cy, getFontBigValue(), theme()->hint.color, 0);
     }
 
     // Game title in the theme's list font (big + bold). Short titles sit
@@ -599,7 +632,7 @@ static void renderCarousel(int remaining)
         if (title_for_index != current) {
             title_for_index = current;
             int w = 0, h = 0;
-            TTF_SizeUTF8(font_gamelabel, games[current].label, &w, &h);
+            TTF_SizeUTF8(getFontGameLabel(), games[current].label, &w, &h);
             if (w <= avail_w) {
                 title_two_lines = false;
                 snprintf(title_line1, sizeof(title_line1), "%s",
@@ -607,21 +640,21 @@ static void renderCarousel(int remaining)
             }
             else {
                 title_two_lines = true;
-                splitTwoLines(games[current].label, font_gamelabel,
+                splitTwoLines(games[current].label, getFontGameLabel(),
                              title_line1, sizeof(title_line1), title_line2,
                              sizeof(title_line2));
             }
         }
 
         if (!title_two_lines) {
-            drawText(title_line1, cx, label_y, font_gamelabel,
+            drawText(title_line1, cx, label_y, getFontGameLabel(),
                      theme()->list.color, avail_w);
         }
         else {
-            int line_h = TTF_FontLineSkip(font_gamelabel);
-            drawText(title_line1, cx, label_y - line_h, font_gamelabel,
+            int line_h = TTF_FontLineSkip(getFontGameLabel());
+            drawText(title_line1, cx, label_y - line_h, getFontGameLabel(),
                      theme()->list.color, avail_w);
-            drawText(title_line2, cx, label_y, font_gamelabel,
+            drawText(title_line2, cx, label_y, getFontGameLabel(),
                      theme()->list.color, avail_w);
         }
     }
@@ -695,9 +728,9 @@ static void renderEmpty(void)
     theme_renderHeader(screen, "Kids Mode", false);
     int cx = g_display.width / 2;
     drawText("No games yet!", cx, (int)(g_display.height * 0.42),
-             font_bigvalue, theme()->list.color, g_display.width - 40);
+             getFontBigValue(), theme()->list.color, g_display.width - 40);
     drawText("Ask a grown-up to add favorites", cx,
-             (int)(g_display.height * 0.58), font_info,
+             (int)(g_display.height * 0.58), getFontInfo(),
              theme()->list.color, g_display.width - 40);
     theme_renderFooter(screen);
 }
@@ -735,9 +768,9 @@ static void renderTimesUp(void)
 
     int cx = g_display.width / 2;
     drawText("Great playing!", cx, (int)(g_display.height * 0.4),
-             font_bigvalue, accentColor(), g_display.width - 40);
+             getFontBigValue(), accentColor(), g_display.width - 40);
     drawText("See you next time.", cx, (int)(g_display.height * 0.55),
-             font_info, theme()->list.color, g_display.width - 40);
+             getFontInfo(), theme()->list.color, g_display.width - 40);
 
     theme_renderFooter(screen);
 }
@@ -816,10 +849,10 @@ static void renderPin(const char *title, bool show_intro)
 
     if (show_intro) {
         drawText("Kids Mode shows only your favorited games,", cx,
-                 (int)(88.0 * g_scale), font_info, theme()->hint.color,
+                 (int)(88.0 * g_scale), getFontInfo(), theme()->hint.color,
                  g_display.width - 40);
         drawText("with a play timer and kid-simple controls.", cx,
-                 (int)(114.0 * g_scale), font_info, theme()->hint.color,
+                 (int)(114.0 * g_scale), getFontInfo(), theme()->hint.color,
                  g_display.width - 40);
     }
 
@@ -840,21 +873,21 @@ static void renderPin(const char *title, bool show_intro)
             snprintf(digit, sizeof(digit), "%d", pin_digits[i]);
         else
             snprintf(digit, sizeof(digit), "*");
-        drawText(digit, x + box_w / 2, box_cy, font_bigvalue,
+        drawText(digit, x + box_w / 2, box_cy, getFontBigValue(),
                  i == pin_cursor ? accentColor() : COLOR_WHITE, 0);
     }
 
     if (strlen(pin_notice) > 0)
-        drawText(pin_notice, cx, (int)(g_display.height * 0.585), font_info,
+        drawText(pin_notice, cx, (int)(g_display.height * 0.585), getFontInfo(),
                  accentColor(), g_display.width - 40);
 
     drawText("UP / DOWN changes - LEFT / RIGHT moves", cx,
-             (int)(g_display.height * 0.645), font_info, theme()->hint.color,
+             (int)(g_display.height * 0.645), getFontInfo(), theme()->hint.color,
              g_display.width - 40);
 
     if (show_intro)
         drawText("Hold SELECT+START in Kids Mode for the parent menu", cx,
-                 (int)(g_display.height * 0.725), font_info,
+                 (int)(g_display.height * 0.725), getFontInfo(),
                  theme()->hint.color, g_display.width - 30);
 
     theme_renderFooter(screen);
@@ -886,7 +919,7 @@ static void renderPickTimer(const char *title, int minutes, bool no_off)
         snprintf(value, sizeof(value), "%d min", minutes);
     else
         snprintf(value, sizeof(value), "OFF");
-    drawText(value, cx, value_cy, font_bigvalue, accentColor(), 0);
+    drawText(value, cx, value_cy, getFontBigValue(), accentColor(), 0);
 
     SDL_Surface *arrow_left = resource_getSurface(LEFT_ARROW);
     SDL_Surface *arrow_right = resource_getSurface(RIGHT_ARROW);
@@ -903,7 +936,7 @@ static void renderPickTimer(const char *title, int minutes, bool no_off)
 
     drawText(no_off ? "How much play time to add?"
                     : "Play time for this session",
-             cx, (int)(g_display.height * 0.62), font_info,
+             cx, (int)(g_display.height * 0.62), getFontInfo(),
              theme()->list.color, g_display.width - 40);
 
     theme_renderFooter(screen);
@@ -979,17 +1012,6 @@ int main(int argc, char *argv[])
 
     if (!SDL_InitDefault())
         return 1;
-
-    // Theme fonts: header/list/hint come straight from the active theme via
-    // resource_getFont; these two are the same families at kid-friendly sizes
-    font_gamelabel =
-        theme_loadFont(theme()->path, theme()->list.font, GAME_LABEL_FONT_SIZE);
-    if (font_gamelabel != NULL)
-        TTF_SetFontStyle(font_gamelabel, TTF_STYLE_BOLD);
-    font_bigvalue =
-        theme_loadFont(theme()->path, theme()->title.font, BIG_VALUE_FONT_SIZE);
-    font_info = theme_loadFont(theme()->path, theme()->list.font,
-                               INFO_FONT_SIZE);
 
     Screen active_screen = SCREEN_CAROUSEL;
     int remaining = -1;
