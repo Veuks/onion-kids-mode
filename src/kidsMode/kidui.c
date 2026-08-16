@@ -617,14 +617,15 @@ static void renderCarousel(int remaining)
         drawText("?", cx, art_cy, getFontBigValue(), theme()->hint.color, 0);
     }
 
-    // Game title in the theme's list font (big + bold). Short titles sit
-    // on the usual single line; a title too long to fit gets split into
-    // two balanced-width lines instead of scrolling or truncating — the
-    // second line stays right where the (single) line normally sits, and
-    // the first line is added just above it.
+    // Game title in the theme's list font (big + bold). Short titles now
+    // sit on the top line instead of the bottom one; a title too long to
+    // fit still splits into two balanced-width lines (top + bottom,
+    // unchanged) instead of scrolling or truncating.
     {
         int avail_w = g_display.width - (int)(90.0 * g_scale);
-        int label_y = (int)(400.0 * g_scale); // unchanged anchor position
+        int bottom_y = (int)(400.0 * g_scale);
+        int line_h = TTF_FontLineSkip(getFontGameLabel());
+        int top_y = bottom_y - line_h;
 
         // Recompute only when the selection changes — TTF measuring/
         // rendering isn't free, no need to redo it every frame.
@@ -646,14 +647,13 @@ static void renderCarousel(int remaining)
         }
 
         if (!title_two_lines) {
-            drawText(title_line1, cx, label_y, getFontGameLabel(),
+            drawText(title_line1, cx, top_y, getFontGameLabel(),
                      theme()->list.color, avail_w);
         }
         else {
-            int line_h = TTF_FontLineSkip(getFontGameLabel());
-            drawText(title_line1, cx, label_y - line_h, getFontGameLabel(),
+            drawText(title_line1, cx, top_y, getFontGameLabel(),
                      theme()->list.color, avail_w);
-            drawText(title_line2, cx, label_y, getFontGameLabel(),
+            drawText(title_line2, cx, bottom_y, getFontGameLabel(),
                      theme()->list.color, avail_w);
         }
     }
