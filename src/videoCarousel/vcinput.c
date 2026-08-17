@@ -17,6 +17,9 @@ static bool paused;
 static bool menu_down;
 static bool menu_used;
 static Uint32 menu_pressed_at;
+static SDLKey seek_input = SDLK_UNKNOWN;
+static Uint32 seek_started_at;
+static Uint32 seek_last_step;
 static bool clock_ready;
 static Uint32 clock_tick;
 static Uint32 last_save;
@@ -97,6 +100,37 @@ static void key(SDL_Event *event, SDLKey sym, Uint8 state)
     event->key.keysym.sym = sym;
 }
 
+static bool progressive_seek(SDL_Event *event, Uint32 now)
+{
+    if (seek_input != SDLK_LEFT && seek_input != SDLK_RIGHT)
+        return false;
+    if (seek_last_step != 0 && now - seek_last_step < 450)
+        return false;
+
+    Uint32 held = now - seek_started_at;
+    SDLKey out;
+    long step;
+    if (held < 1500) {
+        out = seek_input == SDLK_LEFT ? SDLK_LEFT : SDLK_RIGHT;
+        step = 10;
+    } else if (held < 3500) {
+        out = seek_input == SDLK_LEFT ? SDLK_DOWN : SDLK_UP;
+        step = 60;
+    } else {
+        out = seek_input == SDLK_LEFT ? SDLK_LALT : SDLK_LSHIFT;
+        step = 600;
+    }
+
+    position_seconds += seek_input == SDLK_LEFT ? -step : step;
+    if (position_seconds < 0)
+        position_seconds = 0;
+    save_position();
+    save_checkpoint();
+    seek_last_step = now;
+    key(event, out, SDL_PRESSED);
+    return true;
+}
+
 static bool map_event(SDL_Event *event)
 {
     if (event->type != SDL_KEYDOWN && event->type != SDL_KEYUP)
@@ -112,6 +146,7 @@ static bool map_event(SDL_Event *event)
             return true;
         }
         menu_down = false;
+        seek_input = SDLK_UNKNOWN;
         Uint32 held_ms = SDL_GetTicks() - menu_pressed_at;
         if (!menu_used && held_ms < 500)
         {
@@ -126,18 +161,32 @@ static bool map_event(SDL_Event *event)
         return false;
     }
 
+    if (menu_down && (in == SDLK_LEFT || in == SDLK_RIGHT)) {
+        menu_used = true;
+        if (state == SDL_RELEASED) {
+            if (seek_input == in)
+                seek_input = SDLK_UNKNOWN;
+            return true;
+        }
+        Uint32 now = SDL_GetTicks();
+        if (seek_input != in) {
+            seek_input = in;
+            seek_started_at = now;
+            seek_last_step = 0;
+        }
+        if (progressive_seek(event, now))
+            return false;
+        return true;
+    }
+
     if (menu_down && state == SDL_PRESSED) {
         SDLKey out = SDLK_UNKNOWN;
         // Any key used while MENU is held makes this a combination, even
         // when FFplay does not need the key (notably hardware volume keys).
         menu_used = true;
-        if (in == SDLK_LEFT) out = SDLK_DOWN;       /* -60 s */
-        if (in == SDLK_RIGHT) out = SDLK_UP;        /* +60 s */
         if (in == SDLK_UP) out = SDLK_LSHIFT;       /* native X: +600 s */
         if (in == SDLK_DOWN) out = SDLK_LALT;        /* native Y: -600 s */
         if (out != SDLK_UNKNOWN) {
-            if (in == SDLK_LEFT) position_seconds -= 60;
-            if (in == SDLK_RIGHT) position_seconds += 60;
             if (in == SDLK_UP) position_seconds += 600;
             if (in == SDLK_DOWN) position_seconds -= 600;
             if (position_seconds < 0) position_seconds = 0;
@@ -221,5 +270,8 @@ int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
             kept++;
         }
     }
+    if (action == SDL_GETEVENT && kept < numevents &&
+        progressive_seek(&events[kept], SDL_GetTicks()))
+        kept++;
     return kept;
 }

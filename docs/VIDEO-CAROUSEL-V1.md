@@ -26,7 +26,8 @@ Player:
 
 - A: play/resume
 - B: pause
-- MENU + LEFT/RIGHT: seek -/+ 1 minute
+- MENU + LEFT/RIGHT: progressive rewind/fast-forward (10 seconds,
+  then 1 minute, then 10 minutes while held)
 - MENU + UP/DOWN: seek +10/-10 minutes
 - MENU alone: save progress and return to the carousel
 - every other key: ignored
