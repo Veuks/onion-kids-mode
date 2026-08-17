@@ -2,6 +2,8 @@
 appdir=/mnt/SDCARD/App/VideoCarousel
 result=/tmp/videocarousel_ui_result
 
+mkdir -p /mnt/SDCARD/Media/Videos/Imgs
+
 rm -f "$result"
 "$appdir/bin/videoui" --pick-timer -t "Video play timer" >/tmp/videocarousel_ui.log 2>&1
 if [ $? -eq 5 ] && [ "$(sed -n 1p "$result")" = TIMER ]; then

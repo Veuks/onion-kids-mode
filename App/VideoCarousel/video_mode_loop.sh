@@ -9,15 +9,85 @@ player_pid=/tmp/videocarousel_player.pid
 ffplay=/mnt/SDCARD/.tmp_update/bin/ffplay
 sysdir=/mnt/SDCARD/.tmp_update
 miyoodir=/mnt/SDCARD/miyoo
+pinconfig=/mnt/SDCARD/App/KidsMode/kidmode.json
+pinbackup=/mnt/SDCARD/Saves/kidmode/pin_backup.json
 
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
 
-mkdir -p "$savedir" "$positions"
+mkdir -p "$savedir" "$positions" /mnt/SDCARD/Media/Videos/Imgs
 [ -x "$ffplay" ] || ffplay="$(command -v ffplay)"
 
 json_get() {
     jq -r "$1 // empty" "$state" 2>/dev/null
+}
+
+hash_string() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        printf '%s' "$1" | openssl dgst -sha256 2>/dev/null | awk '{print $NF}'
+    else
+        return 1
+    fi
+}
+
+verify_parent_pin() {
+    entered="$1"
+    pinsource="$pinconfig"
+    [ -f "$pinsource" ] || pinsource="$pinbackup"
+    [ -f "$pinsource" ] || return 1
+    plain="$(jq -r '.pin_plain // ""' "$pinsource" 2>/dev/null)"
+    [ -n "$plain" ] && [ "$entered" = "$plain" ] && return 0
+    stored_hash="$(jq -r '.pin_hash // ""' "$pinsource" 2>/dev/null)"
+    salt="$(jq -r '.pin_salt // ""' "$pinsource" 2>/dev/null)"
+    [ -n "$stored_hash" ] || return 1
+    entered_hash="$(hash_string "${salt}${entered}" 2>/dev/null)"
+    [ -n "$entered_hash" ] && [ "$entered_hash" = "$stored_hash" ]
+}
+
+stop_ticker() {
+    [ -n "$ticker" ] && kill "$ticker" 2>/dev/null
+    ticker=""
+}
+
+set_timer_seconds() {
+    seconds="$1"
+    stop_ticker
+    if [ "$seconds" -lt 0 ]; then
+        printf '0\n' > "$savedir/timer_minutes"
+        rm -f "$savedir/timer_end" "$remaining"
+        return
+    fi
+    end=$(( $(date +%s) + seconds ))
+    printf '1\n' > "$savedir/timer_minutes"
+    printf '%s\n' "$end" > "$savedir/timer_end"
+    start_timer run
+}
+
+show_parent_menu() {
+    current_remaining="$(cat "$remaining" 2>/dev/null)"
+    case "$current_remaining" in ''|*[!0-9]*) current_remaining=-1 ;; esac
+    rm -f "$result"
+    "$appdir/bin/videoui" --parent-menu --remaining "$current_remaining" \
+        >/tmp/videocarousel_ui.log 2>&1
+    [ "$(sed -n 1p "$result")" = MENU ] || return
+    choice="$(sed -n 2p "$result")"
+    case "$choice" in
+        UNLOCK)
+            save_state carousel "$last"
+            rm -f /mnt/SDCARD/.videocarousel
+            ;;
+        ADDTIME)
+            add_minutes="$(sed -n 3p "$result")"
+            case "$add_minutes" in ''|*[!0-9]*) add_minutes=5 ;; esac
+            [ "$current_remaining" -lt 0 ] && current_remaining=0
+            set_timer_seconds $((current_remaining + add_minutes * 60))
+            ;;
+        NOTIMER)
+            set_timer_seconds -1
+            ;;
+    esac
 }
 
 save_state() {
@@ -121,13 +191,20 @@ play_video() {
 
 start_timer "$1"
 last="$(json_get '.last_video')"
+pin_notice=""
 if [ "$1" = run ] && [ "$(json_get '.active_mode')" = running ] && [ -n "$last" ]; then
     play_video "$last" no
 fi
 
 while [ -f /mnt/SDCARD/.videocarousel ]; do
     rm -f "$result"
-    if [ -n "$last" ]; then
+    if [ -n "$pin_notice" ] && [ -n "$last" ]; then
+        "$appdir/bin/videoui" --select "$last" --start-pin \
+            --notice "$pin_notice" >/tmp/videocarousel_ui.log 2>&1
+    elif [ -n "$pin_notice" ]; then
+        "$appdir/bin/videoui" --start-pin --notice "$pin_notice" \
+            >/tmp/videocarousel_ui.log 2>&1
+    elif [ -n "$last" ]; then
         "$appdir/bin/videoui" --select "$last" >/tmp/videocarousel_ui.log 2>&1
     else
         "$appdir/bin/videoui" >/tmp/videocarousel_ui.log 2>&1
@@ -137,12 +214,15 @@ while [ -f /mnt/SDCARD/.videocarousel ]; do
     case "$action" in
         PLAY) last="$video"; play_video "$video" no ;;
         RESTART) last="$video"; play_video "$video" yes ;;
-        POWEROFF) poweroff ;;
-        EXIT)
-            save_state carousel "$last"
-            rm -f /mnt/SDCARD/.videocarousel
-            break
+        PIN)
+            if verify_parent_pin "$video"; then
+                pin_notice=""
+                show_parent_menu
+            else
+                pin_notice="Wrong PIN - try again"
+            fi
             ;;
+        POWEROFF) poweroff ;;
         *) break ;;
     esac
 done

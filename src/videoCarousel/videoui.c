@@ -94,9 +94,7 @@ typedef enum { SCREEN_CAROUSEL,
 #define MENU_UNLOCK 0
 #define MENU_ADDTIME 1
 #define MENU_NOTIMER 2
-#define MENU_AUTORESUME 3
-#define MENU_BACK 4
-#define AUTORESUME_RESULT_FILE "/tmp/kidmode_autoresume_result"
+#define MENU_BACK 3
 #define TIMER_STEP 5
 #define TIMER_MAX 120
 
@@ -793,20 +791,6 @@ static void renderTimesUp(void)
     theme_renderFooter(screen);
 }
 
-// Called automatically (by list_keyLeft/list_keyRight/list_activateItem)
-// the instant the toggle's value changes — written immediately rather
-// than only on some specific exit path, so it's picked up correctly
-// whether the parent leaves via Back, B, or any other menu action.
-static void onAutoresumeToggle(void *self)
-{
-    ListItem *item = (ListItem *)self;
-    FILE *fp = fopen(AUTORESUME_RESULT_FILE, "w");
-    if (fp != NULL) {
-        fprintf(fp, "%d\n", item->value);
-        fclose(fp);
-    }
-}
-
 static void formatAddMinutes(void *self, char *out_label)
 {
     ListItem *item = (ListItem *)self;
@@ -819,7 +803,7 @@ static void formatAddMinutes(void *self, char *out_label)
 static void renderMenu(List *list, int remaining)
 {
     renderBase();
-    theme_renderHeader(screen, "Kids Mode - Parent Menu", false);
+    theme_renderHeader(screen, "Videos - Parent Menu", false);
     theme_renderHeaderBattery(screen, batteryPercentage());
     theme_renderList(screen, list);
 
@@ -986,7 +970,6 @@ int main(int argc, char *argv[])
     bool start_on_pin = false;
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
-    int menu_autoresume = 0;
     char pin_title[STR_MAX] = "";
     char select_rompath[STR_MAX] = "";
 
@@ -1007,8 +990,6 @@ int main(int argc, char *argv[])
             menu_timer_minutes = atoi(argv[++i]);
         else if (strcmp(argv[i], "--remaining") == 0 && i + 1 < argc)
             menu_remaining = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--autoresume") == 0 && i + 1 < argc)
-            menu_autoresume = atoi(argv[++i]);
         else if (strcmp(argv[i], "--select") == 0 && i + 1 < argc)
             strncpy(select_rompath, argv[++i], STR_MAX - 1);
         else if ((strcmp(argv[i], "-t") == 0 ||
@@ -1035,9 +1016,9 @@ int main(int argc, char *argv[])
     int remaining = -1;
 
     // Parent menu list (native Onion list component)
-    List menu_list = list_create(5, LIST_SMALL);
+    List menu_list = list_create(4, LIST_SMALL);
     list_addItem(&menu_list,
-                 (ListItem){.label = "Exit Kids Mode", .item_type = ACTION});
+                 (ListItem){.label = "Exit Video Carousel", .item_type = ACTION});
     list_addItem(&menu_list, (ListItem){.label = "Add play time",
                                         .item_type = MULTIVALUE,
                                         .value_min = 1,
@@ -1048,10 +1029,6 @@ int main(int argc, char *argv[])
     list_addItem(&menu_list, (ListItem){.label = "Turn off timer",
                                         .item_type = ACTION,
                                         .disabled = menu_remaining < 0});
-    list_addItem(&menu_list, (ListItem){.label = "Auto-resume last game",
-                                        .item_type = TOGGLE,
-                                        .value = menu_autoresume ? 1 : 0,
-                                        .action = onAutoresumeToggle});
     list_addItem(&menu_list,
                  (ListItem){.label = "Back", .item_type = ACTION});
 
@@ -1105,8 +1082,8 @@ int main(int argc, char *argv[])
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
 
-        if (updateKeystate(keystate, &quit, true, &changed_key) &&
-            keystate[changed_key] == PRESSED) {
+        bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
+        if (key_changed && keystate[changed_key] == PRESSED) {
             pin_last_input = ticks;
 
             if (active_screen == SCREEN_CAROUSEL && games_count > 0) {
@@ -1131,9 +1108,8 @@ int main(int argc, char *argv[])
                     dirty = true;
                     break;
                 case SW_BTN_MENU:
-                    writeResult("EXIT", NULL, NULL);
-                    exit_code = 0;
-                    quit = true;
+                    // Carousel: MENU is intentionally ignored. Parent exit
+                    // is only SELECT+START -> PIN -> parent menu.
                     break;
                 default:
                     // Everything else is a no-op: no dead-ends for the kid
@@ -1240,13 +1216,6 @@ int main(int argc, char *argv[])
                         exit_code = 5;
                         quit = true;
                     }
-                    else if (menu_list.active_pos == MENU_AUTORESUME) {
-                        // Flip in place and keep the menu open, same as
-                        // Onion's own Tweaks toggles — no need to leave
-                        // the menu just to change one setting.
-                        list_activateItem(&menu_list);
-                        dirty = true;
-                    }
                     else if (menu_list.active_pos == MENU_BACK) {
                         exit_code = 1;
                         quit = true;
@@ -1314,7 +1283,7 @@ int main(int argc, char *argv[])
         }
 
         // SELECT+START held: parent unlock gesture (any kid-facing screen)
-        if (false && !set_pin_mode && !menu_mode && !pick_timer_mode &&
+        if (!set_pin_mode && !menu_mode && !pick_timer_mode &&
             active_screen != SCREEN_PIN) {
             bool combo_held = keystate[SW_BTN_SELECT] != RELEASED &&
                               keystate[SW_BTN_START] != RELEASED;

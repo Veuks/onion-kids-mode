@@ -16,6 +16,7 @@ static bool inside_event_call;
 static bool paused;
 static bool menu_down;
 static bool menu_used;
+static Uint32 menu_pressed_at;
 static bool clock_ready;
 static Uint32 clock_tick;
 static Uint32 last_save;
@@ -84,10 +85,12 @@ static bool map_event(SDL_Event *event)
         if (state == SDL_PRESSED) {
             menu_down = true;
             menu_used = false;
+            menu_pressed_at = SDL_GetTicks();
             return true;
         }
         menu_down = false;
-        if (!menu_used)
+        Uint32 held_ms = SDL_GetTicks() - menu_pressed_at;
+        if (!menu_used && held_ms < 500)
         {
             save_position();
             key(event, SDLK_q, SDL_PRESSED);
@@ -99,12 +102,14 @@ static bool map_event(SDL_Event *event)
 
     if (menu_down && state == SDL_PRESSED) {
         SDLKey out = SDLK_UNKNOWN;
+        // Any key used while MENU is held makes this a combination, even
+        // when FFplay does not need the key (notably hardware volume keys).
+        menu_used = true;
         if (in == SDLK_LEFT) out = SDLK_DOWN;       /* -60 s */
         if (in == SDLK_RIGHT) out = SDLK_UP;        /* +60 s */
         if (in == SDLK_UP) out = SDLK_LSHIFT;       /* native X: +600 s */
         if (in == SDLK_DOWN) out = SDLK_LALT;        /* native Y: -600 s */
         if (out != SDLK_UNKNOWN) {
-            menu_used = true;
             if (in == SDLK_LEFT) position_seconds -= 60;
             if (in == SDLK_RIGHT) position_seconds += 60;
             if (in == SDLK_UP) position_seconds += 600;
