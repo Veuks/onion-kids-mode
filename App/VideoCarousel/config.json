@@ -1,0 +1,7 @@
+{
+    "label": "Video Carousel",
+    "icon": "../../Icons/Default/app/guest_on.png",
+    "iconsel": "",
+    "launch": "launch.sh",
+    "description": "Kid-friendly video carousel"
+}
