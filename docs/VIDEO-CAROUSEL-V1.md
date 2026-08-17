@@ -1,6 +1,7 @@
-# VideoCarousel V1
+# VideoKidsMode V1
 
-VideoCarousel is a standalone Onion app. It deliberately does not change
+VideoKidsMode is a standalone Onion app. Its internal folder remains named
+`VideoCarousel` for update compatibility. It deliberately does not change
 `App/KidsMode` or `src/kidsMode`.
 
 ## Media layout
@@ -44,8 +45,8 @@ the last checkpoint. The timer deadline is also preserved across reboot.
 ## Build and install
 
 Run the repository's `Build` GitHub Actions workflow. Download its
-`KidsMode-app` artifact and copy `VideoCarousel` into the SD card's `App`
-folder. Tagged builds also attach `VideoCarousel-V1.zip` to the release.
+`VideoKidsMode-app` artifact and copy `VideoCarousel` into the SD card's
+`App` folder. Tagged builds also attach `VideoKidsMode-V1.zip` to the release.
 
 The app expects Onion's FFplay at `.tmp_update/bin/ffplay`; if that path is
 not present it falls back to the first `ffplay` found in `PATH`.

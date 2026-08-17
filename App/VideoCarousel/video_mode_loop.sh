@@ -6,6 +6,7 @@ positions="$savedir/positions"
 remaining=/tmp/videocarousel_remaining
 result=/tmp/videocarousel_ui_result
 player_pid=/tmp/videocarousel_player.pid
+menu_exit_marker=/tmp/videocarousel_menu_exit
 ffplay=/mnt/SDCARD/.tmp_update/bin/ffplay
 sysdir=/mnt/SDCARD/.tmp_update
 miyoodir=/mnt/SDCARD/miyoo
@@ -171,6 +172,7 @@ play_video() {
     [ "$fresh" = yes ] && printf '0\n' > "$posfile"
     save_state running "$video"
     hide_ffplay_state
+    rm -f "$menu_exit_marker"
     echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
     touch /tmp/stay_awake
     cd "$sysdir" || return
@@ -180,13 +182,28 @@ play_video() {
     pid=$!
     printf '%s\n' "$pid" > "$player_pid"
     wait "$pid"
+    player_status=$?
     rm -f /tmp/stay_awake
     # Delete the temporary resume state produced by this playback, then put
     # back the standard FFplay app's own state exactly as it was.
     find /mnt/SDCARD/App/FFplay "$sysdir" -name pos.cfg -exec rm -f {} \; 2>/dev/null
     restore_ffplay_state
     rm -f "$player_pid"
-    save_state carousel "$video"
+    timer_left="$(cat "$remaining" 2>/dev/null)"
+    case "$timer_left" in ''|*[!0-9]*) timer_left=-1 ;; esac
+    if [ -f "$menu_exit_marker" ] || [ "$player_status" -eq 0 ] || \
+       [ "$timer_left" -eq 0 ]; then
+        rm -f "$menu_exit_marker"
+        save_state carousel "$video"
+        return 0
+    fi
+
+    # FFplay was terminated externally while time remained: this is the
+    # console shutdown path. Keep active_mode=running for boot resume and do
+    # not redraw the carousel while the shutdown screen is taking over.
+    sync
+    sleep 5
+    return 2
 }
 
 start_timer "$1"
@@ -194,6 +211,7 @@ last="$(json_get '.last_video')"
 pin_notice=""
 if [ "$1" = run ] && [ "$(json_get '.active_mode')" = running ] && [ -n "$last" ]; then
     play_video "$last" no
+    [ $? -eq 2 ] && exit 0
 fi
 
 while [ -f /mnt/SDCARD/.videocarousel ]; do
@@ -212,8 +230,16 @@ while [ -f /mnt/SDCARD/.videocarousel ]; do
     action="$(sed -n 1p "$result")"
     video="$(sed -n 2p "$result")"
     case "$action" in
-        PLAY) last="$video"; play_video "$video" no ;;
-        RESTART) last="$video"; play_video "$video" yes ;;
+        PLAY)
+            last="$video"
+            play_video "$video" no
+            [ $? -eq 2 ] && break
+            ;;
+        RESTART)
+            last="$video"
+            play_video "$video" yes
+            [ $? -eq 2 ] && break
+            ;;
         PIN)
             if verify_parent_pin "$video"; then
                 pin_notice=""

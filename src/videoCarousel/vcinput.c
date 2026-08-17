@@ -43,6 +43,15 @@ static void save_position(void)
     }
 }
 
+static void mark_menu_exit(void)
+{
+    FILE *fp = fopen("/tmp/videocarousel_menu_exit", "w");
+    if (fp) {
+        fputs("1\n", fp);
+        fclose(fp);
+    }
+}
+
 static void update_clock(void)
 {
     Uint32 now = SDL_GetTicks();
@@ -93,6 +102,7 @@ static bool map_event(SDL_Event *event)
         if (!menu_used && held_ms < 500)
         {
             save_position();
+            mark_menu_exit();
             key(event, SDLK_q, SDL_PRESSED);
         }
         else

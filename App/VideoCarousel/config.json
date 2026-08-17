@@ -1,7 +1,7 @@
 {
-    "label": "Video Carousel",
+    "label": "VideoKidsMode",
     "icon": "../../Icons/Default/app/guest_on.png",
     "iconsel": "",
     "launch": "launch.sh",
-    "description": "Kid-friendly video carousel"
+    "description": "Kid-friendly videos, timer and parent menu"
 }

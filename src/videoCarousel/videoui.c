@@ -379,11 +379,17 @@ static void loadVideos(void)
         char *dot = strrchr(entry.label, '.');
         if (dot != NULL)
             *dot = '\0';
-        snprintf(entry.imgpath, sizeof(entry.imgpath), "%s/Imgs/%s.png",
-                 VIDEOS_DIR, entry.label);
-        if (access(entry.imgpath, F_OK) != 0)
-            snprintf(entry.imgpath, sizeof(entry.imgpath), "%s/Imgs/%s.jpg",
-                     VIDEOS_DIR, entry.label);
+        const char *art_exts[] = {"png", "PNG", "jpg", "JPG", "jpeg", "JPEG"};
+        entry.imgpath[0] = '\0';
+        for (size_t i = 0; i < sizeof(art_exts) / sizeof(art_exts[0]); i++) {
+            char candidate[STR_MAX];
+            snprintf(candidate, sizeof(candidate), "%s/Imgs/%s.%s",
+                     VIDEOS_DIR, entry.label, art_exts[i]);
+            if (access(candidate, F_OK) == 0) {
+                snprintf(entry.imgpath, sizeof(entry.imgpath), "%s", candidate);
+                break;
+            }
+        }
         games[games_count++] = entry;
     }
     closedir(dir);
@@ -741,7 +747,7 @@ static void renderCarousel(int remaining)
 static void renderEmpty(void)
 {
     renderBase();
-    theme_renderHeader(screen, "Videos", false);
+    theme_renderHeader(screen, "VideoKidsMode", false);
     int cx = g_display.width / 2;
     drawText("No videos yet!", cx, (int)(g_display.height * 0.42),
              getFontBigValue(), theme()->list.color, g_display.width - 40);
@@ -803,7 +809,7 @@ static void formatAddMinutes(void *self, char *out_label)
 static void renderMenu(List *list, int remaining)
 {
     renderBase();
-    theme_renderHeader(screen, "Videos - Parent Menu", false);
+    theme_renderHeader(screen, "VideoKidsMode - Parent Menu", false);
     theme_renderHeaderBattery(screen, batteryPercentage());
     theme_renderList(screen, list);
 
@@ -1018,7 +1024,7 @@ int main(int argc, char *argv[])
     // Parent menu list (native Onion list component)
     List menu_list = list_create(4, LIST_SMALL);
     list_addItem(&menu_list,
-                 (ListItem){.label = "Exit Video Carousel", .item_type = ACTION});
+                 (ListItem){.label = "Exit VideoKidsMode", .item_type = ACTION});
     list_addItem(&menu_list, (ListItem){.label = "Add play time",
                                         .item_type = MULTIVALUE,
                                         .value_min = 1,
