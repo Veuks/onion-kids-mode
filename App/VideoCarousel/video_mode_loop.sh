@@ -7,8 +7,6 @@ remaining=/tmp/videocarousel_remaining
 result=/tmp/videocarousel_ui_result
 player_pid=/tmp/videocarousel_player.pid
 ffplay=/mnt/SDCARD/.tmp_update/bin/ffplay
-ffplay_state=/mnt/SDCARD/App/FFplay/pos.cfg
-ffplay_state_backup=/tmp/videocarousel_ffplay_pos.backup
 sysdir=/mnt/SDCARD/.tmp_update
 miyoodir=/mnt/SDCARD/miyoo
 
@@ -38,6 +36,26 @@ video_key() {
     else
         printf '%s' "$1" | cksum | awk '{print $1}'
     fi
+}
+
+restore_ffplay_state() {
+    for backup in $(find /mnt/SDCARD/App/FFplay "$sysdir" \
+        -name 'pos.cfg.videocarousel-backup' 2>/dev/null); do
+        original="${backup%.videocarousel-backup}"
+        rm -f "$original"
+        mv -f "$backup" "$original"
+    done
+}
+
+hide_ffplay_state() {
+    # The Miyoo FFplay build has used more than one pos.cfg location across
+    # releases. Isolate every FFplay-owned copy so its global resume cannot
+    # override VideoCarousel's per-video position (especially Restart=0).
+    restore_ffplay_state
+    for original in $(find /mnt/SDCARD/App/FFplay "$sysdir" \
+        -name pos.cfg 2>/dev/null); do
+        mv -f "$original" "$original.videocarousel-backup"
+    done
 }
 
 start_timer() {
@@ -82,9 +100,7 @@ play_video() {
     fi
     [ "$fresh" = yes ] && printf '0\n' > "$posfile"
     save_state running "$video"
-    rm -f "$ffplay_state_backup"
-    [ -f "$ffplay_state" ] && cp "$ffplay_state" "$ffplay_state_backup"
-    rm -f "$ffplay_state"
+    hide_ffplay_state
     echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
     touch /tmp/stay_awake
     cd "$sysdir" || return
@@ -95,10 +111,10 @@ play_video() {
     printf '%s\n' "$pid" > "$player_pid"
     wait "$pid"
     rm -f /tmp/stay_awake
-    rm -f "$ffplay_state"
-    if [ -f "$ffplay_state_backup" ]; then
-        mv -f "$ffplay_state_backup" "$ffplay_state"
-    fi
+    # Delete the temporary resume state produced by this playback, then put
+    # back the standard FFplay app's own state exactly as it was.
+    find /mnt/SDCARD/App/FFplay "$sysdir" -name pos.cfg -exec rm -f {} \; 2>/dev/null
+    restore_ffplay_state
     rm -f "$player_pid"
     save_state carousel "$video"
 }

@@ -101,8 +101,8 @@ static bool map_event(SDL_Event *event)
         SDLKey out = SDLK_UNKNOWN;
         if (in == SDLK_LEFT) out = SDLK_DOWN;       /* -60 s */
         if (in == SDLK_RIGHT) out = SDLK_UP;        /* +60 s */
-        if (in == SDLK_UP) out = SDLK_PAGEUP;       /* +600 s */
-        if (in == SDLK_DOWN) out = SDLK_PAGEDOWN;   /* -600 s */
+        if (in == SDLK_UP) out = SDLK_LSHIFT;       /* native X: +600 s */
+        if (in == SDLK_DOWN) out = SDLK_LALT;        /* native Y: -600 s */
         if (out != SDLK_UNKNOWN) {
             menu_used = true;
             if (in == SDLK_LEFT) position_seconds -= 60;
