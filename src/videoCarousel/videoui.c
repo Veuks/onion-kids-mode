@@ -82,6 +82,7 @@
 #define REMAINING_FILE "/tmp/videocarousel_remaining"
 #define RESULT_FILE "/tmp/videocarousel_ui_result"
 #define VIDEOS_DIR "/mnt/SDCARD/Media/Videos"
+#define CRT_FALLBACK_PATH "/mnt/SDCARD/App/VideoCarousel/crt-fallback.png"
 
 typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
@@ -124,6 +125,10 @@ static int current = 0;
 static char current_folder[STR_MAX] = "";
 
 static SDL_Surface *artwork = NULL;
+static SDL_Surface *crt_fallback = NULL;
+static SDL_Surface *crt_effect = NULL;
+static int crt_effect_width = 0;
+static int crt_effect_height = 0;
 static SDL_Surface *icon_x = NULL; // optional theme icon-X-54.png, loaded
                                    // once on first use; NULL if the theme
                                    // doesn't have one (checked, not
@@ -600,6 +605,58 @@ static void loadArtwork(void)
         SDL_FreeSurface(raw);
 }
 
+static SDL_Surface *loadCrtFallback(int width, int height)
+{
+    if (crt_fallback != NULL)
+        return crt_fallback;
+    SDL_Surface *raw = IMG_Load(CRT_FALLBACK_PATH);
+    if (raw == NULL)
+        return NULL;
+    SDL_Surface *scaled = scaleSurface(raw, width, height);
+    SDL_FreeSurface(raw);
+    if (scaled == NULL)
+        return NULL;
+#ifdef PLATFORM_MIYOOMINI
+    rotate180InPlace(scaled);
+#endif
+    crt_fallback = SDL_DisplayFormatAlpha(scaled);
+    if (crt_fallback == NULL)
+        crt_fallback = scaled;
+    else
+        SDL_FreeSurface(scaled);
+    return crt_fallback;
+}
+
+static SDL_Surface *loadCrtEffect(int width, int height)
+{
+    if (crt_effect != NULL && crt_effect_width == width &&
+        crt_effect_height == height)
+        return crt_effect;
+    if (crt_effect != NULL) {
+        SDL_FreeSurface(crt_effect);
+        crt_effect = NULL;
+    }
+    SDL_Surface *raw = IMG_Load(CRT_FALLBACK_PATH);
+    if (raw == NULL)
+        return NULL;
+    SDL_Surface *scaled = scaleSurface(raw, width, height);
+    SDL_FreeSurface(raw);
+    if (scaled == NULL)
+        return NULL;
+#ifdef PLATFORM_MIYOOMINI
+    rotate180InPlace(scaled);
+#endif
+    crt_effect = SDL_DisplayFormatAlpha(scaled);
+    if (crt_effect == NULL)
+        crt_effect = scaled;
+    else
+        SDL_FreeSurface(scaled);
+    SDL_SetAlpha(crt_effect, SDL_SRCALPHA, 72);
+    crt_effect_width = width;
+    crt_effect_height = height;
+    return crt_effect;
+}
+
 static void fillRect(int x, int y, int w, int h, uint32_t color)
 {
     SDL_Rect rect = {x, y, w, h};
@@ -682,33 +739,50 @@ static void renderCarousel(int remaining)
     if (artwork != NULL) {
         SDL_Rect pos = {cx - artwork->w / 2, art_cy - artwork->h / 2};
         SDL_BlitSurface(artwork, NULL, screen, &pos);
+        SDL_Surface *effect = loadCrtEffect(artwork->w, artwork->h);
+        if (effect != NULL)
+            SDL_BlitSurface(effect, NULL, screen, &pos);
     }
     else {
         // Missing artwork: use a clean black card with the movie/folder
         // name in the active theme accent color.
-        int tile_w = (int)(g_display.width * 0.55);
-        int tile_h = (int)(g_display.height * 0.5);
+        const char *fallback_label = games[current].item.label;
+        if (current_folder[0]) {
+            const char *slash = strrchr(current_folder, '/');
+            fallback_label = slash != NULL ? slash + 1 : current_folder;
+        }
+        SDL_Color fallback_color = theme()->grid.selectedcolor;
+        int tile_h = (int)(g_display.height * 0.52);
+        int tile_w = tile_h * 5 / 7;
         int text_w = tile_w - (int)(30.0 * g_scale);
-        fillRect(cx - tile_w / 2, art_cy - tile_h / 2, tile_w, tile_h, 0x000000);
+        SDL_Surface *crt = loadCrtFallback(tile_w, tile_h);
+        if (crt != NULL) {
+            SDL_Rect crt_pos = {cx - tile_w / 2, art_cy - tile_h / 2};
+            SDL_BlitSurface(crt, NULL, screen, &crt_pos);
+        }
+        else {
+            fillRect(cx - tile_w / 2, art_cy - tile_h / 2, tile_w, tile_h,
+                     0x000000);
+        }
 
         int measured_w = 0, measured_h = 0;
-        TTF_SizeUTF8(getFontGameLabel(), games[current].item.label,
-                     &measured_w, &measured_h);
+        TTF_SizeUTF8(getFontGameLabel(), fallback_label, &measured_w,
+                     &measured_h);
         if (measured_w <= text_w) {
-            drawText(games[current].item.label, cx, art_cy,
-                     getFontGameLabel(), accentColor(), text_w);
+            drawText(fallback_label, cx, art_cy, getFontGameLabel(),
+                     fallback_color, text_w);
         }
         else {
             char fallback_line1[STR_MAX] = "";
             char fallback_line2[STR_MAX] = "";
-            splitTwoLines(games[current].item.label, getFontGameLabel(),
+            splitTwoLines(fallback_label, getFontGameLabel(),
                           fallback_line1, sizeof(fallback_line1),
                           fallback_line2, sizeof(fallback_line2));
             int line_h = TTF_FontLineSkip(getFontGameLabel());
             drawText(fallback_line1, cx, art_cy - line_h / 2,
-                     getFontGameLabel(), accentColor(), text_w);
+                     getFontGameLabel(), fallback_color, text_w);
             drawText(fallback_line2, cx, art_cy + line_h / 2,
-                     getFontGameLabel(), accentColor(), text_w);
+                     getFontGameLabel(), fallback_color, text_w);
         }
     }
 
@@ -1520,6 +1594,10 @@ int main(int argc, char *argv[])
 
     if (artwork != NULL)
         SDL_FreeSurface(artwork);
+    if (crt_fallback != NULL)
+        SDL_FreeSurface(crt_fallback);
+    if (crt_effect != NULL)
+        SDL_FreeSurface(crt_effect);
     if (icon_x != NULL)
         SDL_FreeSurface(icon_x);
     if (font_gamelabel != NULL)

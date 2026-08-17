@@ -17,7 +17,8 @@ Media/Videos/Imgs/Toy Story.png
 
 JPG artwork is also accepted. Titles are sorted alphabetically.
 When no artwork is available, the carousel displays the movie or folder name
-on a black card using the current theme's accent color.
+on a black card using the current theme's selected-item color. Inside a series,
+this card keeps the folder name while the episode title is shown below it.
 
 ## Controls
 
@@ -34,6 +35,9 @@ Player:
 - MENU + UP/DOWN: seek +10/-10 minutes
 - MENU alone: save progress and return to the carousel
 - every other key: ignored
+
+Playback uses a subtle scanline filter to soften the very sharp handheld LCD
+presentation without the performance cost of a Gaussian blur.
 
 ## Series folders
 

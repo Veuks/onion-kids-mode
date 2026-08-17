@@ -232,7 +232,9 @@ play_video() {
     VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
       VC_CHECKPOINT_FILE="$posfile" \
       LD_PRELOAD="$appdir/bin/libvcinput.so:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-      "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" -ss "$start" &
+      "$ffplay" -autoexit \
+      -vf "hflip,vflip,drawgrid=w=iw:h=4:t=1:c=black@0.10" \
+      -i "$video" -ss "$start" &
     pid=$!
     printf '%s\n' "$pid" > "$player_pid"
     wait "$pid"
