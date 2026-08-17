@@ -16,27 +16,41 @@ Media/Videos/Imgs/Toy Story.png
 ```
 
 JPG artwork is also accepted. Titles are sorted alphabetically.
+When no artwork is available, the carousel displays the movie or folder name
+on a black card using the current theme's accent color.
 
 ## Controls
 
-Carousel: LEFT/RIGHT (and UP/DOWN) select a video, A plays/resumes, X opens
-the same Restart confirmation used by Kids Mode, and MENU exits the app.
+Carousel: LEFT/RIGHT (and UP/DOWN) select an item. A plays/resumes a video or
+opens a series folder. X opens the Restart confirmation for a video. B returns
+from a series folder, and MENU is ignored.
 
 Player:
 
 - A: play/resume
 - B: pause
 - MENU + LEFT/RIGHT: progressive rewind/fast-forward (10 seconds,
-  then 1 minute, then 10 minutes while held)
+  then 1 minute, then 5 minutes while held)
 - MENU + UP/DOWN: seek +10/-10 minutes
 - MENU alone: save progress and return to the carousel
 - every other key: ignored
+
+## Series folders
+
+Video Kids Mode supports one folder level below `Media/Videos`. A folder that
+contains videos appears in the main carousel. A opens it and B returns to the
+main carousel. Inside the folder the footer is A: PLAY, X: RESTART, B: BACK.
+
+Put `Imgs/Folder name.jpg` (or PNG/JPEG) next to the other artwork. It is used
+for the folder and as the fallback artwork for every episode inside it. An
+exact episode artwork name, when present, takes priority.
 
 ## Persistent state
 
 `/mnt/SDCARD/Saves/videocarousel/state.json` records `active_floor`,
 `active_mode` (`carousel` or `running`) and the last video. Positions are
-stored per video under `Saves/videocarousel/positions/` and checkpointed
+stored per video under `Saves/videocarousel/positions/`; `active_folder`
+restores the current series. Playback is checkpointed
 approximately every five seconds.
 
 If the console reboots while the carousel is visible, it restores the last

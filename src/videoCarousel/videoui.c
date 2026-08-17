@@ -113,9 +113,15 @@ static bool dirty = true; // set by any render function that needs to keep
                           // loop tick, even with no new input
 static KeyState keystate[320] = {(KeyState)0};
 
-static JsonGameEntry games[MAX_GAMES];
+typedef struct {
+    JsonGameEntry item;
+    bool is_folder;
+} VideoEntry;
+
+static VideoEntry games[MAX_GAMES];
 static int games_count = 0;
 static int current = 0;
+static char current_folder[STR_MAX] = "";
 
 static SDL_Surface *artwork = NULL;
 static SDL_Surface *icon_x = NULL; // optional theme icon-X-54.png, loaded
@@ -355,42 +361,88 @@ static bool hasVideoExtension(const char *name)
 
 static int compareVideos(const void *a, const void *b)
 {
-    const JsonGameEntry *va = (const JsonGameEntry *)a;
-    const JsonGameEntry *vb = (const JsonGameEntry *)b;
-    return strcasecmp(va->label, vb->label);
+    const VideoEntry *va = (const VideoEntry *)a;
+    const VideoEntry *vb = (const VideoEntry *)b;
+    return strcasecmp(va->item.label, vb->item.label);
+}
+
+static bool directoryHasVideos(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (dir == NULL)
+        return false;
+    struct dirent *de;
+    bool found = false;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] != '.' && hasVideoExtension(de->d_name) &&
+            strcasecmp(de->d_name, "FFplay controls.mp4") != 0) {
+            found = true;
+            break;
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
+static void findArtwork(const char *label, const char *folder_label,
+                        char *out, size_t out_size)
+{
+    const char *art_exts[] = {"png", "PNG", "jpg", "JPG", "jpeg", "JPEG"};
+    out[0] = '\0';
+    const char *labels[] = {label, folder_label};
+    for (size_t l = 0; l < 2 && out[0] == '\0'; l++) {
+        if (labels[l] == NULL || labels[l][0] == '\0')
+            continue;
+        for (size_t i = 0; i < sizeof(art_exts) / sizeof(art_exts[0]); i++) {
+            char candidate[STR_MAX];
+            snprintf(candidate, sizeof(candidate), "%s/Imgs/%s.%s",
+                     VIDEOS_DIR, labels[l], art_exts[i]);
+            if (access(candidate, F_OK) == 0) {
+                snprintf(out, out_size, "%s", candidate);
+                break;
+            }
+        }
+    }
 }
 
 static void loadVideos(void)
 {
-    DIR *dir = opendir(VIDEOS_DIR);
+    const char *browse_dir = current_folder[0] ? current_folder : VIDEOS_DIR;
+    const char *folder_label = current_folder[0]
+                                   ? strrchr(current_folder, '/') + 1
+                                   : NULL;
+    DIR *dir = opendir(browse_dir);
     if (dir == NULL)
         return;
     struct dirent *de;
     while (games_count < MAX_GAMES && (de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.' || !hasVideoExtension(de->d_name))
+        if (de->d_name[0] == '.')
             continue;
-        if (strcasecmp(de->d_name, "FFplay controls.mp4") == 0)
+        bool is_video = hasVideoExtension(de->d_name);
+        bool is_folder = false;
+        char fullpath[STR_MAX];
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", browse_dir, de->d_name);
+        if (!current_folder[0] && !is_video &&
+            strcasecmp(de->d_name, "Imgs") != 0)
+            is_folder = directoryHasVideos(fullpath);
+        if (!is_video && !is_folder)
+            continue;
+        if (is_video && strcasecmp(de->d_name, "FFplay controls.mp4") == 0)
             continue;
         JsonGameEntry entry;
         memset(&entry, 0, sizeof(entry));
-        snprintf(entry.rompath, sizeof(entry.rompath), "%s/%s", VIDEOS_DIR,
-                 de->d_name);
+        snprintf(entry.rompath, sizeof(entry.rompath), "%s", fullpath);
         snprintf(entry.label, sizeof(entry.label), "%s", de->d_name);
-        char *dot = strrchr(entry.label, '.');
-        if (dot != NULL)
-            *dot = '\0';
-        const char *art_exts[] = {"png", "PNG", "jpg", "JPG", "jpeg", "JPEG"};
-        entry.imgpath[0] = '\0';
-        for (size_t i = 0; i < sizeof(art_exts) / sizeof(art_exts[0]); i++) {
-            char candidate[STR_MAX];
-            snprintf(candidate, sizeof(candidate), "%s/Imgs/%s.%s",
-                     VIDEOS_DIR, entry.label, art_exts[i]);
-            if (access(candidate, F_OK) == 0) {
-                snprintf(entry.imgpath, sizeof(entry.imgpath), "%s", candidate);
-                break;
-            }
+        if (is_video) {
+            char *dot = strrchr(entry.label, '.');
+            if (dot != NULL)
+                *dot = '\0';
         }
-        games[games_count++] = entry;
+        findArtwork(entry.label, folder_label, entry.imgpath,
+                    sizeof(entry.imgpath));
+        games[games_count].item = entry;
+        games[games_count].is_folder = is_folder;
+        games_count++;
     }
     closedir(dir);
     qsort(games, games_count, sizeof(games[0]), compareVideos);
@@ -513,7 +565,7 @@ static void loadArtwork(void)
     if (games_count == 0)
         return;
 
-    const char *imgpath = games[current].imgpath;
+    const char *imgpath = games[current].item.imgpath;
     if (strlen(imgpath) == 0 || access(imgpath, F_OK) != 0)
         return;
 
@@ -632,12 +684,32 @@ static void renderCarousel(int remaining)
         SDL_BlitSurface(artwork, NULL, screen, &pos);
     }
     else {
-        // Fallback tile: colored panel, label drawn on top by title below
+        // Missing artwork: use a clean black card with the movie/folder
+        // name in the active theme accent color.
         int tile_w = (int)(g_display.width * 0.55);
         int tile_h = (int)(g_display.height * 0.5);
-        fillRect(cx - tile_w / 2, art_cy - tile_h / 2, tile_w, tile_h,
-                 PIN_BOX_COLOR);
-        drawText("?", cx, art_cy, getFontBigValue(), theme()->hint.color, 0);
+        int text_w = tile_w - (int)(30.0 * g_scale);
+        fillRect(cx - tile_w / 2, art_cy - tile_h / 2, tile_w, tile_h, 0x000000);
+
+        int measured_w = 0, measured_h = 0;
+        TTF_SizeUTF8(getFontGameLabel(), games[current].item.label,
+                     &measured_w, &measured_h);
+        if (measured_w <= text_w) {
+            drawText(games[current].item.label, cx, art_cy,
+                     getFontGameLabel(), accentColor(), text_w);
+        }
+        else {
+            char fallback_line1[STR_MAX] = "";
+            char fallback_line2[STR_MAX] = "";
+            splitTwoLines(games[current].item.label, getFontGameLabel(),
+                          fallback_line1, sizeof(fallback_line1),
+                          fallback_line2, sizeof(fallback_line2));
+            int line_h = TTF_FontLineSkip(getFontGameLabel());
+            drawText(fallback_line1, cx, art_cy - line_h / 2,
+                     getFontGameLabel(), accentColor(), text_w);
+            drawText(fallback_line2, cx, art_cy + line_h / 2,
+                     getFontGameLabel(), accentColor(), text_w);
+        }
     }
 
     // Game title in the theme's list font (big + bold). Short titles now
@@ -655,15 +727,15 @@ static void renderCarousel(int remaining)
         if (title_for_index != current) {
             title_for_index = current;
             int w = 0, h = 0;
-            TTF_SizeUTF8(getFontGameLabel(), games[current].label, &w, &h);
+            TTF_SizeUTF8(getFontGameLabel(), games[current].item.label, &w, &h);
             if (w <= avail_w) {
                 title_two_lines = false;
                 snprintf(title_line1, sizeof(title_line1), "%s",
-                        games[current].label);
+                        games[current].item.label);
             }
             else {
                 title_two_lines = true;
-                splitTwoLines(games[current].label, getFontGameLabel(),
+                splitTwoLines(games[current].item.label, getFontGameLabel(),
                              title_line1, sizeof(title_line1), title_line2,
                              sizeof(title_line2));
             }
@@ -697,9 +769,10 @@ static void renderCarousel(int remaining)
         }
     }
 
-    // Native footer: A = PLAY plus the "2/8" position indicator
+    // Native footer: folders open with A; videos play with A.
     theme_renderFooter(screen);
-    theme_renderStandardHint(screen, "PLAY", NULL);
+    theme_renderStandardHint(screen, games[current].is_folder ? "OPEN" : "PLAY",
+                             NULL);
     // No X-button icon ships with Onion's theme (only BUTTON_A/BUTTON_B),
     // so we draw a small badge ourselves. To guarantee it lands in the
     // right spot regardless of theme (icon size and "PLAY" label width
@@ -707,7 +780,7 @@ static void renderCarousel(int remaining)
     // own offset math exactly rather than guessing a fixed pixel position
     // — same formula Onion itself uses to place a second (B) hint after
     // the first.
-    {
+    if (!games[current].is_folder) {
         int offsetX = (int)(20.0 * g_scale);
         SDL_Surface *button_a = resource_getSurface(BUTTON_A);
         if (button_a)
@@ -737,6 +810,24 @@ static void renderCarousel(int remaining)
         drawTextAlign("RESTART", badge_cx + badge_r + 5, badge_cy,
                       resource_getFont(HINT), theme()->hint.color, 0,
                       TEXT_LEFT);
+
+        // Inside a series folder, B returns to the main carousel. Keep the
+        // kid-facing order A:PLAY, X:RESTART, B:BACK.
+        if (current_folder[0]) {
+            int restart_w = 0, restart_h = 0;
+            TTF_SizeUTF8(resource_getFont(HINT), "RESTART", &restart_w,
+                         &restart_h);
+            int back_x = badge_cx + badge_r + 5 + restart_w +
+                         (int)(30.0 * g_scale);
+            SDL_Surface *button_b = resource_getSurface(BUTTON_B);
+            if (button_b != NULL) {
+                SDL_Rect pos = {back_x, badge_cy - button_b->h / 2};
+                SDL_BlitSurface(button_b, NULL, screen, &pos);
+                back_x += button_b->w + 5;
+            }
+            drawTextAlign("BACK", back_x, badge_cy, resource_getFont(HINT),
+                          theme()->hint.color, 0, TEXT_LEFT);
+        }
     }
     if (games_count > 1)
         theme_renderFooterStatus(screen, current + 1, games_count);
@@ -997,6 +1088,8 @@ int main(int argc, char *argv[])
             menu_remaining = atoi(argv[++i]);
         else if (strcmp(argv[i], "--select") == 0 && i + 1 < argc)
             strncpy(select_rompath, argv[++i], STR_MAX - 1);
+        else if (strcmp(argv[i], "--folder") == 0 && i + 1 < argc)
+            strncpy(current_folder, argv[++i], STR_MAX - 1);
         else if ((strcmp(argv[i], "-t") == 0 ||
                   strcmp(argv[i], "--title") == 0) &&
                  i + 1 < argc)
@@ -1055,7 +1148,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "videoui: loaded %d videos\n", games_count);
         if (strlen(select_rompath) > 0) {
             for (int i = 0; i < games_count; i++) {
-                if (strcmp(games[i].rompath, select_rompath) == 0) {
+                if (strcmp(games[i].item.rompath, select_rompath) == 0) {
                     current = i;
                     break;
                 }
@@ -1104,13 +1197,23 @@ int main(int argc, char *argv[])
                     dirty = true;
                     break;
                 case SW_BTN_A:
-                    writeResult("PLAY", games[current].rompath, NULL);
+                    writeResult(games[current].is_folder ? "FOLDER" : "PLAY",
+                                games[current].item.rompath, NULL);
                     exit_code = 0;
                     quit = true;
                     break;
                 case SW_BTN_X:
-                    active_screen = SCREEN_CONFIRM_RESTART;
-                    dirty = true;
+                    if (!games[current].is_folder) {
+                        active_screen = SCREEN_CONFIRM_RESTART;
+                        dirty = true;
+                    }
+                    break;
+                case SW_BTN_B:
+                    if (current_folder[0]) {
+                        writeResult("BACK", current_folder, NULL);
+                        exit_code = 0;
+                        quit = true;
+                    }
                     break;
                 case SW_BTN_MENU:
                     // Carousel: MENU is intentionally ignored. Parent exit
@@ -1124,7 +1227,7 @@ int main(int argc, char *argv[])
             else if (active_screen == SCREEN_CONFIRM_RESTART) {
                 switch (changed_key) {
                 case SW_BTN_A:
-                    writeResult("RESTART", games[current].rompath, NULL);
+                    writeResult("RESTART", games[current].item.rompath, NULL);
                     exit_code = 0;
                     quit = true;
                     break;
@@ -1395,7 +1498,7 @@ int main(int argc, char *argv[])
                 renderPickTimer(pin_title, menu_timer_minutes, picker_no_off);
                 break;
             case SCREEN_CONFIRM_RESTART:
-                renderConfirmRestart(games[current].label, remaining);
+                renderConfirmRestart(games[current].item.label, remaining);
                 break;
             }
             if (hold_started != 0)

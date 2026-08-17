@@ -35,6 +35,8 @@ static Uint32 seek_notice_until;
 static bool seek_notice_drawn;
 static SDL_Rect seek_notice_rect;
 
+#define SYNTHETIC_SEEK_UNICODE 0x5643
+
 __attribute__((constructor)) static void vcinput_loaded(void)
 {
     FILE *fp = fopen("/tmp/vcinput_loaded", "w");
@@ -124,13 +126,15 @@ static const unsigned char *glyph_rows(char c)
     static const unsigned char minus[7] = {0, 0, 0, 31, 0, 0, 0};
     static const unsigned char zero[7] = {14, 17, 19, 21, 25, 17, 14};
     static const unsigned char one[7] = {4, 12, 4, 4, 4, 4, 14};
-    static const unsigned char ess[7] = {15, 16, 16, 14, 1, 1, 30};
+    static const unsigned char five[7] = {31, 16, 16, 30, 1, 1, 30};
+    static const unsigned char ess[7] = {0, 0, 15, 16, 14, 1, 30};
     static const unsigned char em[7] = {0, 0, 26, 21, 21, 21, 21};
     switch (c) {
     case '+': return plus;
     case '-': return minus;
     case '0': return zero;
     case '1': return one;
+    case '5': return five;
     case 's': return ess;
     case 'm': return em;
     default: return NULL;
@@ -231,8 +235,17 @@ static bool progressive_seek(SDL_Event *event, Uint32 now)
         out = seek_input == SDLK_LEFT ? SDLK_DOWN : SDLK_UP;
         step = 60;
     } else {
-        out = seek_input == SDLK_LEFT ? SDLK_LALT : SDLK_LSHIFT;
-        step = 600;
+        // FFplay has no native five-minute key. Deliver five one-minute
+        // events as one logical step, tagging the four queued events so our
+        // input filter passes them straight through.
+        out = seek_input == SDLK_LEFT ? SDLK_DOWN : SDLK_UP;
+        step = 300;
+        for (int i = 0; i < 4; i++) {
+            SDL_Event extra;
+            key(&extra, out, SDL_PRESSED);
+            extra.key.keysym.unicode = SYNTHETIC_SEEK_UNICODE;
+            SDL_PushEvent(&extra);
+        }
     }
 
     position_seconds += seek_input == SDLK_LEFT ? -step : step;
@@ -249,6 +262,8 @@ static bool progressive_seek(SDL_Event *event, Uint32 now)
 static bool map_event(SDL_Event *event)
 {
     if (event->type != SDL_KEYDOWN && event->type != SDL_KEYUP)
+        return false;
+    if (event->key.keysym.unicode == SYNTHETIC_SEEK_UNICODE)
         return false;
     Uint8 state = event->key.state;
     SDLKey in = event->key.keysym.sym;
