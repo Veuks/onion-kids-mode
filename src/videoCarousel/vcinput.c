@@ -22,6 +22,7 @@ static Uint32 clock_tick;
 static Uint32 last_save;
 static long position_seconds;
 static const char *position_file;
+static const char *checkpoint_file;
 
 __attribute__((constructor)) static void vcinput_loaded(void)
 {
@@ -32,15 +33,25 @@ __attribute__((constructor)) static void vcinput_loaded(void)
     }
 }
 
-static void save_position(void)
+static void write_position(const char *path)
 {
-    if (!position_file || !*position_file)
+    if (!path || !*path)
         return;
-    FILE *fp = fopen(position_file, "w");
+    FILE *fp = fopen(path, "w");
     if (fp) {
         fprintf(fp, "%ld\n", position_seconds < 0 ? 0 : position_seconds);
         fclose(fp);
     }
+}
+
+static void save_position(void)
+{
+    write_position(position_file);
+}
+
+static void save_checkpoint(void)
+{
+    write_position(checkpoint_file);
 }
 
 static void mark_menu_exit(void)
@@ -59,6 +70,7 @@ static void update_clock(void)
         const char *start = getenv("VC_START_SECONDS");
         position_seconds = start ? strtol(start, NULL, 10) : 0;
         position_file = getenv("VC_POSITION_FILE");
+        checkpoint_file = getenv("VC_CHECKPOINT_FILE");
         clock_tick = last_save = now;
         clock_ready = true;
     }
@@ -68,8 +80,10 @@ static void update_clock(void)
     } else if (paused) {
         clock_tick = now;
     }
-    if (now - last_save >= 5000) {
+    if (now - last_save >= 1000) {
         save_position();
+        if ((now / 5000) != (last_save / 5000))
+            save_checkpoint();
         last_save = now;
     }
 }
@@ -101,7 +115,9 @@ static bool map_event(SDL_Event *event)
         Uint32 held_ms = SDL_GetTicks() - menu_pressed_at;
         if (!menu_used && held_ms < 500)
         {
+            update_clock();
             save_position();
+            save_checkpoint();
             mark_menu_exit();
             key(event, SDLK_q, SDL_PRESSED);
         }
@@ -191,6 +207,7 @@ int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
         real_peep = (peep_fn)dlsym(RTLD_NEXT, "SDL_PeepEvents");
     if (!real_peep)
         return -1;
+    update_clock();
     int count = real_peep(events, numevents, action, mask);
     if (inside_event_call)
         return count;
