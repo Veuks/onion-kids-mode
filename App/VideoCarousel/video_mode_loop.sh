@@ -78,6 +78,11 @@ show_parent_menu() {
         UNLOCK)
             save_state carousel "$last"
             rm -f /mnt/SDCARD/.videocarousel
+            stop_ticker
+            sync
+            infoPanel -t "VideoKidsMode" \
+                -m "Unlocked!\nReturning to Onion." --auto
+            bootScreen clear 2>/dev/null
             ;;
         ADDTIME)
             add_minutes="$(sed -n 3p "$result")"
@@ -116,6 +121,21 @@ restore_ffplay_state() {
         rm -f "$original"
         mv -f "$backup" "$original"
     done
+}
+
+ensure_audio_server() {
+    pgrep audioserver >/dev/null 2>&1 && return 0
+    volume="$(/customer/app/jsonval vol 2>/dev/null)"
+    case "$volume" in ''|*[!0-9]*) volume=20 ;; esac
+    defvol="$(awk -v v="$volume" 'BEGIN { printf "%.0f\n", 48 * (log(1 + v) / log(10)) - 60 }')"
+    "$miyoodir/app/audioserver" "$defvol" >/dev/null 2>&1 &
+    count=0
+    while ! pgrep audioserver >/dev/null 2>&1 && [ "$count" -lt 20 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+    # Give the audio device a brief moment after the process appears.
+    sleep 1
 }
 
 hide_ffplay_state() {
@@ -176,8 +196,9 @@ play_video() {
     echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
     touch /tmp/stay_awake
     cd "$sysdir" || return
+    ensure_audio_server
     VC_START_SECONDS="$start" VC_POSITION_FILE="$posfile" \
-      LD_PRELOAD="$appdir/bin/libvcinput.so${LD_PRELOAD:+:$LD_PRELOAD}" \
+      LD_PRELOAD="$appdir/bin/libvcinput.so:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
       "$ffplay" -autoexit -vf "hflip,vflip" -ss "$start" -i "$video" &
     pid=$!
     printf '%s\n' "$pid" > "$player_pid"
@@ -202,7 +223,14 @@ play_video() {
     # console shutdown path. Keep active_mode=running for boot resume and do
     # not redraw the carousel while the shutdown screen is taking over.
     sync
-    sleep 5
+    # Onion's key monitor may take up to 30 seconds to complete/force a
+    # shutdown. Keep this startup hook blocked so runtime.sh cannot launch
+    # MainUI or GameSwitcher in the middle of that sequence.
+    waited=0
+    while [ "$waited" -lt 35 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
     return 2
 }
 
