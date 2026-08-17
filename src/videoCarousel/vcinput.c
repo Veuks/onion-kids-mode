@@ -219,6 +219,8 @@ int SDL_PollEvent(SDL_Event *event)
 {
     if (!real_poll)
         real_poll = (poll_fn)dlsym(RTLD_NEXT, "SDL_PollEvent");
+    if (!real_poll && !real_wait)
+        real_wait = (wait_fn)dlsym(RTLD_NEXT, "SDL_WaitEvent");
     update_clock();
     while (real_poll) {
         inside_event_call = true;
@@ -229,24 +231,32 @@ int SDL_PollEvent(SDL_Event *event)
         if (!map_event(event))
             return 1;
     }
+    if (progressive_seek(event, SDL_GetTicks()))
+        return 1;
     return 0;
 }
 
 int SDL_WaitEvent(SDL_Event *event)
 {
-    if (!real_wait)
+    // Do not block in the real SDL_WaitEvent while a seek key is held: the
+    // Miyoo input driver does not reliably emit key-repeat events. Polling
+    // here lets us generate the progressively larger seek steps ourselves.
+    if (!real_poll)
+        real_poll = (poll_fn)dlsym(RTLD_NEXT, "SDL_PollEvent");
+    if (!real_poll && !real_wait)
         real_wait = (wait_fn)dlsym(RTLD_NEXT, "SDL_WaitEvent");
-    while (real_wait) {
+    while (real_poll) {
         update_clock();
         inside_event_call = true;
-        int got = real_wait(event);
+        int got = real_poll(event);
         inside_event_call = false;
-        if (!got)
-            return 0;
-        if (!map_event(event))
+        if (got && !map_event(event))
             return 1;
+        if (progressive_seek(event, SDL_GetTicks()))
+            return 1;
+        SDL_Delay(10);
     }
-    return 0;
+    return real_wait ? real_wait(event) : 0;
 }
 
 int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
