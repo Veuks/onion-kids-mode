@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Cross-compile kidui
+    name: Cross-compile Kids Mode and VideoCarousel
     runs-on: ubuntu-latest
     container:
       image: aemiii91/miyoomini-toolchain:latest
@@ -35,6 +35,12 @@ jobs:
           make
           file kidui
           cp kidui "$GITHUB_WORKSPACE/App/KidsMode/bin/kidui"
+          cd "$GITHUB_WORKSPACE"
+          cp -r src/videoCarousel onion/src/
+          cd onion/src/videoCarousel
+          make
+          file videoui libvcinput.so
+          cp videoui libvcinput.so "$GITHUB_WORKSPACE/App/VideoCarousel/bin/"
       - name: Upload app artifact
         uses: actions/upload-artifact@v4
         with:
@@ -56,11 +62,17 @@ jobs:
       - name: Assemble zip
         run: |
           chmod +x App/KidsMode/bin/kidui App/KidsMode/*.sh
+          chmod +x App/VideoCarousel/bin/videoui App/VideoCarousel/*.sh
           cp README.md App/KidsMode/
-          cd App && zip -r ../KidsMode.zip KidsMode
+          cp docs/VIDEO-CAROUSEL-V1.md App/VideoCarousel/README.md
+          cd App
+          zip -r ../KidsMode.zip KidsMode
+          zip -r ../VideoCarousel-V1.zip VideoCarousel
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           name: Kids Mode ${{ github.ref_name }}
           body_path: .github/release-notes.md
-          files: KidsMode.zip
+          files: |
+            KidsMode.zip
+            VideoCarousel-V1.zip
