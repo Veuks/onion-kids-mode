@@ -371,6 +371,8 @@ static void loadVideos(void)
     while (games_count < MAX_GAMES && (de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.' || !hasVideoExtension(de->d_name))
             continue;
+        if (strcasecmp(de->d_name, "FFplay controls.mp4") == 0)
+            continue;
         JsonGameEntry entry;
         memset(&entry, 0, sizeof(entry));
         snprintf(entry.rompath, sizeof(entry.rompath), "%s/%s", VIDEOS_DIR,

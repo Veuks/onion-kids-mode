@@ -7,6 +7,13 @@ remaining=/tmp/videocarousel_remaining
 result=/tmp/videocarousel_ui_result
 player_pid=/tmp/videocarousel_player.pid
 ffplay=/mnt/SDCARD/.tmp_update/bin/ffplay
+ffplay_state=/mnt/SDCARD/App/FFplay/pos.cfg
+ffplay_state_backup=/tmp/videocarousel_ffplay_pos.backup
+sysdir=/mnt/SDCARD/.tmp_update
+miyoodir=/mnt/SDCARD/miyoo
+
+export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
+export PATH="$sysdir/bin:$PATH"
 
 mkdir -p "$savedir" "$positions"
 [ -x "$ffplay" ] || ffplay="$(command -v ffplay)"
@@ -75,12 +82,23 @@ play_video() {
     fi
     [ "$fresh" = yes ] && printf '0\n' > "$posfile"
     save_state running "$video"
+    rm -f "$ffplay_state_backup"
+    [ -f "$ffplay_state" ] && cp "$ffplay_state" "$ffplay_state_backup"
+    rm -f "$ffplay_state"
+    echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
+    touch /tmp/stay_awake
+    cd "$sysdir" || return
     VC_START_SECONDS="$start" VC_POSITION_FILE="$posfile" \
-      LD_PRELOAD="$appdir/bin/libvcinput.so" \
-      "$ffplay" -loglevel quiet -fs -autoexit -ss "$start" "$video" &
+      LD_PRELOAD="$appdir/bin/libvcinput.so${LD_PRELOAD:+:$LD_PRELOAD}" \
+      "$ffplay" -autoexit -vf "hflip,vflip" -ss "$start" -i "$video" &
     pid=$!
     printf '%s\n' "$pid" > "$player_pid"
     wait "$pid"
+    rm -f /tmp/stay_awake
+    rm -f "$ffplay_state"
+    if [ -f "$ffplay_state_backup" ]; then
+        mv -f "$ffplay_state_backup" "$ffplay_state"
+    fi
     rm -f "$player_pid"
     save_state carousel "$video"
 }

@@ -8,8 +8,11 @@
 
 typedef int (*poll_fn)(SDL_Event *);
 typedef int (*wait_fn)(SDL_Event *);
+typedef int (*peep_fn)(SDL_Event *, int, SDL_eventaction, Uint32);
 static poll_fn real_poll;
 static wait_fn real_wait;
+static peep_fn real_peep;
+static bool inside_event_call;
 static bool paused;
 static bool menu_down;
 static bool menu_used;
@@ -18,6 +21,15 @@ static Uint32 clock_tick;
 static Uint32 last_save;
 static long position_seconds;
 static const char *position_file;
+
+__attribute__((constructor)) static void vcinput_loaded(void)
+{
+    FILE *fp = fopen("/tmp/vcinput_loaded", "w");
+    if (fp) {
+        fputs("1\n", fp);
+        fclose(fp);
+    }
+}
 
 static void save_position(void)
 {
@@ -128,7 +140,12 @@ int SDL_PollEvent(SDL_Event *event)
     if (!real_poll)
         real_poll = (poll_fn)dlsym(RTLD_NEXT, "SDL_PollEvent");
     update_clock();
-    while (real_poll && real_poll(event)) {
+    while (real_poll) {
+        inside_event_call = true;
+        int got = real_poll(event);
+        inside_event_call = false;
+        if (!got)
+            break;
         if (!map_event(event))
             return 1;
     }
@@ -141,10 +158,36 @@ int SDL_WaitEvent(SDL_Event *event)
         real_wait = (wait_fn)dlsym(RTLD_NEXT, "SDL_WaitEvent");
     while (real_wait) {
         update_clock();
-        if (!real_wait(event))
+        inside_event_call = true;
+        int got = real_wait(event);
+        inside_event_call = false;
+        if (!got)
             return 0;
         if (!map_event(event))
             return 1;
     }
     return 0;
+}
+
+int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
+                   Uint32 mask)
+{
+    if (!real_peep)
+        real_peep = (peep_fn)dlsym(RTLD_NEXT, "SDL_PeepEvents");
+    if (!real_peep)
+        return -1;
+    int count = real_peep(events, numevents, action, mask);
+    if (inside_event_call)
+        return count;
+    if (action != SDL_GETEVENT || count <= 0)
+        return count;
+    int kept = 0;
+    for (int i = 0; i < count; i++) {
+        if (!map_event(&events[i])) {
+            if (kept != i)
+                events[kept] = events[i];
+            kept++;
+        }
+    }
+    return kept;
 }
