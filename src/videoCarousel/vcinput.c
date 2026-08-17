@@ -146,7 +146,9 @@ static void draw_glyph(SDL_Surface *surface, char c, int x, int y, int scale,
     for (int pass = 0; pass < 2; pass++)
         for (int row = 0; row < 7; row++)
             for (int col = 0; col < 5; col++) {
-                if (!(rows[row] & (1 << (4 - col))))
+                // FFplay's Miyoo framebuffer is physically rotated 180°.
+                // Draw every glyph pre-rotated so it appears upright.
+                if (!(rows[6 - row] & (1 << col)))
                     continue;
                 SDL_Rect rect = pass == 0
                                     ? (SDL_Rect){x + col * scale - 1,
@@ -182,8 +184,10 @@ static void draw_seek_notice(void)
     int scale = surface->w >= 600 ? 3 : 2;
     int length = (int)strlen(seek_notice);
     int width = length * 6 * scale - scale;
-    int x = seek_notice_forward ? surface->w - width - 18 : 18;
-    int y = surface->h - 7 * scale - 20;
+    // Coordinates are pre-rotated as well: logical top-left becomes the
+    // physical bottom-right, and logical top-right becomes bottom-left.
+    int x = seek_notice_forward ? 18 : surface->w - width - 18;
+    int y = 20;
     SDL_Rect new_rect = {x - 2, y - 2, width + 4, 7 * scale + 4};
     if (cleared_notice &&
         (cleared_rect.x != new_rect.x || cleared_rect.y != new_rect.y ||
@@ -192,7 +196,8 @@ static void draw_seek_notice(void)
                        cleared_rect.w, cleared_rect.h);
     Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
     for (int i = 0; i < length; i++)
-        draw_glyph(surface, seek_notice[i], x + i * 6 * scale, y, scale,
+        draw_glyph(surface, seek_notice[length - 1 - i],
+                   x + i * 6 * scale, y, scale,
                    black, white);
     seek_notice_rect = new_rect;
     seek_notice_drawn = true;
