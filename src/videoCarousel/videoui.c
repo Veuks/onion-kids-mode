@@ -786,10 +786,9 @@ static void renderConfirmRestart(const char *label, int remaining)
 static void renderTimesUp(void)
 {
     renderBase();
-    theme_renderHeader(screen, "Time's up!", false);
 
     int cx = g_display.width / 2;
-    drawText("Great playing!", cx, (int)(g_display.height * 0.4),
+    drawText("Time's up!", cx, (int)(g_display.height * 0.4),
              getFontBigValue(), accentColor(), g_display.width - 40);
     drawText("See you next time.", cx, (int)(g_display.height * 0.55),
              getFontInfo(), theme()->list.color, g_display.width - 40);

@@ -4,6 +4,7 @@ savedir=/mnt/SDCARD/Saves/videocarousel
 state="$savedir/state.json"
 positions="$savedir/positions"
 remaining=/tmp/videocarousel_remaining
+expired="$savedir/timer_expired"
 result=/tmp/videocarousel_ui_result
 player_pid=/tmp/videocarousel_player.pid
 menu_exit_marker=/tmp/videocarousel_menu_exit
@@ -69,9 +70,10 @@ set_timer_seconds() {
     stop_ticker
     if [ "$seconds" -lt 0 ]; then
         printf '0\n' > "$savedir/timer_minutes"
-        rm -f "$savedir/timer_end" "$remaining"
+        rm -f "$savedir/timer_end" "$remaining" "$expired"
         return
     fi
+    rm -f "$expired"
     end=$(( $(date +%s) + seconds ))
     printf '1\n' > "$savedir/timer_minutes"
     printf '%s\n' "$end" > "$savedir/timer_end"
@@ -166,13 +168,18 @@ start_timer() {
     case "$minutes" in ''|*[!0-9]*) minutes=0 ;; esac
     if [ "$minutes" -eq 0 ]; then
         rm -f "$remaining"
-        rm -f "$savedir/timer_end"
+        rm -f "$savedir/timer_end" "$expired"
+        return
+    fi
+    if [ "$1" = run ] && [ -f "$expired" ]; then
+        printf '0\n' > "$remaining"
         return
     fi
     if [ "$1" = run ] && [ -f "$savedir/timer_end" ]; then
         end="$(cat "$savedir/timer_end" 2>/dev/null)"
         case "$end" in ''|*[!0-9]*) end=0 ;; esac
     else
+        rm -f "$expired"
         end=$(( $(date +%s) + minutes * 60 ))
         printf '%s\n' "$end" > "$savedir/timer_end"
     fi
@@ -182,6 +189,8 @@ start_timer() {
             [ "$left" -lt 0 ] && left=0
             printf '%s\n' "$left" > "$remaining"
             if [ "$left" -eq 0 ]; then
+                touch "$expired"
+                sync
                 [ -f "$player_pid" ] && kill "$(cat "$player_pid")" 2>/dev/null
                 break
             fi
@@ -196,12 +205,14 @@ play_video() {
     [ -f "$video" ] || return
     key="$(video_key "$video")"
     posfile="$positions/$key.pos"
+    runtime_pos="/tmp/videocarousel_position.$$"
     start=0
     if [ "$fresh" != yes ] && [ -f "$posfile" ]; then
         start="$(cat "$posfile" 2>/dev/null)"
         case "$start" in ''|*[!0-9]*) start=0 ;; esac
     fi
     [ "$fresh" = yes ] && printf '0\n' > "$posfile"
+    printf '%s\n' "$start" > "$runtime_pos"
     save_state running "$video"
     hide_ffplay_state
     rm -f "$menu_exit_marker"
@@ -209,13 +220,19 @@ play_video() {
     touch /tmp/stay_awake
     cd "$sysdir" || return
     ensure_audio_server
-    VC_START_SECONDS="$start" VC_POSITION_FILE="$posfile" \
+    VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
+      VC_CHECKPOINT_FILE="$posfile" \
       LD_PRELOAD="$appdir/bin/libvcinput.so:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-      "$ffplay" -autoexit -vf "hflip,vflip" -ss "$start" -i "$video" &
+      "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" -ss "$start" &
     pid=$!
     printf '%s\n' "$pid" > "$player_pid"
     wait "$pid"
     player_status=$?
+    if [ -f "$runtime_pos" ]; then
+        cp -f "$runtime_pos" "$posfile"
+        rm -f "$runtime_pos"
+        sync
+    fi
     rm -f /tmp/stay_awake
     # Delete the temporary resume state produced by this playback, then put
     # back the standard FFplay app's own state exactly as it was.
