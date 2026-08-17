@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Cross-compile Kids Mode and VideoKidsMode
+    name: Cross-compile Kids Mode and Video Kids Mode
     runs-on: ubuntu-latest
     container:
       image: aemiii91/miyoomini-toolchain:latest

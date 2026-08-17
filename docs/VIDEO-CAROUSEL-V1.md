@@ -1,6 +1,6 @@
-# VideoKidsMode V1
+# Video Kids Mode V1
 
-VideoKidsMode is a standalone Onion app. Its internal folder remains named
+Video Kids Mode is a standalone Onion app. Its internal folder remains named
 `VideoCarousel` for update compatibility. It deliberately does not change
 `App/KidsMode` or `src/kidsMode`.
 

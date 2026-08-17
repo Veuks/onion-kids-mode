@@ -1,5 +1,5 @@
 {
-    "label": "VideoKidsMode",
+    "label": "Video Kids Mode",
     "icon": "../../Icons/Default/app/guest_on.png",
     "iconsel": "",
     "launch": "launch.sh",

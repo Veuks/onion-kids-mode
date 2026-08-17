@@ -52,6 +52,18 @@ stop_ticker() {
     ticker=""
 }
 
+check_off_order() {
+    [ -f /tmp/.offOrder ] || return 1
+    touch /tmp/shutting_down
+    for off_script in "$sysdir"/checkoff/*.sh; do
+        [ -f "$off_script" ] && sh "$off_script"
+    done
+    bootScreen "$1" &
+    sleep 1
+    shutdown
+    sleep 60
+}
+
 set_timer_seconds() {
     seconds="$1"
     stop_ticker
@@ -80,7 +92,7 @@ show_parent_menu() {
             rm -f /mnt/SDCARD/.videocarousel
             stop_ticker
             sync
-            infoPanel -t "VideoKidsMode" \
+            infoPanel -t "Video Kids Mode" \
                 -m "Unlocked!\nReturning to Onion." --auto
             bootScreen clear 2>/dev/null
             ;;
@@ -210,6 +222,12 @@ play_video() {
     find /mnt/SDCARD/App/FFplay "$sysdir" -name pos.cfg -exec rm -f {} \; 2>/dev/null
     restore_ffplay_state
     rm -f "$player_pid"
+    # runtime.sh cannot process Onion's shutdown order while our startup hook
+    # is blocking it, so handle the order exactly like Kids Mode does.
+    if [ -f /tmp/.offOrder ]; then
+        sync
+        check_off_order "End_Save"
+    fi
     timer_left="$(cat "$remaining" 2>/dev/null)"
     case "$timer_left" in ''|*[!0-9]*) timer_left=-1 ;; esac
     if [ -f "$menu_exit_marker" ] || [ "$player_status" -eq 0 ] || \
@@ -219,19 +237,10 @@ play_video() {
         return 0
     fi
 
-    # FFplay was terminated externally while time remained: this is the
-    # console shutdown path. Keep active_mode=running for boot resume and do
-    # not redraw the carousel while the shutdown screen is taking over.
-    sync
-    # Onion's key monitor may take up to 30 seconds to complete/force a
-    # shutdown. Keep this startup hook blocked so runtime.sh cannot launch
-    # MainUI or GameSwitcher in the middle of that sequence.
-    waited=0
-    while [ "$waited" -lt 35 ]; do
-        sleep 1
-        waited=$((waited + 1))
-    done
-    return 2
+    # Non-zero without Onion's off-order is a player failure, not a shutdown.
+    # Return safely to the carousel instead of trapping the startup sequence.
+    save_state carousel "$video"
+    return 0
 }
 
 start_timer "$1"
@@ -239,7 +248,6 @@ last="$(json_get '.last_video')"
 pin_notice=""
 if [ "$1" = run ] && [ "$(json_get '.active_mode')" = running ] && [ -n "$last" ]; then
     play_video "$last" no
-    [ $? -eq 2 ] && exit 0
 fi
 
 while [ -f /mnt/SDCARD/.videocarousel ]; do
@@ -261,12 +269,10 @@ while [ -f /mnt/SDCARD/.videocarousel ]; do
         PLAY)
             last="$video"
             play_video "$video" no
-            [ $? -eq 2 ] && break
             ;;
         RESTART)
             last="$video"
             play_video "$video" yes
-            [ $? -eq 2 ] && break
             ;;
         PIN)
             if verify_parent_pin "$video"; then
@@ -277,7 +283,10 @@ while [ -f /mnt/SDCARD/.videocarousel ]; do
             fi
             ;;
         POWEROFF) poweroff ;;
-        *) break ;;
+        *)
+            check_off_order "End"
+            break
+            ;;
     esac
 done
 

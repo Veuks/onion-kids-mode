@@ -747,7 +747,7 @@ static void renderCarousel(int remaining)
 static void renderEmpty(void)
 {
     renderBase();
-    theme_renderHeader(screen, "VideoKidsMode", false);
+    theme_renderHeader(screen, "Video Kids Mode", false);
     int cx = g_display.width / 2;
     drawText("No videos yet!", cx, (int)(g_display.height * 0.42),
              getFontBigValue(), theme()->list.color, g_display.width - 40);
@@ -809,7 +809,7 @@ static void formatAddMinutes(void *self, char *out_label)
 static void renderMenu(List *list, int remaining)
 {
     renderBase();
-    theme_renderHeader(screen, "VideoKidsMode - Parent Menu", false);
+    theme_renderHeader(screen, "Video Kids Mode - Parent Menu", false);
     theme_renderHeaderBattery(screen, batteryPercentage());
     theme_renderList(screen, list);
 
@@ -1024,7 +1024,7 @@ int main(int argc, char *argv[])
     // Parent menu list (native Onion list component)
     List menu_list = list_create(4, LIST_SMALL);
     list_addItem(&menu_list,
-                 (ListItem){.label = "Exit VideoKidsMode", .item_type = ACTION});
+                 (ListItem){.label = "Exit Video Kids Mode", .item_type = ACTION});
     list_addItem(&menu_list, (ListItem){.label = "Add play time",
                                         .item_type = MULTIVALUE,
                                         .value_min = 1,
