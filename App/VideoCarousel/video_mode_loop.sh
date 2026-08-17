@@ -114,8 +114,17 @@ save_state() {
     mode="$1" video="$2"
     tmp="$state.tmp"
     jq -n --arg floor videos --arg mode "$mode" --arg video "$video" \
-        '{version:1,active_floor:$floor,active_mode:$mode,last_video:$video}' > "$tmp" && mv -f "$tmp" "$state"
+        --arg folder "$folder" \
+        '{version:1,active_floor:$floor,active_mode:$mode,last_video:$video,active_folder:$folder}' > "$tmp" && mv -f "$tmp" "$state"
     sync
+}
+
+show_carousel() {
+    set --
+    [ -n "$folder" ] && set -- "$@" --folder "$folder"
+    [ -n "$last" ] && set -- "$@" --select "$last"
+    [ -n "$pin_notice" ] && set -- "$@" --start-pin --notice "$pin_notice"
+    "$appdir/bin/videoui" "$@" >/tmp/videocarousel_ui.log 2>&1
 }
 
 video_key() {
@@ -247,6 +256,14 @@ play_video() {
     fi
     timer_left="$(cat "$remaining" 2>/dev/null)"
     case "$timer_left" in ''|*[!0-9]*) timer_left=-1 ;; esac
+    # A clean FFplay auto-exit without a MENU request means the movie reached
+    # its natural end. Clear its resume point so A starts it from the beginning
+    # next time; MENU exits and timer stops keep their saved positions.
+    if [ "$player_status" -eq 0 ] && [ ! -f "$menu_exit_marker" ] && \
+       [ "$timer_left" -ne 0 ]; then
+        printf '0\n' > "$posfile"
+        sync
+    fi
     if [ -f "$menu_exit_marker" ] || [ "$player_status" -eq 0 ] || \
        [ "$timer_left" -eq 0 ]; then
         rm -f "$menu_exit_marker"
@@ -262,6 +279,13 @@ play_video() {
 
 start_timer "$1"
 last="$(json_get '.last_video')"
+folder="$(json_get '.active_folder')"
+[ -d "$folder" ] || folder=""
+if [ -z "$folder" ] && [ -n "$last" ]; then
+    last_dir="$(dirname "$last")"
+    [ "$last_dir" != /mnt/SDCARD/Media/Videos ] && [ -d "$last_dir" ] && \
+        folder="$last_dir"
+fi
 pin_notice=""
 if [ "$1" = run ] && [ "$(json_get '.active_mode')" = running ] && [ -n "$last" ]; then
     play_video "$last" no
@@ -269,20 +293,20 @@ fi
 
 while [ -f /mnt/SDCARD/.videocarousel ]; do
     rm -f "$result"
-    if [ -n "$pin_notice" ] && [ -n "$last" ]; then
-        "$appdir/bin/videoui" --select "$last" --start-pin \
-            --notice "$pin_notice" >/tmp/videocarousel_ui.log 2>&1
-    elif [ -n "$pin_notice" ]; then
-        "$appdir/bin/videoui" --start-pin --notice "$pin_notice" \
-            >/tmp/videocarousel_ui.log 2>&1
-    elif [ -n "$last" ]; then
-        "$appdir/bin/videoui" --select "$last" >/tmp/videocarousel_ui.log 2>&1
-    else
-        "$appdir/bin/videoui" >/tmp/videocarousel_ui.log 2>&1
-    fi
+    show_carousel
     action="$(sed -n 1p "$result")"
     video="$(sed -n 2p "$result")"
     case "$action" in
+        FOLDER)
+            folder="$video"
+            last=""
+            save_state carousel ""
+            ;;
+        BACK)
+            folder=""
+            last="$video"
+            save_state carousel "$last"
+            ;;
         PLAY)
             last="$video"
             play_video "$video" no
