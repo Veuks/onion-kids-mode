@@ -26,6 +26,7 @@ static Uint32 last_save;
 static long position_seconds;
 static const char *position_file;
 static const char *checkpoint_file;
+static bool key_repeat_enabled;
 
 __attribute__((constructor)) static void vcinput_loaded(void)
 {
@@ -100,6 +101,16 @@ static void key(SDL_Event *event, SDLKey sym, Uint8 state)
     event->key.keysym.sym = sym;
 }
 
+static void ensure_key_repeat(void)
+{
+    if (!key_repeat_enabled) {
+        // SDL 1.2 does not repeat held keys unless the application enables
+        // it. Onion's FFplay leaves it disabled on some builds.
+        SDL_EnableKeyRepeat(300, 100);
+        key_repeat_enabled = true;
+    }
+}
+
 static bool progressive_seek(SDL_Event *event, Uint32 now)
 {
     if (seek_input != SDLK_LEFT && seek_input != SDLK_RIGHT)
@@ -140,9 +151,13 @@ static bool map_event(SDL_Event *event)
 
     if (in == SDLK_ESCAPE) {
         if (state == SDL_PRESSED) {
-            menu_down = true;
-            menu_used = false;
-            menu_pressed_at = SDL_GetTicks();
+            // Ignore MENU auto-repeat: only the first press starts the
+            // gesture, otherwise its timer and combo flag would reset.
+            if (!menu_down) {
+                menu_down = true;
+                menu_used = false;
+                menu_pressed_at = SDL_GetTicks();
+            }
             return true;
         }
         menu_down = false;
@@ -221,6 +236,7 @@ int SDL_PollEvent(SDL_Event *event)
         real_poll = (poll_fn)dlsym(RTLD_NEXT, "SDL_PollEvent");
     if (!real_poll && !real_wait)
         real_wait = (wait_fn)dlsym(RTLD_NEXT, "SDL_WaitEvent");
+    ensure_key_repeat();
     update_clock();
     while (real_poll) {
         inside_event_call = true;
@@ -241,6 +257,7 @@ int SDL_WaitEvent(SDL_Event *event)
     // Do not block in the real SDL_WaitEvent while a seek key is held: the
     // Miyoo input driver does not reliably emit key-repeat events. Polling
     // here lets us generate the progressively larger seek steps ourselves.
+    ensure_key_repeat();
     if (!real_poll)
         real_poll = (poll_fn)dlsym(RTLD_NEXT, "SDL_PollEvent");
     if (!real_poll && !real_wait)
@@ -262,6 +279,7 @@ int SDL_WaitEvent(SDL_Event *event)
 int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
                    Uint32 mask)
 {
+    ensure_key_repeat();
     if (!real_peep)
         real_peep = (peep_fn)dlsym(RTLD_NEXT, "SDL_PeepEvents");
     if (!real_peep)
