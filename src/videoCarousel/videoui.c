@@ -82,7 +82,6 @@
 #define REMAINING_FILE "/tmp/videocarousel_remaining"
 #define RESULT_FILE "/tmp/videocarousel_ui_result"
 #define VIDEOS_DIR "/mnt/SDCARD/Media/Videos"
-#define CRT_FALLBACK_PATH "/mnt/SDCARD/App/VideoCarousel/crt-fallback.png"
 
 typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
@@ -126,9 +125,6 @@ static char current_folder[STR_MAX] = "";
 
 static SDL_Surface *artwork = NULL;
 static SDL_Surface *crt_fallback = NULL;
-static SDL_Surface *crt_effect = NULL;
-static int crt_effect_width = 0;
-static int crt_effect_height = 0;
 static SDL_Surface *icon_x = NULL; // optional theme icon-X-54.png, loaded
                                    // once on first use; NULL if the theme
                                    // doesn't have one (checked, not
@@ -499,6 +495,19 @@ static void drawText(const char *text, int center_x, int center_y,
                   TEXT_CENTER);
 }
 
+static void drawGlowingText(const char *text, int center_x, int center_y,
+                            TTF_Font *font, SDL_Color color, int max_width)
+{
+    SDL_Color glow = {(Uint8)(color.r / 3), (Uint8)(color.g / 3),
+                      (Uint8)(color.b / 3)};
+    const int offsets[][2] = {{-2, 0}, {2, 0}, {0, -2}, {0, 2},
+                              {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+    for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++)
+        drawText(text, center_x + offsets[i][0], center_y + offsets[i][1],
+                 font, glow, max_width);
+    drawText(text, center_x, center_y, font, color, max_width);
+}
+
 // Splits a too-long title into exactly two lines, breaking at whichever
 // space lands closest to balancing the two lines' rendered widths (not
 // just character count) — used by both the carousel and the "Start over?"
@@ -551,110 +560,115 @@ static void splitTwoLines(const char *text, TTF_Font *font, char *out1,
     }
 }
 
+static void applyCrtEffect(SDL_Surface *surface)
+{
+    if (surface == NULL || surface->format->BytesPerPixel != 4)
+        return;
+    if (SDL_MUSTLOCK(surface))
+        SDL_LockSurface(surface);
+    Uint32 *pixels = (Uint32 *)surface->pixels;
+    int stride = surface->pitch / 4;
+    for (int y = 0; y < surface->h; y++) {
+        for (int x = 0; x < surface->w; x++) {
+            Uint8 r, g, b, a;
+            SDL_GetRGBA(pixels[y * stride + x], surface->format,
+                        &r, &g, &b, &a);
+            // One evenly-spaced dark row out of every four.
+            if (y % 4 == 2) {
+                r = (Uint8)(r * 0.82);
+                g = (Uint8)(g * 0.82);
+                b = (Uint8)(b * 0.82);
+            }
+            pixels[y * stride + x] = SDL_MapRGBA(surface->format, r, g, b, a);
+        }
+    }
+    if (SDL_MUSTLOCK(surface))
+        SDL_UnlockSurface(surface);
+}
+
+static SDL_Surface *createCrtSurface(int width, int height)
+{
+    SDL_Surface *surface = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, width, height, 32, 0x000000ff, 0x0000ff00,
+        0x00ff0000, 0xff000000);
+    if (surface == NULL)
+        return NULL;
+    SDL_FillRect(surface, NULL, SDL_MapRGBA(surface->format, 3, 2, 8, 255));
+    applyCrtEffect(surface);
+    return surface;
+}
+
 static void loadArtwork(void)
 {
-    // Only skip reloading if we already have artwork loaded for this exact
-    // slot. If a previous attempt found nothing (e.g. the scraper hadn't
-    // finished writing the image yet when this favorite was added), retry
-    // on every visit instead of caching that miss for the rest of the run —
-    // otherwise a newly-scraped image never appears until kidui restarts.
     if (artwork_index == current && artwork != NULL)
         return;
-
     if (artwork != NULL) {
         SDL_FreeSurface(artwork);
         artwork = NULL;
     }
     artwork_index = current;
-
     if (games_count == 0)
         return;
 
     const char *imgpath = games[current].item.imgpath;
     if (strlen(imgpath) == 0 || access(imgpath, F_OK) != 0)
         return;
-
     SDL_Surface *raw = IMG_Load(imgpath);
     if (raw == NULL)
         return;
 
-    // Scale to fit the art box while keeping aspect ratio
-    double max_w = g_display.width * 0.62;
-    double max_h = g_display.height * 0.58;
-    double scale_w = max_w / raw->w;
-    double scale_h = max_h / raw->h;
-    double scale = scale_w < scale_h ? scale_w : scale_h;
-
-    // Always run through the scaler: it also normalizes to 32-bit ARGB,
-    // which rotate180InPlace below relies on.
-    SDL_Surface *scaled = scaleSurface(raw, (int)(raw->w * scale + 0.5),
-                                       (int)(raw->h * scale + 0.5));
-    if (scaled != NULL) {
-        SDL_FreeSurface(raw);
-        raw = scaled;
-    }
-
-#ifdef PLATFORM_MIYOOMINI
-    rotate180InPlace(raw);
-#endif
-
-    artwork = SDL_DisplayFormatAlpha(raw);
-    if (artwork == NULL)
-        artwork = raw;
+    // Every cover uses the exact same 5:7 box. Crop centrally before scaling
+    // instead of stretching, so circles, faces and lettering keep their shape.
+    int target_h = (int)(g_display.height * 0.52);
+    int target_w = target_h * 5 / 7;
+    int crop_w = raw->w;
+    int crop_h = raw->h;
+    if ((long)crop_w * 7 > (long)crop_h * 5)
+        crop_w = crop_h * 5 / 7;
     else
+        crop_h = crop_w * 7 / 5;
+    SDL_Rect source_rect = {(raw->w - crop_w) / 2,
+                            (raw->h - crop_h) / 2, crop_w, crop_h};
+    SDL_Surface *cropped = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, crop_w, crop_h, 32, 0x000000ff, 0x0000ff00,
+        0x00ff0000, 0xff000000);
+    if (cropped == NULL) {
         SDL_FreeSurface(raw);
+        return;
+    }
+    SDL_BlitSurface(raw, &source_rect, cropped, NULL);
+    SDL_FreeSurface(raw);
+    SDL_Surface *scaled = scaleSurface(cropped, target_w, target_h);
+    SDL_FreeSurface(cropped);
+    if (scaled == NULL)
+        return;
+    applyCrtEffect(scaled);
+#ifdef PLATFORM_MIYOOMINI
+    rotate180InPlace(scaled);
+#endif
+    artwork = SDL_DisplayFormatAlpha(scaled);
+    if (artwork == NULL)
+        artwork = scaled;
+    else
+        SDL_FreeSurface(scaled);
 }
 
 static SDL_Surface *loadCrtFallback(int width, int height)
 {
     if (crt_fallback != NULL)
         return crt_fallback;
-    SDL_Surface *raw = IMG_Load(CRT_FALLBACK_PATH);
-    if (raw == NULL)
-        return NULL;
-    SDL_Surface *scaled = scaleSurface(raw, width, height);
-    SDL_FreeSurface(raw);
-    if (scaled == NULL)
+    SDL_Surface *surface = createCrtSurface(width, height);
+    if (surface == NULL)
         return NULL;
 #ifdef PLATFORM_MIYOOMINI
-    rotate180InPlace(scaled);
+    rotate180InPlace(surface);
 #endif
-    crt_fallback = SDL_DisplayFormatAlpha(scaled);
+    crt_fallback = SDL_DisplayFormatAlpha(surface);
     if (crt_fallback == NULL)
-        crt_fallback = scaled;
+        crt_fallback = surface;
     else
-        SDL_FreeSurface(scaled);
+        SDL_FreeSurface(surface);
     return crt_fallback;
-}
-
-static SDL_Surface *loadCrtEffect(int width, int height)
-{
-    if (crt_effect != NULL && crt_effect_width == width &&
-        crt_effect_height == height)
-        return crt_effect;
-    if (crt_effect != NULL) {
-        SDL_FreeSurface(crt_effect);
-        crt_effect = NULL;
-    }
-    SDL_Surface *raw = IMG_Load(CRT_FALLBACK_PATH);
-    if (raw == NULL)
-        return NULL;
-    SDL_Surface *scaled = scaleSurface(raw, width, height);
-    SDL_FreeSurface(raw);
-    if (scaled == NULL)
-        return NULL;
-#ifdef PLATFORM_MIYOOMINI
-    rotate180InPlace(scaled);
-#endif
-    crt_effect = SDL_DisplayFormatAlpha(scaled);
-    if (crt_effect == NULL)
-        crt_effect = scaled;
-    else
-        SDL_FreeSurface(scaled);
-    SDL_SetAlpha(crt_effect, SDL_SRCALPHA, 72);
-    crt_effect_width = width;
-    crt_effect_height = height;
-    return crt_effect;
 }
 
 static void fillRect(int x, int y, int w, int h, uint32_t color)
@@ -739,9 +753,6 @@ static void renderCarousel(int remaining)
     if (artwork != NULL) {
         SDL_Rect pos = {cx - artwork->w / 2, art_cy - artwork->h / 2};
         SDL_BlitSurface(artwork, NULL, screen, &pos);
-        SDL_Surface *effect = loadCrtEffect(artwork->w, artwork->h);
-        if (effect != NULL)
-            SDL_BlitSurface(effect, NULL, screen, &pos);
     }
     else {
         // Missing artwork: use a clean black card with the movie/folder
@@ -769,8 +780,8 @@ static void renderCarousel(int remaining)
         TTF_SizeUTF8(getFontGameLabel(), fallback_label, &measured_w,
                      &measured_h);
         if (measured_w <= text_w) {
-            drawText(fallback_label, cx, art_cy, getFontGameLabel(),
-                     fallback_color, text_w);
+            drawGlowingText(fallback_label, cx, art_cy, getFontGameLabel(),
+                            fallback_color, text_w);
         }
         else {
             char fallback_line1[STR_MAX] = "";
@@ -779,10 +790,10 @@ static void renderCarousel(int remaining)
                           fallback_line1, sizeof(fallback_line1),
                           fallback_line2, sizeof(fallback_line2));
             int line_h = TTF_FontLineSkip(getFontGameLabel());
-            drawText(fallback_line1, cx, art_cy - line_h / 2,
-                     getFontGameLabel(), fallback_color, text_w);
-            drawText(fallback_line2, cx, art_cy + line_h / 2,
-                     getFontGameLabel(), fallback_color, text_w);
+            drawGlowingText(fallback_line1, cx, art_cy - line_h / 2,
+                            getFontGameLabel(), fallback_color, text_w);
+            drawGlowingText(fallback_line2, cx, art_cy + line_h / 2,
+                            getFontGameLabel(), fallback_color, text_w);
         }
     }
 
@@ -1596,8 +1607,6 @@ int main(int argc, char *argv[])
         SDL_FreeSurface(artwork);
     if (crt_fallback != NULL)
         SDL_FreeSurface(crt_fallback);
-    if (crt_effect != NULL)
-        SDL_FreeSurface(crt_effect);
     if (icon_x != NULL)
         SDL_FreeSurface(icon_x);
     if (font_gamelabel != NULL)

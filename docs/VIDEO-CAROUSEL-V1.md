@@ -19,6 +19,10 @@ JPG artwork is also accepted. Titles are sorted alphabetically.
 When no artwork is available, the carousel displays the movie or folder name
 on a black card using the current theme's selected-item color. Inside a series,
 this card keeps the folder name while the episode title is shown below it.
+All supplied and generated covers are cropped without stretching to the same
+5:7 display size. CRT scanlines are rendered directly by the carousel. The
+subtle themed glow is applied only to the title of entries with no supplied
+image; screen edges remain neutral.
 
 ## Controls
 
@@ -36,8 +40,8 @@ Player:
 - MENU alone: save progress and return to the carousel
 - every other key: ignored
 
-Playback uses a subtle scanline filter to soften the very sharp handheld LCD
-presentation without the performance cost of a Gaussian blur.
+Playback is first fitted to the 640x480 display and then receives evenly spaced
+scanlines, avoiding irregular spacing caused by scaling the lines afterwards.
 
 ## Series folders
 
