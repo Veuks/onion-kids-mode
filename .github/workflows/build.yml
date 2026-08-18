@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Cross-compile Kids Mode and Video Kids Mode
+    name: Cross-compile Kids Mode V2
     runs-on: ubuntu-latest
     container:
       image: aemiii91/miyoomini-toolchain:latest
@@ -30,18 +30,6 @@ jobs:
         shell: bash
         run: |
           source /root/.bashrc
-          cp -r src/kidsMode onion/src/
-          cd onion/src/kidsMode
-          make
-          file kidui
-          cp kidui "$GITHUB_WORKSPACE/App/KidsMode/bin/kidui"
-          cd "$GITHUB_WORKSPACE"
-          cp -r src/videoCarousel onion/src/
-          cd onion/src/videoCarousel
-          make
-          file videoui libvcinput.so
-          cp videoui libvcinput.so "$GITHUB_WORKSPACE/App/VideoCarousel/bin/"
-          cd "$GITHUB_WORKSPACE"
           cp -r src/kidsModeV2 onion/src/
           cd onion/src/kidsModeV2
           make
