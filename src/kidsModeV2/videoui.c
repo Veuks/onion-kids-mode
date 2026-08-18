@@ -324,6 +324,93 @@ static SDL_Surface *scaleSurface(SDL_Surface *src, int dst_w, int dst_h)
     return dst;
 }
 
+static uint32_t readSurfacePixel(SDL_Surface *surface, int x, int y)
+{
+    int bpp = surface->format->BytesPerPixel;
+    uint8_t *pixel = (uint8_t *)surface->pixels + y * surface->pitch + x * bpp;
+    switch (bpp) {
+    case 1:
+        return *pixel;
+    case 2:
+        return *(uint16_t *)pixel;
+    case 3:
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+        return pixel[0] << 16 | pixel[1] << 8 | pixel[2];
+#else
+        return pixel[0] | pixel[1] << 8 | pixel[2] << 16;
+#endif
+    default:
+        return *(uint32_t *)pixel;
+    }
+}
+
+// Alpha-safe bilinear scaler for overlays. scaleSurface's fast conversion is
+// ideal for opaque artwork, but SDL 1.2 can turn fully transparent source
+// pixels opaque during that preliminary blit on the Miyoo build. Read RGBA
+// explicitly here so the reflection can never cover the video image in black.
+static SDL_Surface *scaleAlphaSurface(SDL_Surface *src, int dst_w, int dst_h)
+{
+    if (src == NULL || dst_w < 1 || dst_h < 1)
+        return NULL;
+    SDL_Surface *dst = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, dst_w, dst_h, 32, 0x00FF0000, 0x0000FF00, 0x000000FF,
+        0xFF000000);
+    if (dst == NULL)
+        return NULL;
+    if (SDL_MUSTLOCK(src) && SDL_LockSurface(src) != 0) {
+        SDL_FreeSurface(dst);
+        return NULL;
+    }
+
+    uint32_t *out = (uint32_t *)dst->pixels;
+    int out_pitch = dst->pitch / 4;
+    for (int y = 0; y < dst_h; y++) {
+        double fy = ((double)y + 0.5) * src->h / dst_h - 0.5;
+        int y0 = (int)fy;
+        if (y0 < 0)
+            y0 = 0;
+        int y1 = y0 + 1 < src->h ? y0 + 1 : src->h - 1;
+        double wy = fy - y0;
+        if (wy < 0)
+            wy = 0;
+        for (int x = 0; x < dst_w; x++) {
+            double fx = ((double)x + 0.5) * src->w / dst_w - 0.5;
+            int x0 = (int)fx;
+            if (x0 < 0)
+                x0 = 0;
+            int x1 = x0 + 1 < src->w ? x0 + 1 : src->w - 1;
+            double wx = fx - x0;
+            if (wx < 0)
+                wx = 0;
+
+            uint8_t r[4], g[4], b[4], a[4];
+            SDL_GetRGBA(readSurfacePixel(src, x0, y0), src->format,
+                        &r[0], &g[0], &b[0], &a[0]);
+            SDL_GetRGBA(readSurfacePixel(src, x1, y0), src->format,
+                        &r[1], &g[1], &b[1], &a[1]);
+            SDL_GetRGBA(readSurfacePixel(src, x0, y1), src->format,
+                        &r[2], &g[2], &b[2], &a[2]);
+            SDL_GetRGBA(readSurfacePixel(src, x1, y1), src->format,
+                        &r[3], &g[3], &b[3], &a[3]);
+
+            uint8_t *channels[] = {r, g, b, a};
+            uint32_t packed[4];
+            for (int c = 0; c < 4; c++) {
+                double value = channels[c][0] * (1 - wx) * (1 - wy) +
+                               channels[c][1] * wx * (1 - wy) +
+                               channels[c][2] * (1 - wx) * wy +
+                               channels[c][3] * wx * wy;
+                packed[c] = (uint32_t)(value + 0.5);
+            }
+            out[y * out_pitch + x] = (packed[3] << 24) | (packed[0] << 16) |
+                                     (packed[1] << 8) | packed[2];
+        }
+    }
+    if (SDL_MUSTLOCK(src))
+        SDL_UnlockSurface(src);
+    return dst;
+}
+
 // icon-X-54.png ships inside the app itself (App/KidsMode/icon-X-54.png)
 // rather than living in the active theme's folder — no dependency on the
 // person having added anything to their theme, and the file travels with
@@ -351,8 +438,9 @@ static SDL_Surface *loadIconX(void)
 }
 
 // ScreenScraper Mix V1 bakes the same glass highlight into every square.
-// Load our extracted transparent version once, resize it to the square video
-// tile and temper its alpha to match the grey highlight of the 250px samples.
+// Our tiny source asset is a greyscale matte on black: after resizing, turn
+// its luminance into alpha (black = transparent, grey = reflected light).
+// This avoids SDL 1.2 ever interpreting a transparent PNG as an opaque tile.
 static SDL_Surface *loadScreenReflection(int size)
 {
     if (screen_reflection_checked)
@@ -362,21 +450,26 @@ static SDL_Surface *loadScreenReflection(int size)
     SDL_Surface *raw = IMG_Load(SCREEN_REFLECTION_PATH);
     if (raw == NULL)
         return NULL;
-    SDL_Surface *scaled = scaleSurface(raw, size, size);
+    SDL_Surface *scaled = scaleAlphaSurface(raw, size, size);
     SDL_FreeSurface(raw);
     if (scaled == NULL)
         return NULL;
 
-    // scaleSurface always produces ARGB8888, so the high byte is alpha.
-    // The reference highlight peaks around one third white over black.
+    // scaleAlphaSurface produces ARGB8888. The matte peaks around the same
+    // medium grey measured in the references, so its luminance can be used
+    // directly as the white overlay's opacity without another multiplier.
     uint32_t *pixels = (uint32_t *)scaled->pixels;
     int pitch = scaled->pitch / 4;
     for (int y = 0; y < scaled->h; y++) {
         for (int x = 0; x < scaled->w; x++) {
             uint32_t pixel = pixels[y * pitch + x];
-            uint32_t alpha = (pixel >> 24) & 0xFF;
-            alpha = (alpha * 90 + 127) / 255;
-            pixels[y * pitch + x] = (pixel & 0x00FFFFFF) | (alpha << 24);
+            uint32_t red = (pixel >> 16) & 0xFF;
+            uint32_t green = (pixel >> 8) & 0xFF;
+            uint32_t blue = pixel & 0xFF;
+            uint32_t alpha = (red * 30 + green * 59 + blue * 11 + 50) / 100;
+            if (alpha < 2)
+                alpha = 0;
+            pixels[y * pitch + x] = (alpha << 24) | 0x00FFFFFF;
         }
     }
 
@@ -388,6 +481,7 @@ static SDL_Surface *loadScreenReflection(int size)
         screen_reflection = scaled;
     else
         SDL_FreeSurface(scaled);
+    SDL_SetAlpha(screen_reflection, SDL_SRCALPHA, 255);
     return screen_reflection;
 }
 
