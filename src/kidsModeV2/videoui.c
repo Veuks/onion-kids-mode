@@ -87,6 +87,7 @@
 #define ICON_X_PATH "/mnt/SDCARD/App/KidsModeV2/icon-X-54.png"
 #define SCREEN_REFLECTION_PATH \
     "/mnt/SDCARD/App/KidsModeV2/screen-reflection.png"
+#define SCREEN_REFLECTION_OPACITY_PERCENT 45
 
 typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
@@ -484,9 +485,9 @@ static SDL_Surface *loadScreenReflection(int size)
     if (scaled == NULL)
         return NULL;
 
-    // scaleAlphaSurface produces ARGB8888. The matte peaks around the same
-    // medium grey measured in the references, so its luminance can be used
-    // directly as the white overlay's opacity without another multiplier.
+    // scaleAlphaSurface produces ARGB8888. The source is deliberately broad
+    // and bright so its soft gradient survives scaling; use the calibrated
+    // fraction below to match the subtler ScreenScraper Mix V1 reflection.
     uint32_t *pixels = (uint32_t *)scaled->pixels;
     int pitch = scaled->pitch / 4;
     for (int y = 0; y < scaled->h; y++) {
@@ -495,7 +496,10 @@ static SDL_Surface *loadScreenReflection(int size)
             uint32_t red = (pixel >> 16) & 0xFF;
             uint32_t green = (pixel >> 8) & 0xFF;
             uint32_t blue = pixel & 0xFF;
-            uint32_t alpha = (red * 30 + green * 59 + blue * 11 + 50) / 100;
+            uint32_t luminance =
+                (red * 30 + green * 59 + blue * 11 + 50) / 100;
+            uint32_t alpha =
+                (luminance * SCREEN_REFLECTION_OPACITY_PERCENT + 50) / 100;
             if (alpha < 2)
                 alpha = 0;
             pixels[y * pitch + x] = (alpha << 24) | 0x00FFFFFF;
