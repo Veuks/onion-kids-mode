@@ -57,14 +57,9 @@ jobs:
           path: App
       - name: Assemble zip
         run: |
-          chmod +x App/KidsMode/bin/kidui App/KidsMode/*.sh
-          chmod +x App/VideoCarousel/bin/videoui App/VideoCarousel/*.sh
           chmod +x App/KidsModeDeluxe/bin/kidui App/KidsModeDeluxe/*.sh
           cp README.md App/KidsModeDeluxe/
-          cp docs/VIDEO-CAROUSEL-V1.md App/VideoCarousel/README.md
           cd App
-          zip -r ../KidsMode.zip KidsMode
-          zip -r ../VideoKidsMode-V1.zip VideoCarousel
           zip -r ../KidsMode-Deluxe.zip KidsModeDeluxe
       - name: Attach to release
         uses: softprops/action-gh-release@v2
@@ -72,6 +67,4 @@ jobs:
           name: Kids Mode Deluxe ${{ github.ref_name }}
           body_path: .github/release-notes.md
           files: |
-            KidsMode.zip
-            VideoKidsMode-V1.zip
             KidsMode-Deluxe.zip
