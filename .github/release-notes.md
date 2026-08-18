@@ -18,7 +18,8 @@ protected Onion-style launcher for Miyoo Mini and Mini Plus.
 - Simplified video controls with progressive seeking and on-screen seek values.
 - ScreenScraper Mix V1 reflection and uniform square video artwork.
 - Cinema-poster artwork is recommended for movies; long automatic episode
-  titles wrap over up to three lines with adaptive font sizing.
+  and carousel titles are centred and wrap over up to six lines before
+  adaptive font sizing begins.
 
 ## Install
 
@@ -29,4 +30,4 @@ protected Onion-style launcher for Miyoo Mini and Mini Plus.
 4. Reboot or refresh Apps, then launch **Kids Mode Deluxe**.
 
 Requires Onion OS 4.3 or newer. Read the included README for controls, series
-folders, updating from `KidsModeV2`, and PIN recovery.
+folders and PIN recovery.
