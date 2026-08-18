@@ -2,7 +2,7 @@
 appdir=/mnt/SDCARD/App/VideoCarousel
 result=/tmp/videocarousel_ui_result
 
-mkdir -p /mnt/SDCARD/Media/Videos/Imgs
+mkdir -p /mnt/SDCARD/Media/VideoKidsMode/Imgs
 
 rm -f "$result"
 "$appdir/bin/videoui" --pick-timer -t "Video play timer" >/tmp/videocarousel_ui.log 2>&1

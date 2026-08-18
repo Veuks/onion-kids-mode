@@ -13,11 +13,12 @@ sysdir=/mnt/SDCARD/.tmp_update
 miyoodir=/mnt/SDCARD/miyoo
 pinconfig=/mnt/SDCARD/App/KidsMode/kidmode.json
 pinbackup=/mnt/SDCARD/Saves/kidmode/pin_backup.json
+videosdir=/mnt/SDCARD/Media/VideoKidsMode
 
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
 
-mkdir -p "$savedir" "$positions" /mnt/SDCARD/Media/Videos/Imgs
+mkdir -p "$savedir" "$positions" "$videosdir/Imgs"
 [ -x "$ffplay" ] || ffplay="$(command -v ffplay)"
 
 json_get() {
@@ -233,7 +234,7 @@ play_video() {
       VC_CHECKPOINT_FILE="$posfile" \
       LD_PRELOAD="$appdir/bin/libvcinput.so:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
       "$ffplay" -autoexit \
-      -vf "scale=640:480:force_original_aspect_ratio=decrease:flags=bicubic,pad=640:480:(ow-iw)/2:(oh-ih)/2:black,drawgrid=w=iw:h=4:t=1:c=black@0.10,hflip,vflip" \
+      -vf "hflip,vflip,drawgrid=w=iw:h=ceil(ih/160):t=1:c=black@0.06" \
       -i "$video" -ss "$start" &
     pid=$!
     printf '%s\n' "$pid" > "$player_pid"
@@ -282,10 +283,12 @@ play_video() {
 start_timer "$1"
 last="$(json_get '.last_video')"
 folder="$(json_get '.active_folder')"
+case "$last" in "$videosdir"/*) ;; *) last="" ;; esac
+case "$folder" in "$videosdir"/*) ;; *) folder="" ;; esac
 [ -d "$folder" ] || folder=""
 if [ -z "$folder" ] && [ -n "$last" ]; then
     last_dir="$(dirname "$last")"
-    [ "$last_dir" != /mnt/SDCARD/Media/Videos ] && [ -d "$last_dir" ] && \
+    [ "$last_dir" != "$videosdir" ] && [ -d "$last_dir" ] && \
         folder="$last_dir"
 fi
 pin_notice=""

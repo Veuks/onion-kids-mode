@@ -6,13 +6,13 @@ Video Kids Mode is a standalone Onion app. Its internal folder remains named
 
 ## Media layout
 
-Copy videos directly into `/mnt/SDCARD/Media/Videos/`. Supported filename
+Copy videos directly into `/mnt/SDCARD/Media/VideoKidsMode/`. Supported filename
 extensions are MP4, MKV, AVI, MOV, M4V and WebM. Optional artwork goes in
-`/mnt/SDCARD/Media/Videos/Imgs/` with the exact same basename:
+`/mnt/SDCARD/Media/VideoKidsMode/Imgs/` with the exact same basename:
 
 ```text
-Media/Videos/Toy Story.mp4
-Media/Videos/Imgs/Toy Story.png
+Media/VideoKidsMode/Toy Story.mp4
+Media/VideoKidsMode/Imgs/Toy Story.png
 ```
 
 JPG artwork is also accepted. Titles are sorted alphabetically.
@@ -40,12 +40,12 @@ Player:
 - MENU alone: save progress and return to the carousel
 - every other key: ignored
 
-Playback is first fitted to the 640x480 display and then receives evenly spaced
-scanlines, avoiding irregular spacing caused by scaling the lines afterwards.
+Playback keeps FFplay's native aspect-ratio handling. Scanline spacing adapts
+to each video's height so anamorphic and unusual formats remain fully visible.
 
 ## Series folders
 
-Video Kids Mode supports one folder level below `Media/Videos`. A folder that
+Video Kids Mode supports one folder level below `Media/VideoKidsMode`. A folder that
 contains videos appears in the main carousel. A opens it and B returns to the
 main carousel. Inside the folder the footer is A: PLAY, X: RESTART, B: BACK.
 

@@ -81,7 +81,7 @@
 #define TIMESUP_OFF_MS (5 * 60 * 1000)
 #define REMAINING_FILE "/tmp/videocarousel_remaining"
 #define RESULT_FILE "/tmp/videocarousel_ui_result"
-#define VIDEOS_DIR "/mnt/SDCARD/Media/Videos"
+#define VIDEOS_DIR "/mnt/SDCARD/Media/VideoKidsMode"
 
 typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
@@ -573,11 +573,11 @@ static void applyCrtEffect(SDL_Surface *surface)
             Uint8 r, g, b, a;
             SDL_GetRGBA(pixels[y * stride + x], surface->format,
                         &r, &g, &b, &a);
-            // One evenly-spaced dark row out of every four.
-            if (y % 4 == 2) {
-                r = (Uint8)(r * 0.82);
-                g = (Uint8)(g * 0.82);
-                b = (Uint8)(b * 0.82);
+            // Fine, subtle CRT texture: one lightly dimmed row out of three.
+            if (y % 3 == 2) {
+                r = (Uint8)(r * 0.92);
+                g = (Uint8)(g * 0.92);
+                b = (Uint8)(b * 0.92);
             }
             pixels[y * stride + x] = SDL_MapRGBA(surface->format, r, g, b, a);
         }
@@ -927,7 +927,7 @@ static void renderEmpty(void)
     int cx = g_display.width / 2;
     drawText("No videos yet!", cx, (int)(g_display.height * 0.42),
              getFontBigValue(), theme()->list.color, g_display.width - 40);
-    drawText("Add videos to Media/Videos", cx,
+    drawText("Add videos to Media/VideoKidsMode", cx,
              (int)(g_display.height * 0.58), getFontInfo(),
              theme()->list.color, g_display.width - 40);
     theme_renderFooter(screen);
