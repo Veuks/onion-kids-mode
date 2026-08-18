@@ -11,10 +11,12 @@ protected Onion-style launcher for Miyoo Mini and Mini Plus.
 - Video resume, restart confirmation, series folders and optional shared
   folder artwork. Series without artwork use automatic black episode cards;
   illustrated series keep episode names below their images.
+- Each series folder remembers and restores its own last selected episode.
 - Automatic restoration of the real shutdown state: running content resumes,
-  while a carousel shutdown returns to the same selection.
+  while a carousel shutdown returns to the same selection. Games and Videos
+  also keep separate selections while switching between sections.
 - Shared play timer, extra-time controls and automatic power-off after the
-  Time's up screen.
+  Time's up screen, now headed by the Kids Mode Deluxe banner.
 - Simplified video controls with progressive seeking and on-screen seek values.
 - ScreenScraper Mix V1 reflection and uniform square video artwork.
 - Cinema-poster artwork is recommended for movies; long automatic episode
