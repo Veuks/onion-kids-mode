@@ -111,6 +111,7 @@ typedef enum { SCREEN_CAROUSEL,
 // Big kid-facing text sizes (the theme's own sizes are used for header,
 // list rows and hints via resource_getFont)
 #define GAME_LABEL_FONT_SIZE 30
+#define EPISODE_MIN_FONT_SIZE 14
 #define BIG_VALUE_FONT_SIZE 48
 // Longer helper sentences use the theme's LIST font (the readable upright
 // face Onion pairs with its display font in the Apps menu) at a controlled
@@ -168,12 +169,19 @@ static int title_for_index = -1;
 static bool title_two_lines = false;
 static char title_line1[STR_MAX] = "";
 static char title_line2[STR_MAX] = "";
+static int episode_title_for_index = -1;
+static int episode_title_line_count = 0;
+static TTF_Font *episode_title_font = NULL;
+static char episode_title_lines[3][STR_MAX] = {{0}, {0}, {0}};
 
 static int pin_digits[PIN_LEN] = {0, 0, 0, 0};
 static int pin_cursor = 0;
 static char pin_notice[STR_MAX] = ""; // short message under the PIN boxes
 
 static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
+// Smaller versions of the same face are loaded only for exceptionally long
+// episode titles. Most titles keep the normal large carousel font.
+static TTF_Font *font_episode_sizes[GAME_LABEL_FONT_SIZE + 1] = {NULL};
 static TTF_Font *font_bigvalue = NULL;  // theme title font, large
 static TTF_Font *font_info = NULL;      // theme list font, sentence-sized
 
@@ -192,6 +200,21 @@ static TTF_Font *getFontGameLabel(void)
             TTF_SetFontStyle(font_gamelabel, TTF_STYLE_BOLD);
     }
     return font_gamelabel;
+}
+
+static TTF_Font *getEpisodeFont(int size)
+{
+    if (size >= GAME_LABEL_FONT_SIZE)
+        return getFontGameLabel();
+    if (size < EPISODE_MIN_FONT_SIZE)
+        size = EPISODE_MIN_FONT_SIZE;
+    if (font_episode_sizes[size] == NULL) {
+        font_episode_sizes[size] =
+            theme_loadFont(theme()->path, theme()->list.font, size);
+        if (font_episode_sizes[size] != NULL)
+            TTF_SetFontStyle(font_episode_sizes[size], TTF_STYLE_BOLD);
+    }
+    return font_episode_sizes[size];
 }
 
 static TTF_Font *getFontBigValue(void)
@@ -612,6 +635,7 @@ static void resetEntries(void)
     artwork = NULL;
     artwork_index = -1;
     title_for_index = -1;
+    episode_title_for_index = -1;
 }
 
 static void loadFavorites(void)
@@ -912,6 +936,198 @@ static void splitTwoLines(const char *text, TTF_Font *font, char *out1,
     }
 }
 
+static void copyTrimmedRange(const char *start, size_t length, char *out,
+                             size_t out_size)
+{
+    while (length > 0 && *start == ' ') {
+        start++;
+        length--;
+    }
+    while (length > 0 && start[length - 1] == ' ')
+        length--;
+    if (length >= out_size)
+        length = out_size - 1;
+    memcpy(out, start, length);
+    out[length] = '\0';
+}
+
+static int textWidth(TTF_Font *font, const char *text)
+{
+    int width = 0, height = 0;
+    if (font != NULL && text != NULL)
+        TTF_SizeUTF8(font, text, &width, &height);
+    return width;
+}
+
+// Lay an episode title out on one, two or at most three balanced lines.
+// Prefer the fewest lines that fit. If even the best three-line layout is
+// still too wide, the caller retries it with a smaller version of the font.
+static int layoutEpisodeTitle(const char *text, TTF_Font *font, int max_width,
+                              char lines[3][STR_MAX])
+{
+    size_t length = strlen(text);
+    for (int i = 0; i < 3; i++)
+        lines[i][0] = '\0';
+
+    if (textWidth(font, text) <= max_width) {
+        snprintf(lines[0], STR_MAX, "%s", text);
+        return 1;
+    }
+
+    bool found_two = false;
+    size_t best_two = 0;
+    int best_two_max = 0;
+    int best_two_diff = 0;
+    for (size_t first = 0; first < length; first++) {
+        if (text[first] != ' ')
+            continue;
+        char part1[STR_MAX], part2[STR_MAX];
+        copyTrimmedRange(text, first, part1, sizeof(part1));
+        copyTrimmedRange(text + first + 1, length - first - 1, part2,
+                         sizeof(part2));
+        if (part1[0] == '\0' || part2[0] == '\0')
+            continue;
+        int width1 = textWidth(font, part1);
+        int width2 = textWidth(font, part2);
+        int widest = width1 > width2 ? width1 : width2;
+        int diff = width1 > width2 ? width1 - width2 : width2 - width1;
+        if (!found_two || widest < best_two_max ||
+            (widest == best_two_max && diff < best_two_diff)) {
+            found_two = true;
+            best_two = first;
+            best_two_max = widest;
+            best_two_diff = diff;
+        }
+    }
+    if (found_two && best_two_max <= max_width) {
+        copyTrimmedRange(text, best_two, lines[0], STR_MAX);
+        copyTrimmedRange(text + best_two + 1, length - best_two - 1,
+                         lines[1], STR_MAX);
+        return 2;
+    }
+
+    bool found_three = false;
+    size_t best_first = 0, best_second = 0;
+    int best_three_max = 0;
+    int best_three_spread = 0;
+    for (size_t first = 0; first < length; first++) {
+        if (text[first] != ' ')
+            continue;
+        for (size_t second = first + 1; second < length; second++) {
+            if (text[second] != ' ')
+                continue;
+            char part1[STR_MAX], part2[STR_MAX], part3[STR_MAX];
+            copyTrimmedRange(text, first, part1, sizeof(part1));
+            copyTrimmedRange(text + first + 1, second - first - 1, part2,
+                             sizeof(part2));
+            copyTrimmedRange(text + second + 1, length - second - 1, part3,
+                             sizeof(part3));
+            if (part1[0] == '\0' || part2[0] == '\0' || part3[0] == '\0')
+                continue;
+            int width1 = textWidth(font, part1);
+            int width2 = textWidth(font, part2);
+            int width3 = textWidth(font, part3);
+            int widest = width1;
+            if (width2 > widest)
+                widest = width2;
+            if (width3 > widest)
+                widest = width3;
+            int narrowest = width1;
+            if (width2 < narrowest)
+                narrowest = width2;
+            if (width3 < narrowest)
+                narrowest = width3;
+            int spread = widest - narrowest;
+            if (!found_three || widest < best_three_max ||
+                (widest == best_three_max && spread < best_three_spread)) {
+                found_three = true;
+                best_first = first;
+                best_second = second;
+                best_three_max = widest;
+                best_three_spread = spread;
+            }
+        }
+    }
+    if (found_three) {
+        copyTrimmedRange(text, best_first, lines[0], STR_MAX);
+        copyTrimmedRange(text + best_first + 1,
+                         best_second - best_first - 1, lines[1], STR_MAX);
+        copyTrimmedRange(text + best_second + 1, length - best_second - 1,
+                         lines[2], STR_MAX);
+        return 3;
+    }
+
+    // Titles with fewer than three words cannot form three word-wrapped
+    // lines. Keep their best two-line form (or one long word) and let the
+    // adaptive font sizing below make it fit without truncation.
+    if (found_two) {
+        copyTrimmedRange(text, best_two, lines[0], STR_MAX);
+        copyTrimmedRange(text + best_two + 1, length - best_two - 1,
+                         lines[1], STR_MAX);
+        return 2;
+    }
+    snprintf(lines[0], STR_MAX, "%s", text);
+    return 1;
+}
+
+static void drawOutlinedText(const char *text, int center_x, int center_y,
+                             TTF_Font *font, SDL_Color color)
+{
+    SDL_Color outline_color = {0, 0, 0};
+    int outline = (int)(1.0 * g_scale + 0.5);
+    if (outline < 1)
+        outline = 1;
+    const int directions[][2] = {{-1, 0}, {1, 0},  {0, -1}, {0, 1},
+                                  {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+    for (size_t i = 0; i < sizeof(directions) / sizeof(directions[0]); i++)
+        drawText(text, center_x + directions[i][0] * outline,
+                 center_y + directions[i][1] * outline, font, outline_color,
+                 0);
+    drawText(text, center_x, center_y, font, color, 0);
+}
+
+static void drawEpisodeTitle(const char *text, int center_x, int art_center_y,
+                             int tile_size)
+{
+    int max_width = tile_size - (int)(28.0 * g_scale);
+    int max_height = (int)(tile_size * 0.43);
+    if (episode_title_for_index != current) {
+        episode_title_for_index = current;
+        episode_title_font = NULL;
+        episode_title_line_count = 1;
+        for (int size = GAME_LABEL_FONT_SIZE; size >= EPISODE_MIN_FONT_SIZE;
+             size -= 2) {
+            TTF_Font *candidate = getEpisodeFont(size);
+            if (candidate == NULL)
+                continue;
+            episode_title_font = candidate;
+            episode_title_line_count = layoutEpisodeTitle(
+                text, candidate, max_width, episode_title_lines);
+            int widest = 0;
+            for (int i = 0; i < episode_title_line_count; i++) {
+                int width = textWidth(candidate, episode_title_lines[i]);
+                if (width > widest)
+                    widest = width;
+            }
+            if (widest <= max_width &&
+                episode_title_line_count * TTF_FontLineSkip(candidate) <=
+                    max_height)
+                break;
+        }
+    }
+    if (episode_title_font == NULL)
+        return;
+
+    int line_height = TTF_FontLineSkip(episode_title_font);
+    int block_center_y = art_center_y + (int)(tile_size * 0.22);
+    int first_y = block_center_y -
+                  (episode_title_line_count - 1) * line_height / 2;
+    for (int i = 0; i < episode_title_line_count; i++)
+        drawOutlinedText(episode_title_lines[i], center_x,
+                         first_y + i * line_height, episode_title_font,
+                         COLOR_WHITE);
+}
+
 static SDL_Surface *createCrtSurface(int width, int height)
 {
     SDL_Surface *surface = SDL_CreateRGBSurface(
@@ -1169,13 +1385,10 @@ static void renderCarousel(int remaining)
                      theme()->hint.color, 0);
         }
         else {
-        // Missing artwork: use a clean black card with the movie/folder
-        // name in the active theme accent color.
+        // Missing artwork: use a clean black card. On the main carousel the
+        // movie/folder name uses the active theme accent color; inside a
+        // series, the shared episode-title overlay below supplies the text.
         const char *fallback_label = games[current].item.label;
-        if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
-            const char *slash = strrchr(current_folder, '/');
-            fallback_label = slash != NULL ? slash + 1 : current_folder;
-        }
         SDL_Color fallback_color = theme()->grid.selectedcolor;
         int tile_h = (int)(g_display.height * 0.58);
         int tile_w = tile_h;
@@ -1190,24 +1403,26 @@ static void renderCarousel(int remaining)
                      0x000000);
         }
 
-        int measured_w = 0, measured_h = 0;
-        TTF_SizeUTF8(getFontGameLabel(), fallback_label, &measured_w,
-                     &measured_h);
-        if (measured_w <= text_w) {
-            drawGlowingText(fallback_label, cx, art_cy, getFontGameLabel(),
-                            fallback_color, text_w);
-        }
-        else {
-            char fallback_line1[STR_MAX] = "";
-            char fallback_line2[STR_MAX] = "";
-            splitTwoLines(fallback_label, getFontGameLabel(),
-                          fallback_line1, sizeof(fallback_line1),
-                          fallback_line2, sizeof(fallback_line2));
-            int line_h = TTF_FontLineSkip(getFontGameLabel());
-            drawGlowingText(fallback_line1, cx, art_cy - line_h / 2,
-                            getFontGameLabel(), fallback_color, text_w);
-            drawGlowingText(fallback_line2, cx, art_cy + line_h / 2,
-                            getFontGameLabel(), fallback_color, text_w);
+        if (!current_folder[0]) {
+            int measured_w = 0, measured_h = 0;
+            TTF_SizeUTF8(getFontGameLabel(), fallback_label, &measured_w,
+                         &measured_h);
+            if (measured_w <= text_w) {
+                drawGlowingText(fallback_label, cx, art_cy,
+                                getFontGameLabel(), fallback_color, text_w);
+            }
+            else {
+                char fallback_line1[STR_MAX] = "";
+                char fallback_line2[STR_MAX] = "";
+                splitTwoLines(fallback_label, getFontGameLabel(),
+                              fallback_line1, sizeof(fallback_line1),
+                              fallback_line2, sizeof(fallback_line2));
+                int line_h = TTF_FontLineSkip(getFontGameLabel());
+                drawGlowingText(fallback_line1, cx, art_cy - line_h / 2,
+                                getFontGameLabel(), fallback_color, text_w);
+                drawGlowingText(fallback_line2, cx, art_cy + line_h / 2,
+                                getFontGameLabel(), fallback_color, text_w);
+            }
         }
         }
     }
@@ -1221,6 +1436,12 @@ static void renderCarousel(int remaining)
             blendScreenReflection(reflection, cx - reflection->w / 2,
                                   art_cy - reflection->h / 2);
         }
+        // Keep supplied artwork untouched. The title-in-card layout is the
+        // automatic presentation used only when a series episode has no
+        // image of its own (and no shared folder image to fall back to).
+        if (current_folder[0] && games[current].item.imgpath[0] == '\0')
+            drawEpisodeTitle(games[current].item.label, cx, art_cy,
+                             reflection_size);
     }
 
     // Game title in the theme's list font (big + bold). Short titles now
@@ -1232,13 +1453,33 @@ static void renderCarousel(int remaining)
         int bottom_y = (int)(400.0 * g_scale) + content_offset_y;
         int line_h = TTF_FontLineSkip(getFontGameLabel());
         int top_y = bottom_y - line_h;
-        // A series folder already carries its name inside its shared cover.
-        // Keep the caption below deliberately minimal to avoid showing the
-        // same title twice. Episode titles remain unchanged inside a folder.
-        const char *display_title =
-            current_floor == FLOOR_VIDEOS && games[current].is_folder
-                ? "..."
-                : games[current].item.label;
+        // Main carousel: an illustrated series uses a path-style
+        // ".../Folder" caption, while an automatic black card keeps the
+        // minimal "..." caption. Inside the folder, the two layouts are
+        // selected according to whether episode/shared artwork is available.
+        char folder_display_title[STR_MAX] = "";
+        const char *display_title = games[current].item.label;
+        if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
+            if (games[current].item.imgpath[0] == '\0') {
+                const char *slash = strrchr(current_folder, '/');
+                display_title = slash != NULL ? slash + 1 : current_folder;
+            }
+            else {
+                // With supplied series/episode art, retain the established
+                // layout: the selected episode name sits below the image.
+                display_title = games[current].item.label;
+            }
+        }
+        else if (current_floor == FLOOR_VIDEOS && games[current].is_folder) {
+            if (games[current].item.imgpath[0] != '\0') {
+                snprintf(folder_display_title, sizeof(folder_display_title),
+                         ".../%s", games[current].item.label);
+                display_title = folder_display_title;
+            }
+            else {
+                display_title = "...";
+            }
+        }
 
         // Recompute only when the selection changes — TTF measuring/
         // rendering isn't free, no need to redo it every frame.
@@ -2255,6 +2496,11 @@ int main(int argc, char *argv[])
         SDL_FreeSurface(arrow_down);
     if (font_gamelabel != NULL)
         TTF_CloseFont(font_gamelabel);
+    for (int size = EPISODE_MIN_FONT_SIZE; size < GAME_LABEL_FONT_SIZE;
+         size++) {
+        if (font_episode_sizes[size] != NULL)
+            TTF_CloseFont(font_episode_sizes[size]);
+    }
     if (font_bigvalue != NULL)
         TTF_CloseFont(font_bigvalue);
     if (font_info != NULL)

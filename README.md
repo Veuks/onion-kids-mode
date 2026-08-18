@@ -95,6 +95,14 @@ Artwork is fitted inside a square without stretching. Black side bars are
 added when necessary. If no image exists, the app creates a black card with
 the filename in the current theme's accent color.
 
+For movies, portrait cinema-poster artwork is recommended: the whole poster
+is preserved and the app adds black side bars inside the square carousel tile
+when needed. For series, the cleanest result is usually obtained without any
+artwork. Kids Mode Deluxe then creates the black card automatically, places
+the episode name inside it and keeps the series name below it. If series or
+episode artwork is provided, the image is kept untouched and the episode name
+is displayed below it, as in the original series layout.
+
 ### Series folders
 
 One folder level is supported:
@@ -112,8 +120,13 @@ Media/VideoKidsMode/
 
 `Imgs/Ulysses 31.png` is used for the folder and as the default image for all
 episodes. An image matching an episode name takes priority. The folder name is
-already shown in its artwork, so its caption in the main carousel is simply
-`...`. Inside the folder, each episode keeps its own title below the artwork.
+already shown in its artwork, so an illustrated folder uses the path-style
+caption `.../Ulysses 31` in the main carousel; a folder without artwork uses
+simply `...`. Inside a folder without artwork, the series name moves below the
+black card and the selected episode name is drawn inside it. Long episode names
+wrap over up to three lines; the font becomes smaller only when three lines
+still do not fit. When an image is available, the episode name is displayed
+below the image instead.
 
 ## Carousel controls
 

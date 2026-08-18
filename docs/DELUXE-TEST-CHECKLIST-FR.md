@@ -9,7 +9,11 @@ Installer le dossier compilé `KidsModeDeluxe` provenant de l'artefact vert
 - GAUCHE/DROITE parcourt la section affichée.
 - HAUT passe des jeux aux vidéos et BAS revient aux jeux.
 - La flèche du bas reste au-dessus des commandes PLAY et RESTART.
-- Un dossier vidéo affiche `...` sous sa vignette ; B permet d'en sortir.
+- Un dossier vidéo affiche `...` sans image, ou `.../Nom du dossier` avec une
+  image ; B permet d'en sortir.
+- Dans une série sans image, son nom est sous la carte noire et le nom de
+  l'épisode est dedans, sur trois lignes au maximum avec une police adaptative.
+- Avec une image de série ou d'épisode, le nom de l'épisode reste sous l'image.
 - Le verrou **Games only / Videos only** masque la flèche verticale.
 - A reprend et X redémarre après confirmation.
 - Une extinction pendant un jeu ou une vidéo reprend le contenu.
