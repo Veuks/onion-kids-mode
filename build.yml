@@ -1,0 +1,77 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Cross-compile Kids Mode Deluxe
+    runs-on: ubuntu-latest
+    container:
+      image: aemiii91/miyoomini-toolchain:latest
+      options: --user root
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+      - name: Checkout Onion (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: OnionUI/Onion
+          ref: 07505ea58c7bba698d6b9220ff43946a43cac76b
+          path: onion
+      - name: Build
+        shell: bash
+        run: |
+          source /root/.bashrc
+          cp -r src/kidsModeDeluxe onion/src/
+          cd onion/src/kidsModeDeluxe
+          make
+          file kidui libvcinput.so
+          cp kidui libvcinput.so "$GITHUB_WORKSPACE/App/KidsModeDeluxe/bin/"
+          chmod +x "$GITHUB_WORKSPACE/App/KidsModeDeluxe/bin/kidui" \
+            "$GITHUB_WORKSPACE/App/KidsModeDeluxe/"*.sh
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KidsMode-Deluxe-build
+          path: App
+          if-no-files-found: error
+
+  release:
+    name: Package release zip
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: KidsMode-Deluxe-build
+          path: App
+      - name: Assemble zip
+        run: |
+          chmod +x App/KidsMode/bin/kidui App/KidsMode/*.sh
+          chmod +x App/VideoCarousel/bin/videoui App/VideoCarousel/*.sh
+          chmod +x App/KidsModeDeluxe/bin/kidui App/KidsModeDeluxe/*.sh
+          cp README.md App/KidsModeDeluxe/
+          cp docs/VIDEO-CAROUSEL-V1.md App/VideoCarousel/README.md
+          cd App
+          zip -r ../KidsMode.zip KidsMode
+          zip -r ../VideoKidsMode-V1.zip VideoCarousel
+          zip -r ../KidsMode-Deluxe.zip KidsModeDeluxe
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Kids Mode Deluxe ${{ github.ref_name }}
+          body_path: .github/release-notes.md
+          files: |
+            KidsMode.zip
+            VideoKidsMode-V1.zip
+            KidsMode-Deluxe.zip

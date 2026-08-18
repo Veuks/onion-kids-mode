@@ -1,0 +1,19 @@
+# Test matériel — Kids Mode Deluxe
+
+Installer le dossier compilé `KidsModeDeluxe` provenant de l'artefact vert
+**KidsMode-Deluxe-build** dans le dossier `App` de la carte SD.
+
+## Vérifications
+
+- L'application apparaît sous le nom **Kids Mode Deluxe**.
+- GAUCHE/DROITE parcourt la section affichée.
+- HAUT passe des jeux aux vidéos et BAS revient aux jeux.
+- La flèche du bas reste au-dessus des commandes PLAY et RESTART.
+- Un dossier vidéo affiche `...` sous sa vignette ; B permet d'en sortir.
+- Le verrou **Games only / Videos only** masque la flèche verticale.
+- A reprend et X redémarre après confirmation.
+- Une extinction pendant un jeu ou une vidéo reprend le contenu.
+- Une extinction depuis le carrousel restaure seulement la sélection.
+- Le timer est partagé entre les jeux et les vidéos.
+- À zéro, **Time's up!** et **See you next time** sont affichés.
+- SELECT + START pendant trois secondes ouvre le menu parent.

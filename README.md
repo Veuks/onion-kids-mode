@@ -1,152 +1,241 @@
-# Kids Mode for Onion OS
+# Kids Mode Deluxe for Onion OS
 
-A fullscreen, favorites-only launcher that locks a **Miyoo Mini / Mini+**
-running [Onion OS](https://github.com/OnionUI/Onion) so a young child can
-use it unsupervised — big box art, one-button play, a PIN-protected exit,
-and an optional play timer.
+Kids Mode Deluxe combines games and videos in one simple, protected launcher
+for the Miyoo Mini and Miyoo Mini Plus. It is designed for young children:
+large artwork, a small set of useful controls, automatic resume, an optional
+session timer, and a PIN-protected parent menu.
 
-- **Boots straight into a kid-proof carousel** showing only your ★ favorited
-  games: box art, big label, left/right to browse, **A** to play.
-- **Native Onion look**: every screen renders through Onion's own theme
-  engine — your active theme's background, fonts, colors, header/footer
-  bars, button hints and full-width list rows — so Kids Mode feels like
-  part of the OS, not an app drawn on top of it.
-- **Exiting a game returns to the carousel — never to Onion's menus.**
-- **Play timer** (per session, optional): pick 5–50 minutes when arming.
-  Countdown shows inside games via RetroArch's on-screen messages (pinned
-  during the last 5 minutes); at zero the game is asked to quit gracefully,
-  so Onion's auto-save keeps the exact spot.
-- **Auto power-off**: if the "Time's up!" screen is left alone for
-  5 minutes (nobody turns the device off), it powers itself down cleanly
-  instead of draining the battery.
-- **Parent menu** (hold **SELECT+START 3 s** → PIN): exit Kids Mode, add
-  play time right on the menu row — **◀ ▶** picks +5…+50 min, **A**/**START**
-  applies, and the screen previews the remaining time before and after —
-  or **turn the timer off entirely** so the kid can play with no limit.
-- **Start over**: **X** on a game asks "Start over?" and launches from the
-  beginning without touching in-game saves.
-- **MENU button in-game saves and exits** back to the carousel.
-- While armed, RetroArch's settings are hidden (kiosk mode) so the in-game
-  menu can't change cores/shaders/mappings. Everything is restored on
-  unlock.
-- Survives reboots; a powered-off-mid-game session resumes on next boot.
+Games stay on the lower section and videos stay on the upper section. The two
+sections use the active Onion theme and slide smoothly between each other.
 
-## Screenshots
+## Highlights
 
-| ![The kid's carousel](docs/screenshots/carousel.png) | ![Parent menu](docs/screenshots/parent-menu.png) | ![PIN screen](docs/screenshots/pin.png) |
-| :--: | :--: | :--: |
-| *The kid's carousel — one favorite at a time, box art and all; **A** plays* | *Parent menu — a native Onion list; add play time with **◀ ▶** and a live preview, or turn the timer off* | *The PIN gate — set once when arming; **A** confirms* |
-
-*(Rendered with Onion's stock theme — Kids Mode picks up whatever theme
-your device uses.)*
+- One protected app for both favorite games and children's videos.
+- Games are taken directly from Onion's Favorites list.
+- Videos, movies and one-level series folders are supported.
+- Automatic resume follows the real shutdown state:
+  - shut down while playing and that game or video resumes;
+  - shut down from a carousel and the same section and selection return.
+- Video progress is saved regularly and completed videos restart from the
+  beginning the next time they are opened.
+- Optional shared session timer from 5 to 120 minutes, or no timer.
+- PIN-protected parent menu with extra time, timer removal, exit, and a
+  Games-only or Videos-only lock.
+- Onion-style artwork, controls, colors and menus.
+- ScreenScraper Mix V1-inspired reflection on video artwork for visual
+  consistency with game thumbnails.
+- Separate child save profile for games; the parent's saves and states are
+  restored when leaving the mode.
 
 ## Requirements
 
-- Miyoo Mini or Mini+ running **Onion OS 4.3 or newer**.
-- Games your kid should see must be **favorited** (★, press X on a game in
-  Onion) and Onion's *auto save & resume* left on (it is by default).
+- Miyoo Mini or Miyoo Mini Plus.
+- Onion OS 4.3 or newer.
+- At least one game marked as a Favorite in Onion.
+- Onion's FFplay binary, included with normal Onion installations.
 
-Tested on a Miyoo Mini Plus with Onion 4.4-beta. The Mini V4's 752×560
-screen and the base Mini are supported in code but less tested — reports
-welcome.
+The current version was tested on real Miyoo Mini Plus hardware. Mini and Mini
+V4 display sizes are supported in the code, but feedback is welcome.
 
-## Install
+## Installation
 
-1. Download `KidsMode.zip` from [Releases](../../releases).
-2. Copy the `KidsMode` folder into the `App` folder on your SD card
-   (so it becomes `/App/KidsMode/`). Don't replace the `App` folder itself.
-3. Reboot. Nothing changes until you arm it.
+1. Download `KidsMode-Deluxe.zip` from the latest GitHub Release.
+2. Extract the ZIP.
+3. Copy the `KidsModeDeluxe` folder into the `App` folder on the SD card. The
+   final path must be:
 
-## Usage
+   ```text
+   /mnt/SDCARD/App/KidsModeDeluxe/
+   ```
 
-1. **Arm:** Apps tab → **Kids Mode**. First time, set + confirm a 4-digit
-   PIN (up/down changes a digit, left/right moves between digits,
-   A confirms).
-2. Pick a session timer (OFF / 5–50 min) — the device switches straight
-   into the kid launcher.
-3. Hand it over:
+4. Add the games intended for the child to Onion's Favorites list.
+5. Add videos as described in the Media section below.
+6. Reinsert the SD card, refresh the Apps list or reboot, then open
+   **Apps → Kids Mode Deluxe**.
+7. On first launch, choose and confirm a four-digit PIN, then select a session
+   timer or choose `OFF`.
 
-   | Button | Action |
-   | ------ | ------ |
-   | ◀ ▶ | browse favorites |
-   | A | play (resumes where the game last stopped) |
-   | X | start over (with confirmation; in-game saves untouched) |
-   | MENU (in-game) | save and exit back to the carousel |
-   | everything else | does nothing — no dead ends |
+Kids Mode Deluxe remains active after a reboot until it is exited through the
+parent menu.
 
-4. **Parent access:** hold **SELECT+START ~3 s**, enter the PIN →
-   *Exit Kids Mode / Add play time / Turn off timer / Back*. On *Add play
-   time*, press **◀ ▶** to pick the amount (the info line shows what the
-   remaining time will become) and **A** or **START** to apply — you're
-   dropped straight back into the kid launcher. *Turn off timer* removes
-   any running timer entirely (unlimited play until you re-arm or add
-   time again).
-5. **Time's up:** the kid sees a friendly "Time's up!" screen. If the
-   device is left on there, it powers off by itself after 5 minutes.
+### Updating from the test version
 
-Kids Mode stays armed across reboots until you exit it via the PIN.
+If `App/KidsModeV2` is still installed, first leave the old mode through its
+parent menu. Install `App/KidsModeDeluxe`, then delete the old `App/KidsModeV2`
+folder so that only one entry appears in Apps.
 
-## PIN reset / recovery
+PIN, timer state, selections and playback positions are stored under
+`Saves/kidmode`, so they remain available after the folder rename and future
+updates.
 
-Everything is recoverable from a computer — nothing on the card is moved
-or renamed:
+## Media layout
 
-- **Forgot the PIN:** edit `App/KidsMode/kidmode.json` to
-  `{ "pin_hash": "", "pin_salt": "", "pin_plain": "1234" }` — the new PIN
-  is accepted and re-hashed on next use. Also delete
-  `Saves/kidmode/pin_backup.json` (the PIN's update-proof snapshot) so the
-  old PIN can't be restored from it.
-- **Updating the app while armed is safe:** the PIN survives replacing
-  `App/KidsMode` thanks to the snapshot in `Saves/kidmode/`. If there's
-  genuinely no PIN anywhere (e.g. fresh SD contents while armed), the
-  SELECT+START unlock asks you to set a **new** PIN instead of locking
-  you out.
-- **Force-disarm:** delete the hidden file `/.kidmode` at the SD root →
-  next boot is normal Onion.
-- **RetroArch settings stuck hidden:** copy
-  `Saves/kidmode/retroarch.cfg.backup` over
-  `RetroArch/.retroarch/retroarch.cfg`.
-- **Uninstall:** delete `/App/KidsMode/`, `/.kidmode` (if present),
-  `/.tmp_update/startup/kidmode_boot.sh` and `/Saves/kidmode/`.
+Videos belong in:
 
-Fail-safes: if the launcher binary is missing or crashes repeatedly, Kids
-Mode disarms itself and boots normal Onion instead of brick-looping. A log
-is written to `.tmp_update/logs/kidmode.log`.
+```text
+/mnt/SDCARD/Media/VideoKidsMode/
+```
 
-## How it works
+Supported formats are MP4, MKV, AVI, MOV, M4V and WebM. Entries are sorted
+alphabetically.
 
-Onion runs everything in `.tmp_update/startup/` before launching its main
-UI. Kids Mode installs a hook there (automatically, on first arm) that
-checks for the `/.kidmode` flag file: when present, it blocks in the kid
-launcher loop, so Onion's MainUI simply never starts until a PIN unlock
-removes the flag. Games are launched with the exact command format Onion
-itself uses (per-game core overrides, play-activity tracking, V4 560p
-handling, auto-save/resume all preserved). No Onion binaries or scripts
-are modified; the two config files it adjusts while armed
-(`retroarch.cfg` kiosk lock, MENU-button keymap) are backed up to
-`Saves/kidmode/` and restored on unlock.
+Artwork belongs in the shared `Imgs` folder and must use the same base name as
+the video. PNG, JPG and JPEG are accepted:
 
-A determined child can still force a shutdown with a long power press —
-the device just boots back into Kids Mode. Hardening that path would
-require a patched `keymon`; it's documented in the source as future work.
+```text
+Media/VideoKidsMode/
+├── The Lion King.mp4
+├── The Visitors.mkv
+└── Imgs/
+    ├── The Lion King.png
+    └── The Visitors.jpg
+```
+
+Artwork is fitted inside a square without stretching. Black side bars are
+added when necessary. If no image exists, the app creates a black card with
+the filename in the current theme's accent color.
+
+### Series folders
+
+One folder level is supported:
+
+```text
+Media/VideoKidsMode/
+├── Ulysses 31/
+│   ├── Episode 01.mp4
+│   ├── Episode 02.mp4
+│   └── Episode 03.mp4
+└── Imgs/
+    ├── Ulysses 31.png
+    └── Episode 02.jpg
+```
+
+`Imgs/Ulysses 31.png` is used for the folder and as the default image for all
+episodes. An image matching an episode name takes priority. The folder name is
+already shown in its artwork, so its caption in the main carousel is simply
+`...`. Inside the folder, each episode keeps its own title below the artwork.
+
+## Carousel controls
+
+| Button | Action |
+| --- | --- |
+| LEFT / RIGHT | Browse the current section |
+| UP | Move from Games to Videos |
+| DOWN | Move from Videos to Games |
+| A | Launch/resume a game, play/resume a video, or open a series folder |
+| X | Restart the selected game or video after confirmation |
+| B | Return from a series folder |
+| Hold SELECT + START for 3 seconds | Open the PIN screen and parent menu |
+| MENU | No action in the carousel |
+
+UP and DOWN are unavailable while a section is locked. DOWN is also disabled
+inside a series folder; press B to return to the main video carousel first.
+
+## While playing a game
+
+The game itself keeps its normal controls. A single press of MENU saves and
+returns directly to the Kids Mode Deluxe carousel. RetroArch configuration and
+dangerous hotkeys are hidden while the mode is active and restored on exit.
+
+Restarting with X skips Onion's automatic resume state but does not erase
+normal in-game save data.
+
+## Video player controls
+
+| Button | Action |
+| --- | --- |
+| A | Resume playback |
+| B | Pause playback |
+| MENU + LEFT | Rewind progressively |
+| MENU + RIGHT | Fast-forward progressively |
+| MENU + DOWN | Rewind 10 minutes |
+| MENU + UP | Fast-forward 10 minutes |
+| MENU alone | Save the position and return to the carousel |
+| Other buttons | Ignored by the player |
+
+Holding MENU + LEFT or RIGHT repeats the seek and increases each step from
+10 seconds to 1 minute, then to 5 minutes after a longer hold. A small white
+indicator appears at the bottom-left when rewinding and at the bottom-right
+when moving forward.
+
+Volume and brightness shortcuts remain usable. Releasing MENU after using a
+combination does not accidentally leave the video.
+
+## Parent menu
+
+Hold SELECT + START for about three seconds, enter the four-digit PIN, then
+choose:
+
+- **Exit Kids Mode Deluxe** — restore Onion and return to its normal interface.
+- **Add play time** — add 5 to 120 minutes to the current session.
+- **Turn off timer** — continue without a time limit.
+- **Games only / Videos only** — lock the section currently being viewed. The
+  vertical navigation arrow disappears while the lock is enabled.
+- **Back** — return to the child interface.
+
+## Timer and resume behavior
+
+The same timer is shared by games, videos and both carousels. When it reaches
+zero, the running content closes and the child sees **Time's up!** and
+**See you next time**. If that screen is left untouched for five minutes, the
+device powers off cleanly.
+
+The current floor, folder and selection are saved. Video playback is
+checkpointed approximately every five seconds. A video that reaches its natural
+end has its saved position cleared automatically.
+
+There is no separate auto-resume option: resume behavior always follows the
+real state at shutdown.
+
+## PIN reset and recovery
+
+Nothing on the SD card is permanently locked.
+
+- **Forgotten PIN:** edit `App/KidsModeDeluxe/kidmode.json`, clear `pin_hash`
+  and `pin_salt`, and set `pin_plain` to a new four-digit PIN. Also delete
+  `Saves/kidmode/pin_backup.json` so the previous PIN is not restored.
+- **Force exit from a computer:** delete the hidden `/.kidmode` file at the
+  root of the SD card, then boot normally.
+- **Log file:** `.tmp_update/logs/kidmode.log` records startup and recovery
+  information.
+- **Interface failure:** after repeated launcher failures, the safety routine
+  returns to normal Onion instead of creating a boot loop.
+
+To uninstall, exit through the parent menu first, then remove
+`App/KidsModeDeluxe`. The optional saved state can also be removed from
+`Saves/kidmode` if it is no longer needed.
 
 ## Building from source
 
-`src/kidsMode/kidui.c` builds inside an Onion source tree with the
-[miyoomini toolchain](https://hub.docker.com/r/aemiii91/miyoomini-toolchain):
+Every push starts the GitHub Actions workflow. It cross-compiles
+`src/kidsModeDeluxe`, places `kidui` and `libvcinput.so` inside
+`App/KidsModeDeluxe/bin`, and uploads the green artifact named
+`KidsMode-Deluxe-build`.
+
+Tagged builds additionally create `KidsMode-Deluxe.zip` and attach it to the
+GitHub Release.
+
+For a local build, copy `src/kidsModeDeluxe` into an Onion source tree and use
+the Miyoo Mini toolchain:
 
 ```sh
-git clone https://github.com/OnionUI/Onion && cp -r src/kidsMode Onion/src/
-docker run --rm -v "$PWD/Onion":/root/workspace aemiii91/miyoomini-toolchain:latest \
-  /bin/bash -c "source /root/.bashrc; cd src/kidsMode && make"
+git clone https://github.com/OnionUI/Onion
+cp -r src/kidsModeDeluxe Onion/src/
+docker run --rm -v "$PWD/Onion":/root/workspace \
+  aemiii91/miyoomini-toolchain:latest \
+  /bin/bash -c "source /root/.bashrc; cd src/kidsModeDeluxe && make"
 ```
 
-The GitHub workflow in this repo does the same on every push and attaches
-an install zip to tagged releases.
+## Credits
 
-## Credits & license
+- Original Kids Mode concept and implementation by Reddit user `u/daverad`.
+- Deluxe games-and-videos version maintained by
+  [Veuks](https://github.com/Veuks).
+- Built on [Onion OS](https://github.com/OnionUI/Onion) and its native UI
+  components.
+- Video artwork presentation inspired by ScreenScraper Mix V1.
+- Developed through an AI-assisted, iterative hardware-testing workflow.
 
-Built on and for [Onion OS](https://github.com/OnionUI/Onion) and its
-common UI infrastructure. The RetroArch kiosk-lock approach was inspired
-by [OnionUI/Onion#1910](https://github.com/OnionUI/Onion/pull/1910).
-GPL-3.0, same as Onion.
+## License
+
+GPL-3.0, matching Onion OS. See [LICENSE](LICENSE).
