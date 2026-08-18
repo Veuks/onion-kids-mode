@@ -105,6 +105,8 @@ typedef enum { SCREEN_CAROUSEL,
 #define LOCKFLOOR_RESULT_FILE "/tmp/kidsmode_v2_lockfloor_result"
 #define FLOOR_STATE_FILE "/tmp/kidsmode_v2_floor"
 #define SELECTION_STATE_FILE "/tmp/kidsmode_v2_selection"
+#define GAME_SELECTION_STATE_FILE "/tmp/kidsmode_v2_game_selection"
+#define VIDEO_SELECTION_STATE_FILE "/tmp/kidsmode_v2_video_selection"
 #define FOLDER_STATE_FILE "/tmp/kidsmode_v2_folder"
 #define TIMER_STEP 5
 #define TIMER_MAX 120
@@ -815,6 +817,21 @@ static void writeSelectionState(void)
             fprintf(fp, "%s\n", games[current].item.rompath);
         else
             fprintf(fp, "\n");
+        fclose(fp);
+    }
+
+    // The launcher process can visit both floors before it exits. Persist
+    // both exact paths, not only the currently visible one, so browsing
+    // Videos, returning to Games and launching a game does not lose the
+    // last video selection (and vice versa).
+    fp = fopen(GAME_SELECTION_STATE_FILE, "w");
+    if (fp != NULL) {
+        fprintf(fp, "%s\n", game_select_path);
+        fclose(fp);
+    }
+    fp = fopen(VIDEO_SELECTION_STATE_FILE, "w");
+    if (fp != NULL) {
+        fprintf(fp, "%s\n", video_select_path);
         fclose(fp);
     }
 }
@@ -1670,6 +1687,7 @@ static void renderConfirmRestart(const char *label, int remaining)
 static void renderTimesUp(void)
 {
     renderBase();
+    theme_renderHeader(screen, "Kids Mode Deluxe", false);
 
     int cx = g_display.width / 2;
     drawText("Time's up!", cx, (int)(g_display.height * 0.4),
@@ -1916,6 +1934,7 @@ static bool switchFloor(ContentFloor target, int remaining)
     writeFloorState();
     writeFolderState();
     loadCurrentFloor();
+    rememberSelection();
     writeSelectionState();
     if (games_count == 0) {
         content_offset_y = 0;

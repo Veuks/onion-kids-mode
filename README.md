@@ -15,9 +15,11 @@ sections use the active Onion theme and slide smoothly between each other.
 - Videos, movies and one-level series folders are supported.
 - Automatic resume follows the real shutdown state:
   - shut down while playing and that game or video resumes;
-  - shut down from a carousel and the same section and selection return.
+  - shut down from a carousel and the same section and selection return;
+  - switching between Games and Videos restores the last selection on each.
 - Video progress is saved regularly and completed videos restart from the
   beginning the next time they are opened.
+- Each series folder reopens on its own last selected episode.
 - Optional shared session timer from 5 to 120 minutes, or no timer.
 - PIN-protected parent menu with extra time, timer removal, exit, and a
   Games-only or Videos-only lock.
@@ -120,7 +122,8 @@ simply `...`. Inside a folder without artwork, the series name moves below the
 black card and the selected episode name is drawn inside it. Long episode names
 wrap over up to six lines; the font becomes smaller only when six lines
 still do not fit. When an image is available, the episode name is displayed
-below the image instead.
+below the image instead. When a series folder is opened again, the carousel
+returns to the last episode selected in that folder.
 
 ## Carousel controls
 
