@@ -35,8 +35,6 @@ static Uint32 seek_notice_until;
 static bool seek_notice_drawn;
 static SDL_Rect seek_notice_rect;
 
-#define SYNTHETIC_SEEK_UNICODE 0x5643
-
 __attribute__((constructor)) static void vcinput_loaded(void)
 {
     FILE *fp = fopen("/tmp/vcinput_loaded", "w");
@@ -231,21 +229,12 @@ static bool progressive_seek(SDL_Event *event, Uint32 now)
     if (held < 1500) {
         out = seek_input == SDLK_LEFT ? SDLK_LEFT : SDLK_RIGHT;
         step = 10;
-    } else if (held < 3500) {
+    }
+    else {
+        // After the short-seek phase, stay at one-minute steps for as long as
+        // the combination is held. A third five-minute tier was too abrupt.
         out = seek_input == SDLK_LEFT ? SDLK_DOWN : SDLK_UP;
         step = 60;
-    } else {
-        // FFplay has no native five-minute key. Deliver five one-minute
-        // events as one logical step, tagging the four queued events so our
-        // input filter passes them straight through.
-        out = seek_input == SDLK_LEFT ? SDLK_DOWN : SDLK_UP;
-        step = 300;
-        for (int i = 0; i < 4; i++) {
-            SDL_Event extra;
-            key(&extra, out, SDL_PRESSED);
-            extra.key.keysym.unicode = SYNTHETIC_SEEK_UNICODE;
-            SDL_PushEvent(&extra);
-        }
     }
 
     position_seconds += seek_input == SDLK_LEFT ? -step : step;
@@ -262,8 +251,6 @@ static bool progressive_seek(SDL_Event *event, Uint32 now)
 static bool map_event(SDL_Event *event)
 {
     if (event->type != SDL_KEYDOWN && event->type != SDL_KEYUP)
-        return false;
-    if (event->key.keysym.unicode == SYNTHETIC_SEEK_UNICODE)
         return false;
     Uint8 state = event->key.state;
     SDLKey in = event->key.keysym.sym;

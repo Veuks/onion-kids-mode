@@ -154,9 +154,9 @@ normal in-game save data.
 | Other buttons | Ignored by the player |
 
 Holding MENU + LEFT or RIGHT repeats the seek and increases each step from
-10 seconds to 1 minute, then to 5 minutes after a longer hold. A small white
-indicator appears at the bottom-left when rewinding and at the bottom-right
-when moving forward.
+10 seconds to 1 minute. It remains at one-minute steps no matter how long the
+combination is held. A small white indicator appears at the bottom-left when
+rewinding and at the bottom-right when moving forward.
 
 Volume and brightness shortcuts remain usable. Releasing MENU after using a
 combination does not accidentally leave the video.
