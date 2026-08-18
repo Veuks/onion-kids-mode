@@ -58,15 +58,8 @@ V4 display sizes are supported in the code, but feedback is welcome.
 Kids Mode Deluxe remains active after a reboot until it is exited through the
 parent menu.
 
-### Updating from the test version
-
-If `App/KidsModeV2` is still installed, first leave the old mode through its
-parent menu. Install `App/KidsModeDeluxe`, then delete the old `App/KidsModeV2`
-folder so that only one entry appears in Apps.
-
 PIN, timer state, selections and playback positions are stored under
-`Saves/kidmode`, so they remain available after the folder rename and future
-updates.
+`Saves/kidmode`.
 
 ## Media layout
 
@@ -93,7 +86,8 @@ Media/VideoKidsMode/
 
 Artwork is fitted inside a square without stretching. Black side bars are
 added when necessary. If no image exists, the app creates a black card with
-the filename in the current theme's accent color.
+the filename centred in the current theme's accent color. Automatic card
+titles use up to six balanced lines before reducing the font size.
 
 For movies, portrait cinema-poster artwork is recommended: the whole poster
 is preserved and the app adds black side bars inside the square carousel tile
@@ -101,7 +95,7 @@ when needed. For series, the cleanest result is usually obtained without any
 artwork. Kids Mode Deluxe then creates the black card automatically, places
 the episode name inside it and keeps the series name below it. If series or
 episode artwork is provided, the image is kept untouched and the episode name
-is displayed below it, as in the original series layout.
+is displayed below it.
 
 ### Series folders
 
@@ -124,7 +118,7 @@ already shown in its artwork, so an illustrated folder uses the path-style
 caption `.../Ulysses 31` in the main carousel; a folder without artwork uses
 simply `...`. Inside a folder without artwork, the series name moves below the
 black card and the selected episode name is drawn inside it. Long episode names
-wrap over up to three lines; the font becomes smaller only when three lines
+wrap over up to six lines; the font becomes smaller only when six lines
 still do not fit. When an image is available, the episode name is displayed
 below the image instead.
 

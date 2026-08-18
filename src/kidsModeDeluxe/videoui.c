@@ -53,6 +53,7 @@
 #include <SDL/SDL_rotozoom.h>
 #include <SDL/SDL_ttf.h>
 #include <dirent.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -112,6 +113,8 @@ typedef enum { SCREEN_CAROUSEL,
 // list rows and hints via resource_getFont)
 #define GAME_LABEL_FONT_SIZE 30
 #define EPISODE_MIN_FONT_SIZE 14
+#define EPISODE_MAX_LINES 6
+#define EPISODE_MAX_WORDS 128
 #define BIG_VALUE_FONT_SIZE 48
 // Longer helper sentences use the theme's LIST font (the readable upright
 // face Onion pairs with its display font in the Apps menu) at a controlled
@@ -172,7 +175,7 @@ static char title_line2[STR_MAX] = "";
 static int episode_title_for_index = -1;
 static int episode_title_line_count = 0;
 static TTF_Font *episode_title_font = NULL;
-static char episode_title_lines[3][STR_MAX] = {{0}, {0}, {0}};
+static char episode_title_lines[EPISODE_MAX_LINES][STR_MAX] = {{0}};
 
 static int pin_digits[PIN_LEN] = {0, 0, 0, 0};
 static int pin_cursor = 0;
@@ -959,115 +962,147 @@ static int textWidth(TTF_Font *font, const char *text)
     return width;
 }
 
-// Lay an episode title out on one, two or at most three balanced lines.
-// Prefer the fewest lines that fit. If even the best three-line layout is
-// still too wide, the caller retries it with a smaller version of the font.
+// Lay an episode title out on one to six balanced lines. Dynamic programming
+// finds the fewest lines that fit and then the least ragged arrangement for
+// that line count. The caller only tries a smaller font when six lines are
+// not enough (or their combined height cannot fit inside the card).
 static int layoutEpisodeTitle(const char *text, TTF_Font *font, int max_width,
-                              char lines[3][STR_MAX])
+                              char lines[EPISODE_MAX_LINES][STR_MAX])
 {
-    size_t length = strlen(text);
-    for (int i = 0; i < 3; i++)
+    const char *word_starts[EPISODE_MAX_WORDS];
+    size_t word_lengths[EPISODE_MAX_WORDS];
+    int word_widths[EPISODE_MAX_WORDS];
+    int word_count = 0;
+    const char *cursor = text;
+
+    for (int i = 0; i < EPISODE_MAX_LINES; i++)
         lines[i][0] = '\0';
 
-    if (textWidth(font, text) <= max_width) {
+    while (*cursor != '\0' && word_count < EPISODE_MAX_WORDS) {
+        while (*cursor == ' ')
+            cursor++;
+        if (*cursor == '\0')
+            break;
+        const char *start = cursor;
+        while (*cursor != '\0' && *cursor != ' ')
+            cursor++;
+        word_starts[word_count] = start;
+        word_lengths[word_count] = (size_t)(cursor - start);
+        word_count++;
+    }
+    if (word_count == 0) {
         snprintf(lines[0], STR_MAX, "%s", text);
         return 1;
     }
 
-    bool found_two = false;
-    size_t best_two = 0;
-    int best_two_max = 0;
-    int best_two_diff = 0;
-    for (size_t first = 0; first < length; first++) {
-        if (text[first] != ' ')
-            continue;
-        char part1[STR_MAX], part2[STR_MAX];
-        copyTrimmedRange(text, first, part1, sizeof(part1));
-        copyTrimmedRange(text + first + 1, length - first - 1, part2,
-                         sizeof(part2));
-        if (part1[0] == '\0' || part2[0] == '\0')
-            continue;
-        int width1 = textWidth(font, part1);
-        int width2 = textWidth(font, part2);
-        int widest = width1 > width2 ? width1 : width2;
-        int diff = width1 > width2 ? width1 - width2 : width2 - width1;
-        if (!found_two || widest < best_two_max ||
-            (widest == best_two_max && diff < best_two_diff)) {
-            found_two = true;
-            best_two = first;
-            best_two_max = widest;
-            best_two_diff = diff;
+    // A title can never reach this in normal use, but preserve all remaining
+    // text if a deliberately extreme filename contains more than 128 words.
+    if (*cursor != '\0')
+        word_lengths[word_count - 1] = strlen(word_starts[word_count - 1]);
+
+    int prefix_widths[EPISODE_MAX_WORDS + 1] = {0};
+    for (int i = 0; i < word_count; i++) {
+        char word[STR_MAX];
+        copyTrimmedRange(word_starts[i], word_lengths[i], word, sizeof(word));
+        word_widths[i] = textWidth(font, word);
+        prefix_widths[i + 1] = prefix_widths[i] + word_widths[i];
+    }
+    int space_width = textWidth(font, " ");
+
+    const long long infinity = LLONG_MAX / 4;
+    long long costs[EPISODE_MAX_LINES + 1][EPISODE_MAX_WORDS + 1];
+    int previous[EPISODE_MAX_LINES + 1][EPISODE_MAX_WORDS + 1];
+    for (int line = 0; line <= EPISODE_MAX_LINES; line++) {
+        for (int end = 0; end <= word_count; end++) {
+            costs[line][end] = infinity;
+            previous[line][end] = -1;
         }
     }
-    if (found_two && best_two_max <= max_width) {
-        copyTrimmedRange(text, best_two, lines[0], STR_MAX);
-        copyTrimmedRange(text + best_two + 1, length - best_two - 1,
-                         lines[1], STR_MAX);
-        return 2;
-    }
+    costs[0][0] = 0;
 
-    bool found_three = false;
-    size_t best_first = 0, best_second = 0;
-    int best_three_max = 0;
-    int best_three_spread = 0;
-    for (size_t first = 0; first < length; first++) {
-        if (text[first] != ' ')
-            continue;
-        for (size_t second = first + 1; second < length; second++) {
-            if (text[second] != ' ')
-                continue;
-            char part1[STR_MAX], part2[STR_MAX], part3[STR_MAX];
-            copyTrimmedRange(text, first, part1, sizeof(part1));
-            copyTrimmedRange(text + first + 1, second - first - 1, part2,
-                             sizeof(part2));
-            copyTrimmedRange(text + second + 1, length - second - 1, part3,
-                             sizeof(part3));
-            if (part1[0] == '\0' || part2[0] == '\0' || part3[0] == '\0')
-                continue;
-            int width1 = textWidth(font, part1);
-            int width2 = textWidth(font, part2);
-            int width3 = textWidth(font, part3);
-            int widest = width1;
-            if (width2 > widest)
-                widest = width2;
-            if (width3 > widest)
-                widest = width3;
-            int narrowest = width1;
-            if (width2 < narrowest)
-                narrowest = width2;
-            if (width3 < narrowest)
-                narrowest = width3;
-            int spread = widest - narrowest;
-            if (!found_three || widest < best_three_max ||
-                (widest == best_three_max && spread < best_three_spread)) {
-                found_three = true;
-                best_first = first;
-                best_second = second;
-                best_three_max = widest;
-                best_three_spread = spread;
+    int selected_lines = 0;
+    for (int line = 1; line <= EPISODE_MAX_LINES; line++) {
+        for (int end = line; end <= word_count; end++) {
+            for (int start = line - 1; start < end; start++) {
+                if (costs[line - 1][start] == infinity)
+                    continue;
+                int width = prefix_widths[end] - prefix_widths[start] +
+                            (end - start - 1) * space_width;
+                if (width > max_width)
+                    continue;
+                long long slack = max_width - width;
+                long long cost = costs[line - 1][start] + slack * slack;
+                if (cost < costs[line][end]) {
+                    costs[line][end] = cost;
+                    previous[line][end] = start;
+                }
             }
         }
+        if (costs[line][word_count] != infinity) {
+            selected_lines = line;
+            break;
+        }
     }
-    if (found_three) {
-        copyTrimmedRange(text, best_first, lines[0], STR_MAX);
-        copyTrimmedRange(text + best_first + 1,
-                         best_second - best_first - 1, lines[1], STR_MAX);
-        copyTrimmedRange(text + best_second + 1, length - best_second - 1,
-                         lines[2], STR_MAX);
-        return 3;
+    if (selected_lines == 0) {
+        // A single long token (for example an underscore-separated episode
+        // name) cannot be wrapped at spaces. Fall back to UTF-8-safe character
+        // wrapping, still using all six lines before asking for a smaller
+        // font. This also ensures such a title never disappears completely.
+        const char *line_start = text;
+        int line_count = 0;
+        while (*line_start != '\0') {
+            while (*line_start == ' ')
+                line_start++;
+            if (*line_start == '\0')
+                break;
+            if (line_count >= EPISODE_MAX_LINES)
+                return 0;
+
+            const char *scan = line_start;
+            const char *best_end = NULL;
+            const char *last_space = NULL;
+            while (*scan != '\0') {
+                const char *next = scan + 1;
+                while ((*next & 0xC0) == 0x80)
+                    next++;
+                char candidate[STR_MAX];
+                copyTrimmedRange(line_start, (size_t)(next - line_start),
+                                 candidate, sizeof(candidate));
+                if (textWidth(font, candidate) > max_width)
+                    break;
+                best_end = next;
+                if (*scan == ' ')
+                    last_space = scan;
+                scan = next;
+            }
+            if (best_end == NULL)
+                return 0;
+
+            const char *line_end = best_end;
+            if (*best_end != '\0' && last_space != NULL &&
+                last_space > line_start)
+                line_end = last_space;
+            copyTrimmedRange(line_start, (size_t)(line_end - line_start),
+                             lines[line_count], STR_MAX);
+            line_count++;
+            line_start = line_end;
+        }
+        return line_count;
     }
 
-    // Titles with fewer than three words cannot form three word-wrapped
-    // lines. Keep their best two-line form (or one long word) and let the
-    // adaptive font sizing below make it fit without truncation.
-    if (found_two) {
-        copyTrimmedRange(text, best_two, lines[0], STR_MAX);
-        copyTrimmedRange(text + best_two + 1, length - best_two - 1,
-                         lines[1], STR_MAX);
-        return 2;
+    int boundaries[EPISODE_MAX_LINES + 1];
+    boundaries[selected_lines] = word_count;
+    for (int line = selected_lines; line > 0; line--)
+        boundaries[line - 1] = previous[line][boundaries[line]];
+
+    for (int line = 0; line < selected_lines; line++) {
+        int first_word = boundaries[line];
+        int last_word = boundaries[line + 1] - 1;
+        const char *start = word_starts[first_word];
+        const char *end = word_starts[last_word] + word_lengths[last_word];
+        copyTrimmedRange(start, (size_t)(end - start), lines[line], STR_MAX);
     }
-    snprintf(lines[0], STR_MAX, "%s", text);
-    return 1;
+    return selected_lines;
 }
 
 static void drawOutlinedText(const char *text, int center_x, int center_y,
@@ -1086,11 +1121,12 @@ static void drawOutlinedText(const char *text, int center_x, int center_y,
     drawText(text, center_x, center_y, font, color, 0);
 }
 
-static void drawEpisodeTitle(const char *text, int center_x, int art_center_y,
-                             int tile_size)
+static void drawAdaptiveCardTitle(const char *text, int center_x,
+                                  int art_center_y, int tile_size,
+                                  SDL_Color color, bool glow)
 {
     int max_width = tile_size - (int)(28.0 * g_scale);
-    int max_height = (int)(tile_size * 0.43);
+    int max_height = tile_size - (int)(24.0 * g_scale);
     if (episode_title_for_index != current) {
         episode_title_for_index = current;
         episode_title_font = NULL;
@@ -1103,6 +1139,8 @@ static void drawEpisodeTitle(const char *text, int center_x, int art_center_y,
             episode_title_font = candidate;
             episode_title_line_count = layoutEpisodeTitle(
                 text, candidate, max_width, episode_title_lines);
+            if (episode_title_line_count == 0)
+                continue;
             int widest = 0;
             for (int i = 0; i < episode_title_line_count; i++) {
                 int width = textWidth(candidate, episode_title_lines[i]);
@@ -1119,13 +1157,19 @@ static void drawEpisodeTitle(const char *text, int center_x, int art_center_y,
         return;
 
     int line_height = TTF_FontLineSkip(episode_title_font);
-    int block_center_y = art_center_y + (int)(tile_size * 0.22);
+    int block_center_y = art_center_y;
     int first_y = block_center_y -
                   (episode_title_line_count - 1) * line_height / 2;
-    for (int i = 0; i < episode_title_line_count; i++)
-        drawOutlinedText(episode_title_lines[i], center_x,
-                         first_y + i * line_height, episode_title_font,
-                         COLOR_WHITE);
+    for (int i = 0; i < episode_title_line_count; i++) {
+        if (glow)
+            drawGlowingText(episode_title_lines[i], center_x,
+                            first_y + i * line_height, episode_title_font,
+                            color, max_width);
+        else
+            drawOutlinedText(episode_title_lines[i], center_x,
+                             first_y + i * line_height, episode_title_font,
+                             color);
+    }
 }
 
 static SDL_Surface *createCrtSurface(int width, int height)
@@ -1392,7 +1436,6 @@ static void renderCarousel(int remaining)
         SDL_Color fallback_color = theme()->grid.selectedcolor;
         int tile_h = (int)(g_display.height * 0.58);
         int tile_w = tile_h;
-        int text_w = tile_w - (int)(30.0 * g_scale);
         SDL_Surface *crt = loadCrtFallback(tile_w, tile_h);
         if (crt != NULL) {
             SDL_Rect crt_pos = {cx - tile_w / 2, art_cy - tile_h / 2};
@@ -1403,27 +1446,9 @@ static void renderCarousel(int remaining)
                      0x000000);
         }
 
-        if (!current_folder[0]) {
-            int measured_w = 0, measured_h = 0;
-            TTF_SizeUTF8(getFontGameLabel(), fallback_label, &measured_w,
-                         &measured_h);
-            if (measured_w <= text_w) {
-                drawGlowingText(fallback_label, cx, art_cy,
-                                getFontGameLabel(), fallback_color, text_w);
-            }
-            else {
-                char fallback_line1[STR_MAX] = "";
-                char fallback_line2[STR_MAX] = "";
-                splitTwoLines(fallback_label, getFontGameLabel(),
-                              fallback_line1, sizeof(fallback_line1),
-                              fallback_line2, sizeof(fallback_line2));
-                int line_h = TTF_FontLineSkip(getFontGameLabel());
-                drawGlowingText(fallback_line1, cx, art_cy - line_h / 2,
-                                getFontGameLabel(), fallback_color, text_w);
-                drawGlowingText(fallback_line2, cx, art_cy + line_h / 2,
-                                getFontGameLabel(), fallback_color, text_w);
-            }
-        }
+        if (!current_folder[0])
+            drawAdaptiveCardTitle(fallback_label, cx, art_cy, tile_w,
+                                  fallback_color, true);
         }
     }
 
@@ -1440,8 +1465,8 @@ static void renderCarousel(int remaining)
         // automatic presentation used only when a series episode has no
         // image of its own (and no shared folder image to fall back to).
         if (current_folder[0] && games[current].item.imgpath[0] == '\0')
-            drawEpisodeTitle(games[current].item.label, cx, art_cy,
-                             reflection_size);
+            drawAdaptiveCardTitle(games[current].item.label, cx, art_cy,
+                                  reflection_size, COLOR_WHITE, false);
     }
 
     // Game title in the theme's list font (big + bold). Short titles now

@@ -22,8 +22,9 @@ section. UP/DOWN and the vertical arrow are hidden while it is enabled.
 Videos go in `/mnt/SDCARD/Media/VideoKidsMode`. Covers go in its `Imgs`
 folder and use the same base name. PNG, JPG and JPEG are accepted. One series
 folder level is supported. Without artwork, the series name is shown below
-the black card and the episode name is drawn inside it on up to three lines,
-with adaptive font sizing for exceptionally long names. When artwork exists,
+the black card and the episode name is centred inside it on up to six lines
+before adaptive font sizing begins. Automatic black cards in the main
+carousel use the same layout. When artwork exists,
 the main carousel uses `.../Folder name` and the episode name remains below
 the image. Portrait cinema posters are recommended for movies; series are
 usually clearest without artwork.
