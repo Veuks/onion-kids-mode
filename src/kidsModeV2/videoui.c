@@ -344,6 +344,35 @@ static uint32_t readSurfacePixel(SDL_Surface *surface, int x, int y)
     }
 }
 
+static void writeSurfacePixel(SDL_Surface *surface, int x, int y,
+                              uint32_t value)
+{
+    int bpp = surface->format->BytesPerPixel;
+    uint8_t *pixel = (uint8_t *)surface->pixels + y * surface->pitch + x * bpp;
+    switch (bpp) {
+    case 1:
+        *pixel = (uint8_t)value;
+        break;
+    case 2:
+        *(uint16_t *)pixel = (uint16_t)value;
+        break;
+    case 3:
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+        pixel[0] = (value >> 16) & 0xFF;
+        pixel[1] = (value >> 8) & 0xFF;
+        pixel[2] = value & 0xFF;
+#else
+        pixel[0] = value & 0xFF;
+        pixel[1] = (value >> 8) & 0xFF;
+        pixel[2] = (value >> 16) & 0xFF;
+#endif
+        break;
+    default:
+        *(uint32_t *)pixel = value;
+        break;
+    }
+}
+
 // Alpha-safe bilinear scaler for overlays. scaleSurface's fast conversion is
 // ideal for opaque artwork, but SDL 1.2 can turn fully transparent source
 // pixels opaque during that preliminary blit on the Miyoo build. Read RGBA
@@ -476,13 +505,59 @@ static SDL_Surface *loadScreenReflection(int size)
 #ifdef PLATFORM_MIYOOMINI
     rotate180InPlace(scaled);
 #endif
-    screen_reflection = SDL_DisplayFormatAlpha(scaled);
-    if (screen_reflection == NULL)
-        screen_reflection = scaled;
-    else
-        SDL_FreeSurface(scaled);
-    SDL_SetAlpha(screen_reflection, SDL_SRCALPHA, 255);
+    // Keep the known ARGB8888 mask. Do not pass it through SDL's alpha
+    // conversion/blitter: that path is inconsistent on the Miyoo SDL build.
+    screen_reflection = scaled;
     return screen_reflection;
+}
+
+// Blend the white reflection into the already-rendered screen ourselves.
+// This deliberately bypasses SDL_BlitSurface: on-device it can ignore the
+// mask's per-pixel alpha and turn the whole square white.
+static void blendScreenReflection(SDL_Surface *reflection, int dst_x,
+                                  int dst_y)
+{
+    if (reflection == NULL || reflection->format->BytesPerPixel != 4)
+        return;
+    bool screen_locked = SDL_MUSTLOCK(screen);
+    bool reflection_locked = SDL_MUSTLOCK(reflection);
+    if (screen_locked && SDL_LockSurface(screen) != 0)
+        return;
+    if (reflection_locked && SDL_LockSurface(reflection) != 0) {
+        if (screen_locked)
+            SDL_UnlockSurface(screen);
+        return;
+    }
+
+    uint32_t *mask = (uint32_t *)reflection->pixels;
+    int mask_pitch = reflection->pitch / 4;
+    for (int y = 0; y < reflection->h; y++) {
+        int screen_y = dst_y + y;
+        if (screen_y < 0 || screen_y >= screen->h)
+            continue;
+        for (int x = 0; x < reflection->w; x++) {
+            int screen_x = dst_x + x;
+            if (screen_x < 0 || screen_x >= screen->w)
+                continue;
+            uint32_t alpha = (mask[y * mask_pitch + x] >> 24) & 0xFF;
+            if (alpha == 0)
+                continue;
+
+            uint8_t red, green, blue;
+            SDL_GetRGB(readSurfacePixel(screen, screen_x, screen_y),
+                       screen->format, &red, &green, &blue);
+            red += ((255 - red) * alpha + 127) / 255;
+            green += ((255 - green) * alpha + 127) / 255;
+            blue += ((255 - blue) * alpha + 127) / 255;
+            writeSurfacePixel(screen, screen_x, screen_y,
+                              SDL_MapRGB(screen->format, red, green, blue));
+        }
+    }
+
+    if (reflection_locked)
+        SDL_UnlockSurface(reflection);
+    if (screen_locked)
+        SDL_UnlockSurface(screen);
 }
 
 // Results go through a file: stdout is unreliable on-device (SDL/driver
@@ -1132,9 +1207,8 @@ static void renderCarousel(int remaining)
         int reflection_size = (int)(g_display.height * 0.58);
         SDL_Surface *reflection = loadScreenReflection(reflection_size);
         if (reflection != NULL) {
-            SDL_Rect reflection_pos = {cx - reflection->w / 2,
-                                       art_cy - reflection->h / 2};
-            SDL_BlitSurface(reflection, NULL, screen, &reflection_pos);
+            blendScreenReflection(reflection, cx - reflection->w / 2,
+                                  art_cy - reflection->h / 2);
         }
     }
 
