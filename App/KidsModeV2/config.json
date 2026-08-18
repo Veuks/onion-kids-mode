@@ -1,7 +1,0 @@
-{
-    "label": "Kids Mode V2",
-    "icon": "../../Icons/Default/app/guest_on.png",
-    "iconsel": "",
-    "launch": "launch.sh",
-    "description": "Games and videos, one protected mode"
-}
