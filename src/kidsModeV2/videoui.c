@@ -502,11 +502,11 @@ static SDL_Surface *loadScreenReflection(int size)
         }
     }
 
-#ifdef PLATFORM_MIYOOMINI
-    rotate180InPlace(scaled);
-#endif
     // Keep the known ARGB8888 mask. Do not pass it through SDL's alpha
     // conversion/blitter: that path is inconsistent on the Miyoo SDL build.
+    // Unlike IMG blits, the manual screen blend below already uses logical
+    // screen coordinates, so rotating this mask would put the shine in the
+    // opposite corner.
     screen_reflection = scaled;
     return screen_reflection;
 }
@@ -546,9 +546,12 @@ static void blendScreenReflection(SDL_Surface *reflection, int dst_x,
             uint8_t red, green, blue;
             SDL_GetRGB(readSurfacePixel(screen, screen_x, screen_y),
                        screen->format, &red, &green, &blue);
-            red += ((255 - red) * alpha + 127) / 255;
-            green += ((255 - green) * alpha + 127) / 255;
-            blue += ((255 - blue) * alpha + 127) / 255;
+            // Mix V1's reflection is a very light warm ivory rather than
+            // pure white. Screen-blend towards that tint so it can only
+            // brighten the artwork, never muddy or darken it.
+            red += ((255 - red) * 255 * alpha + 32512) / 65025;
+            green += ((255 - green) * 244 * alpha + 32512) / 65025;
+            blue += ((255 - blue) * 210 * alpha + 32512) / 65025;
             writeSurfacePixel(screen, screen_x, screen_y,
                               SDL_MapRGB(screen->format, red, green, blue));
         }
