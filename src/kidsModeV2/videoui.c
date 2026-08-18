@@ -758,11 +758,12 @@ static void loadArtwork(void)
         return;
     }
 
-    // Video artwork uses the same outer art box as games. Fit the complete
-    // image inside it without cropping or stretching, and fill the unused
-    // area with black (normally pillar-boxing on the sides of a 5:7 poster).
-    int target_w = (int)(g_display.width * 0.62);
+    // ScreenScraper Mix V1 artwork is square once fitted to the historical
+    // Kids Mode art height. Give videos that same square footprint. Fit the
+    // complete image without cropping or stretching, filling the unused area
+    // with black (normally pillar-boxing around a portrait poster).
     int target_h = (int)(g_display.height * 0.58);
+    int target_w = target_h;
     double scale_w = (double)target_w / raw->w;
     double scale_h = (double)target_h / raw->h;
     double scale = scale_w < scale_h ? scale_w : scale_h;
@@ -951,8 +952,8 @@ static void renderCarousel(int remaining)
             fallback_label = slash != NULL ? slash + 1 : current_folder;
         }
         SDL_Color fallback_color = theme()->grid.selectedcolor;
-        int tile_w = (int)(g_display.width * 0.62);
         int tile_h = (int)(g_display.height * 0.58);
+        int tile_w = tile_h;
         int text_w = tile_w - (int)(30.0 * g_scale);
         SDL_Surface *crt = loadCrtFallback(tile_w, tile_h);
         if (crt != NULL) {
@@ -1546,13 +1547,21 @@ int main(int argc, char *argv[])
     list_addItem(&menu_list, (ListItem){.label = "Turn off timer",
                                         .item_type = ACTION,
                                         .disabled = menu_remaining < 0});
-    list_addItem(&menu_list,
-                 (ListItem){.label = current_floor == FLOOR_VIDEOS
-                                               ? "Lock on Videos"
-                                               : "Lock on Games",
-                                        .item_type = TOGGLE,
-                                        .value = menu_lock_floor ? 1 : 0,
-                                        .action = onLockFloorToggle});
+    // Use separate fixed strings rather than a conditional label inside the
+    // initializer: this is safer with Onion's copied ListItem representation
+    // and the shorter wording leaves ample room for the toggle on every theme.
+    if (current_floor == FLOOR_VIDEOS)
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Videos only",
+                                .item_type = TOGGLE,
+                                .value = menu_lock_floor ? 1 : 0,
+                                .action = onLockFloorToggle});
+    else
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Games only",
+                                .item_type = TOGGLE,
+                                .value = menu_lock_floor ? 1 : 0,
+                                .action = onLockFloorToggle});
     list_addItem(&menu_list,
                  (ListItem){.label = "Back", .item_type = ACTION});
 
