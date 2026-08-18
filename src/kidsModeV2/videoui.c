@@ -717,6 +717,33 @@ static void loadArtwork(void)
     if (raw == NULL)
         return;
 
+    // Keep the original Kids Mode artwork behaviour on the GAMES floor:
+    // preserve each image's aspect ratio and fit it inside the historical
+    // art box. Only video covers use the uniform cropped 5:7 format.
+    if (current_floor == FLOOR_GAMES) {
+        double max_w = g_display.width * 0.62;
+        double max_h = g_display.height * 0.58;
+        double scale_w = max_w / raw->w;
+        double scale_h = max_h / raw->h;
+        double scale = scale_w < scale_h ? scale_w : scale_h;
+        SDL_Surface *scaled = scaleSurface(
+            raw, (int)(raw->w * scale + 0.5),
+            (int)(raw->h * scale + 0.5));
+        if (scaled != NULL) {
+            SDL_FreeSurface(raw);
+            raw = scaled;
+        }
+#ifdef PLATFORM_MIYOOMINI
+        rotate180InPlace(raw);
+#endif
+        artwork = SDL_DisplayFormatAlpha(raw);
+        if (artwork == NULL)
+            artwork = raw;
+        else
+            SDL_FreeSurface(raw);
+        return;
+    }
+
     // Every cover uses the exact same 5:7 box. Crop centrally before scaling
     // instead of stretching, so circles, faces and lettering keep their shape.
     int target_h = (int)(g_display.height * 0.52);
@@ -843,7 +870,6 @@ static void renderTimeChip(int remaining)
 
 static void renderFloorIndicator(void)
 {
-    int cx = g_display.width / 2;
     if (!floor_locked) {
         if (!vertical_arrows_checked) {
             SDL_Surface *right = resource_getSurface(RIGHT_ARROW);
@@ -854,21 +880,19 @@ static void renderFloorIndicator(void)
             vertical_arrows_checked = true;
         }
         if (arrow_up != NULL || arrow_down != NULL) {
-            int x = g_display.width - (int)(35.0 * g_scale);
+            int x = g_display.width / 2;
             if (current_floor == FLOOR_GAMES && arrow_up != NULL) {
-                SDL_Rect pos = {x - arrow_up->w / 2, (int)(72.0 * g_scale)};
+                SDL_Rect pos = {x - arrow_up->w / 2,
+                                (int)(30.0 * g_scale) - arrow_up->h / 2};
                 SDL_BlitSurface(arrow_up, NULL, screen, &pos);
             }
             if (current_floor == FLOOR_VIDEOS && arrow_down != NULL) {
                 SDL_Rect pos = {x - arrow_down->w / 2,
-                                (int)(354.0 * g_scale)};
+                                (int)(450.0 * g_scale) - arrow_down->h / 2};
                 SDL_BlitSurface(arrow_down, NULL, screen, &pos);
             }
         }
     }
-    drawText(current_floor == FLOOR_VIDEOS ? "VIDEOS" : "GAMES", cx,
-             (int)(72.0 * g_scale), resource_getFont(HINT),
-             theme()->hint.color, (int)(180.0 * g_scale));
 }
 
 static void renderCarousel(int remaining)
@@ -878,12 +902,22 @@ static void renderCarousel(int remaining)
 
     int cx = g_display.width / 2;
     int art_cy = (int)(g_display.height * 0.40) + content_offset_y;
+    int fixed_art_cy = (int)(g_display.height * 0.40);
 
     if (artwork != NULL) {
         SDL_Rect pos = {cx - artwork->w / 2, art_cy - artwork->h / 2};
         SDL_BlitSurface(artwork, NULL, screen, &pos);
     }
     else {
+        if (current_floor == FLOOR_GAMES) {
+            int tile_w = (int)(g_display.width * 0.55);
+            int tile_h = (int)(g_display.height * 0.50);
+            fillRect(cx - tile_w / 2, art_cy - tile_h / 2, tile_w, tile_h,
+                     PIN_BOX_COLOR);
+            drawText("?", cx, art_cy, getFontBigValue(),
+                     theme()->hint.color, 0);
+        }
+        else {
         // Missing artwork: use a clean black card with the movie/folder
         // name in the active theme accent color.
         const char *fallback_label = games[current].item.label;
@@ -923,6 +957,7 @@ static void renderCarousel(int remaining)
                             getFontGameLabel(), fallback_color, text_w);
             drawGlowingText(fallback_line2, cx, art_cy + line_h / 2,
                             getFontGameLabel(), fallback_color, text_w);
+        }
         }
     }
 
@@ -972,19 +1007,17 @@ static void renderCarousel(int remaining)
         SDL_Surface *arrow_left = resource_getSurface(LEFT_ARROW);
         SDL_Surface *arrow_right = resource_getSurface(RIGHT_ARROW);
         if (arrow_left != NULL) {
-            SDL_Rect pos = {(int)(10.0 * g_scale), art_cy - arrow_left->h / 2};
+            SDL_Rect pos = {(int)(10.0 * g_scale),
+                            fixed_art_cy - arrow_left->h / 2};
             SDL_BlitSurface(arrow_left, NULL, screen, &pos);
         }
         if (arrow_right != NULL) {
             SDL_Rect pos = {g_display.width - (int)(10.0 * g_scale) -
                                 arrow_right->w,
-                            art_cy - arrow_right->h / 2};
+                            fixed_art_cy - arrow_right->h / 2};
             SDL_BlitSurface(arrow_right, NULL, screen, &pos);
         }
     }
-
-    // The selector, timer and footer stay fixed while content slides.
-    renderFloorIndicator();
 
     // Native footer: folders open with A; videos play with A; games launch.
     theme_renderFooter(screen);
@@ -1053,6 +1086,7 @@ static void renderCarousel(int remaining)
         theme_renderFooterStatus(screen, current + 1, games_count);
 
     renderTimeChip(remaining);
+    renderFloorIndicator();
 }
 
 static void renderEmpty(void)
@@ -1060,7 +1094,6 @@ static void renderEmpty(void)
     renderBase();
     int cx = g_display.width / 2;
     const bool videos = current_floor == FLOOR_VIDEOS;
-    renderFloorIndicator();
     drawText(videos ? "No videos yet!" : "No favorite games yet!", cx,
              (int)(g_display.height * 0.42),
              getFontBigValue(), theme()->list.color, g_display.width - 40);
@@ -1070,6 +1103,7 @@ static void renderEmpty(void)
              (int)(g_display.height * 0.58), getFontInfo(),
              theme()->list.color, g_display.width - 40);
     theme_renderFooter(screen);
+    renderFloorIndicator();
 }
 
 static void renderConfirmRestart(const char *label, int remaining)
@@ -1291,20 +1325,54 @@ static void flip(void)
 #endif
 }
 
+static SDL_Surface *copyScreenSurface(void)
+{
+    SDL_Surface *copy = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, g_display.width, g_display.height, 32,
+        0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+    if (copy != NULL)
+        SDL_BlitSurface(screen, NULL, copy, NULL);
+    return copy;
+}
+
+static void blitMovingRegion(SDL_Surface *frame, SDL_Rect region, int offset)
+{
+    if (frame == NULL)
+        return;
+    int src_y = region.y;
+    int dst_y = region.y + offset;
+    int height = region.h;
+    int bottom = region.y + region.h;
+    if (dst_y < region.y) {
+        int cut = region.y - dst_y;
+        src_y += cut;
+        height -= cut;
+        dst_y = region.y;
+    }
+    if (dst_y + height > bottom)
+        height = bottom - dst_y;
+    if (height <= 0)
+        return;
+    SDL_Rect src = {region.x, src_y, region.w, height};
+    SDL_Rect dst = {region.x, dst_y, region.w, height};
+    SDL_BlitSurface(frame, &src, screen, &dst);
+}
+
 static bool switchFloor(ContentFloor target, int remaining)
 {
     if (target == current_floor)
         return games_count > 0;
     rememberSelection();
     int direction = target == FLOOR_VIDEOS ? 1 : -1;
-    const int frames = 7;
+
+    // Render each floor only once. The animation then moves cached pixels,
+    // avoiding font, image and theme work on every frame (far smoother on
+    // the Miyoo's small CPU).
+    SDL_Surface *old_frame = NULL;
     if (games_count > 0) {
-        for (int i = 1; i <= frames; i++) {
-            content_offset_y = direction * i * g_display.height / frames;
-            renderCarousel(remaining);
-            flip();
-            msleep(12);
-        }
+        content_offset_y = 0;
+        renderCarousel(remaining);
+        old_frame = copyScreenSurface();
     }
     current_floor = target;
     writeFloorState();
@@ -1313,16 +1381,53 @@ static bool switchFloor(ContentFloor target, int remaining)
     writeSelectionState();
     if (games_count == 0) {
         content_offset_y = 0;
+        if (old_frame != NULL)
+            SDL_FreeSurface(old_frame);
         dirty = true;
         return false;
     }
-    for (int i = frames; i >= 1; i--) {
-        content_offset_y = -direction * i * g_display.height / frames;
-        renderCarousel(remaining);
-        flip();
-        msleep(12);
-    }
+
     content_offset_y = 0;
+    renderCarousel(remaining);
+    SDL_Surface *new_frame = copyScreenSurface();
+
+    // A third cached frame contains only fixed chrome: moving the content
+    // far outside the viewport leaves arrows, timer and footer in place.
+    content_offset_y = g_display.height * 2;
+    renderCarousel(remaining);
+    SDL_Surface *chrome_frame = copyScreenSurface();
+    content_offset_y = 0;
+
+    if (new_frame == NULL || chrome_frame == NULL) {
+        if (old_frame != NULL)
+            SDL_FreeSurface(old_frame);
+        if (new_frame != NULL)
+            SDL_FreeSurface(new_frame);
+        if (chrome_frame != NULL)
+            SDL_FreeSurface(chrome_frame);
+        dirty = true;
+        return true;
+    }
+
+    SDL_Rect region = {(int)(45.0 * g_scale), (int)(55.0 * g_scale),
+                       g_display.width - (int)(90.0 * g_scale),
+                       (int)(365.0 * g_scale)};
+    if (region.y + region.h > g_display.height)
+        region.h = g_display.height - region.y;
+    const int frames = 10;
+    for (int i = 1; i <= frames; i++) {
+        int progress = region.h * i / frames;
+        SDL_BlitSurface(chrome_frame, NULL, screen, NULL);
+        blitMovingRegion(old_frame, region, direction * progress);
+        blitMovingRegion(new_frame, region,
+                         direction * (progress - region.h));
+        flip();
+        msleep(8);
+    }
+    if (old_frame != NULL)
+        SDL_FreeSurface(old_frame);
+    SDL_FreeSurface(new_frame);
+    SDL_FreeSurface(chrome_frame);
     dirty = true;
     return true;
 }
