@@ -85,6 +85,8 @@
 #define VIDEOS_DIR "/mnt/SDCARD/Media/VideoKidsMode"
 #define FAVORITES_PATH "/mnt/SDCARD/Roms/favourite.json"
 #define ICON_X_PATH "/mnt/SDCARD/App/KidsModeV2/icon-X-54.png"
+#define SCREEN_REFLECTION_PATH \
+    "/mnt/SDCARD/App/KidsModeV2/screen-reflection.png"
 
 typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
@@ -147,6 +149,8 @@ static SDL_Surface *artwork = NULL;
 static SDL_Surface *artwork_cache[2] = {NULL, NULL};
 static char artwork_cache_path[2][STR_MAX] = {{0}, {0}};
 static SDL_Surface *crt_fallback = NULL;
+static SDL_Surface *screen_reflection = NULL;
+static bool screen_reflection_checked = false;
 static SDL_Surface *icon_x = NULL; // optional theme icon-X-54.png, loaded
                                    // once on first use; NULL if the theme
                                    // doesn't have one (checked, not
@@ -344,6 +348,47 @@ static SDL_Surface *loadIconX(void)
         img = scaled;
     }
     return img;
+}
+
+// ScreenScraper Mix V1 bakes the same glass highlight into every square.
+// Load our extracted transparent version once, resize it to the square video
+// tile and temper its alpha to match the grey highlight of the 250px samples.
+static SDL_Surface *loadScreenReflection(int size)
+{
+    if (screen_reflection_checked)
+        return screen_reflection;
+    screen_reflection_checked = true;
+
+    SDL_Surface *raw = IMG_Load(SCREEN_REFLECTION_PATH);
+    if (raw == NULL)
+        return NULL;
+    SDL_Surface *scaled = scaleSurface(raw, size, size);
+    SDL_FreeSurface(raw);
+    if (scaled == NULL)
+        return NULL;
+
+    // scaleSurface always produces ARGB8888, so the high byte is alpha.
+    // The reference highlight peaks around one third white over black.
+    uint32_t *pixels = (uint32_t *)scaled->pixels;
+    int pitch = scaled->pitch / 4;
+    for (int y = 0; y < scaled->h; y++) {
+        for (int x = 0; x < scaled->w; x++) {
+            uint32_t pixel = pixels[y * pitch + x];
+            uint32_t alpha = (pixel >> 24) & 0xFF;
+            alpha = (alpha * 90 + 127) / 255;
+            pixels[y * pitch + x] = (pixel & 0x00FFFFFF) | (alpha << 24);
+        }
+    }
+
+#ifdef PLATFORM_MIYOOMINI
+    rotate180InPlace(scaled);
+#endif
+    screen_reflection = SDL_DisplayFormatAlpha(scaled);
+    if (screen_reflection == NULL)
+        screen_reflection = scaled;
+    else
+        SDL_FreeSurface(scaled);
+    return screen_reflection;
 }
 
 // Results go through a file: stdout is unreliable on-device (SDL/driver
@@ -984,6 +1029,18 @@ static void renderCarousel(int remaining)
             drawGlowingText(fallback_line2, cx, art_cy + line_h / 2,
                             getFontGameLabel(), fallback_color, text_w);
         }
+        }
+    }
+
+    // Games already contain this highlight in their ScreenScraper artwork.
+    // Add it only to video/folder squares (including the no-image fallback).
+    if (current_floor == FLOOR_VIDEOS) {
+        int reflection_size = (int)(g_display.height * 0.58);
+        SDL_Surface *reflection = loadScreenReflection(reflection_size);
+        if (reflection != NULL) {
+            SDL_Rect reflection_pos = {cx - reflection->w / 2,
+                                       art_cy - reflection->h / 2};
+            SDL_BlitSurface(reflection, NULL, screen, &reflection_pos);
         }
     }
 
@@ -2001,6 +2058,8 @@ int main(int argc, char *argv[])
     }
     if (crt_fallback != NULL)
         SDL_FreeSurface(crt_fallback);
+    if (screen_reflection != NULL)
+        SDL_FreeSurface(screen_reflection);
     if (icon_x != NULL)
         SDL_FreeSurface(icon_x);
     if (arrow_up != NULL)
