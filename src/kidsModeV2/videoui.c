@@ -87,7 +87,6 @@
 #define ICON_X_PATH "/mnt/SDCARD/App/KidsModeV2/icon-X-54.png"
 #define SCREEN_REFLECTION_PATH \
     "/mnt/SDCARD/App/KidsModeV2/screen-reflection.png"
-#define SCREEN_REFLECTION_OPACITY_PERCENT 45
 
 typedef enum { SCREEN_CAROUSEL,
                SCREEN_PIN,
@@ -485,9 +484,9 @@ static SDL_Surface *loadScreenReflection(int size)
     if (scaled == NULL)
         return NULL;
 
-    // scaleAlphaSurface produces ARGB8888. The source is deliberately broad
-    // and bright so its soft gradient survives scaling; use the calibrated
-    // fraction below to match the subtler ScreenScraper Mix V1 reflection.
+    // scaleAlphaSurface produces ARGB8888. This matte was extracted from the
+    // pixels common to several ScreenScraper Mix V1 images, so its luminance
+    // already is the reference reflection's exact opacity.
     uint32_t *pixels = (uint32_t *)scaled->pixels;
     int pitch = scaled->pitch / 4;
     for (int y = 0; y < scaled->h; y++) {
@@ -496,10 +495,8 @@ static SDL_Surface *loadScreenReflection(int size)
             uint32_t red = (pixel >> 16) & 0xFF;
             uint32_t green = (pixel >> 8) & 0xFF;
             uint32_t blue = pixel & 0xFF;
-            uint32_t luminance =
-                (red * 30 + green * 59 + blue * 11 + 50) / 100;
             uint32_t alpha =
-                (luminance * SCREEN_REFLECTION_OPACITY_PERCENT + 50) / 100;
+                (red * 30 + green * 59 + blue * 11 + 50) / 100;
             if (alpha < 2)
                 alpha = 0;
             pixels[y * pitch + x] = (alpha << 24) | 0x00FFFFFF;
@@ -550,12 +547,13 @@ static void blendScreenReflection(SDL_Surface *reflection, int dst_x,
             uint8_t red, green, blue;
             SDL_GetRGB(readSurfacePixel(screen, screen_x, screen_y),
                        screen->format, &red, &green, &blue);
-            // Mix V1's reflection is a very light warm ivory rather than
-            // pure white. Screen-blend towards that tint so it can only
-            // brighten the artwork, never muddy or darken it.
+            // The reference samples use a neutral white reflection. The
+            // apparent tint in some covers comes from the artwork below it.
+            // Screen-blend towards white so the exact matte remains visible
+            // without muddying or darkening the artwork.
             red += ((255 - red) * 255 * alpha + 32512) / 65025;
-            green += ((255 - green) * 244 * alpha + 32512) / 65025;
-            blue += ((255 - blue) * 210 * alpha + 32512) / 65025;
+            green += ((255 - green) * 255 * alpha + 32512) / 65025;
+            blue += ((255 - blue) * 255 * alpha + 32512) / 65025;
             writeSurfacePixel(screen, screen_x, screen_y,
                               SDL_MapRGB(screen->format, red, green, blue));
         }
@@ -1134,8 +1132,12 @@ static void renderFloorIndicator(void)
                 SDL_BlitSurface(arrow_up, NULL, screen, &pos);
             }
             if (current_floor == FLOOR_VIDEOS && arrow_down != NULL) {
+                // Keep the floor arrow visually attached to the title. The
+                // second title line is centred at y=400; y=422 puts the
+                // arrow just below it instead of mixing it with the footer
+                // hints (PLAY / RESTART), which are centred at y=450.
                 SDL_Rect pos = {x - arrow_down->w / 2,
-                                (int)(450.0 * g_scale) - arrow_down->h / 2};
+                                (int)(422.0 * g_scale) - arrow_down->h / 2};
                 SDL_BlitSurface(arrow_down, NULL, screen, &pos);
             }
         }
