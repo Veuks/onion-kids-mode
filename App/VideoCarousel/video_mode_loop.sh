@@ -234,7 +234,7 @@ play_video() {
       VC_CHECKPOINT_FILE="$posfile" \
       LD_PRELOAD="$appdir/bin/libvcinput.so:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
       "$ffplay" -autoexit \
-      -vf "hflip,vflip,drawgrid=w=iw:h=ceil(ih/160):t=1:c=black@0.06" \
+      -vf "scale=w='trunc(min(640\,480*dar)/2)*2':h='trunc(min(480\,640/dar)/2)*2':flags=bicubic,setsar=1,pad=640:480:(ow-iw)/2:(oh-ih)/2:black,drawgrid=w=iw:h=3:t=1:c=black@0.06,hflip,vflip" \
       -i "$video" -ss "$start" &
     pid=$!
     printf '%s\n' "$pid" > "$player_pid"

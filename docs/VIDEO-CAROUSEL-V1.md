@@ -40,8 +40,9 @@ Player:
 - MENU alone: save progress and return to the carousel
 - every other key: ignored
 
-Playback keeps FFplay's native aspect-ratio handling. Scanline spacing adapts
-to each video's height so anamorphic and unusual formats remain fully visible.
+Playback uses each video's display aspect ratio (including anamorphic pixels),
+fits the complete picture inside 640x480, then adds scanlines at a fixed
+three-pixel interval. This keeps both the framing and spacing consistent.
 
 ## Series folders
 
