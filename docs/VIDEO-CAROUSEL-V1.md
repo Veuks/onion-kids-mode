@@ -20,9 +20,9 @@ When no artwork is available, the carousel displays the movie or folder name
 on a black card using the current theme's selected-item color. Inside a series,
 this card keeps the folder name while the episode title is shown below it.
 All supplied and generated covers are cropped without stretching to the same
-5:7 display size. CRT scanlines are rendered directly by the carousel. The
-subtle themed glow is applied only to the title of entries with no supplied
-image; screen edges remain neutral.
+5:7 display size. Supplied artwork is displayed without scanlines or color
+effects. Entries with no supplied image use a plain black card with a subtle
+themed glow applied only to their title.
 
 ## Controls
 
@@ -40,9 +40,9 @@ Player:
 - MENU alone: save progress and return to the carousel
 - every other key: ignored
 
-Playback uses each video's display aspect ratio (including anamorphic pixels),
-fits the complete picture inside 640x480, then adds scanlines at a fixed
-three-pixel interval. This keeps both the framing and spacing consistent.
+Playback leaves sizing and aspect-ratio handling entirely to the Miyoo FFplay
+build so every format remains fully visible. No scanline or scaling filter is
+applied to the video.
 
 ## Series folders
 

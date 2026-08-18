@@ -560,32 +560,6 @@ static void splitTwoLines(const char *text, TTF_Font *font, char *out1,
     }
 }
 
-static void applyCrtEffect(SDL_Surface *surface)
-{
-    if (surface == NULL || surface->format->BytesPerPixel != 4)
-        return;
-    if (SDL_MUSTLOCK(surface))
-        SDL_LockSurface(surface);
-    Uint32 *pixels = (Uint32 *)surface->pixels;
-    int stride = surface->pitch / 4;
-    for (int y = 0; y < surface->h; y++) {
-        for (int x = 0; x < surface->w; x++) {
-            Uint8 r, g, b, a;
-            SDL_GetRGBA(pixels[y * stride + x], surface->format,
-                        &r, &g, &b, &a);
-            // Fine, subtle CRT texture: one lightly dimmed row out of three.
-            if (y % 3 == 2) {
-                r = (Uint8)(r * 0.92);
-                g = (Uint8)(g * 0.92);
-                b = (Uint8)(b * 0.92);
-            }
-            pixels[y * stride + x] = SDL_MapRGBA(surface->format, r, g, b, a);
-        }
-    }
-    if (SDL_MUSTLOCK(surface))
-        SDL_UnlockSurface(surface);
-}
-
 static SDL_Surface *createCrtSurface(int width, int height)
 {
     SDL_Surface *surface = SDL_CreateRGBSurface(
@@ -594,7 +568,6 @@ static SDL_Surface *createCrtSurface(int width, int height)
     if (surface == NULL)
         return NULL;
     SDL_FillRect(surface, NULL, SDL_MapRGBA(surface->format, 3, 2, 8, 255));
-    applyCrtEffect(surface);
     return surface;
 }
 
@@ -642,7 +615,6 @@ static void loadArtwork(void)
     SDL_FreeSurface(cropped);
     if (scaled == NULL)
         return;
-    applyCrtEffect(scaled);
 #ifdef PLATFORM_MIYOOMINI
     rotate180InPlace(scaled);
 #endif
