@@ -141,6 +141,11 @@ static int content_offset_y = 0;
 static bool floor_locked = false;
 
 static SDL_Surface *artwork = NULL;
+// Keep the last decoded image for each floor. Switching floors normally
+// returns to the same selection, so decoding and scaling it again would add
+// a visible pause before every swipe.
+static SDL_Surface *artwork_cache[2] = {NULL, NULL};
+static char artwork_cache_path[2][STR_MAX] = {{0}, {0}};
 static SDL_Surface *crt_fallback = NULL;
 static SDL_Surface *icon_x = NULL; // optional theme icon-X-54.png, loaded
                                    // once on first use; NULL if the theme
@@ -382,10 +387,9 @@ static void resetEntries(void)
 {
     games_count = 0;
     current = 0;
-    if (artwork != NULL) {
-        SDL_FreeSurface(artwork);
-        artwork = NULL;
-    }
+    // artwork is owned by artwork_cache. Detach it while replacing the
+    // entry list, but keep both floor caches alive for fast vertical swipes.
+    artwork = NULL;
     artwork_index = -1;
     title_for_index = -1;
 }
@@ -702,15 +706,23 @@ static void loadArtwork(void)
 {
     if (artwork_index == current && artwork != NULL)
         return;
-    if (artwork != NULL) {
-        SDL_FreeSurface(artwork);
-        artwork = NULL;
-    }
     artwork_index = current;
+    artwork = NULL;
     if (games_count == 0)
         return;
 
+    int cache_slot = (int)current_floor;
     const char *imgpath = games[current].item.imgpath;
+    if (artwork_cache[cache_slot] != NULL && imgpath[0] != '\0' &&
+        strcmp(artwork_cache_path[cache_slot], imgpath) == 0) {
+        artwork = artwork_cache[cache_slot];
+        return;
+    }
+    if (artwork_cache[cache_slot] != NULL) {
+        SDL_FreeSurface(artwork_cache[cache_slot]);
+        artwork_cache[cache_slot] = NULL;
+    }
+    artwork_cache_path[cache_slot][0] = '\0';
     if (strlen(imgpath) == 0 || access(imgpath, F_OK) != 0)
         return;
     SDL_Surface *raw = IMG_Load(imgpath);
@@ -719,7 +731,7 @@ static void loadArtwork(void)
 
     // Keep the original Kids Mode artwork behaviour on the GAMES floor:
     // preserve each image's aspect ratio and fit it inside the historical
-    // art box. Only video covers use the uniform cropped 5:7 format.
+    // art box.
     if (current_floor == FLOOR_GAMES) {
         double max_w = g_display.width * 0.62;
         double max_h = g_display.height * 0.58;
@@ -741,42 +753,52 @@ static void loadArtwork(void)
             artwork = raw;
         else
             SDL_FreeSurface(raw);
+        artwork_cache[cache_slot] = artwork;
+        snprintf(artwork_cache_path[cache_slot], STR_MAX, "%s", imgpath);
         return;
     }
 
-    // Every cover uses the exact same 5:7 box. Crop centrally before scaling
-    // instead of stretching, so circles, faces and lettering keep their shape.
-    int target_h = (int)(g_display.height * 0.52);
-    int target_w = target_h * 5 / 7;
-    int crop_w = raw->w;
-    int crop_h = raw->h;
-    if ((long)crop_w * 7 > (long)crop_h * 5)
-        crop_w = crop_h * 5 / 7;
-    else
-        crop_h = crop_w * 7 / 5;
-    SDL_Rect source_rect = {(raw->w - crop_w) / 2,
-                            (raw->h - crop_h) / 2, crop_w, crop_h};
-    SDL_Surface *cropped = SDL_CreateRGBSurface(
-        SDL_SWSURFACE, crop_w, crop_h, 32, 0x000000ff, 0x0000ff00,
-        0x00ff0000, 0xff000000);
-    if (cropped == NULL) {
-        SDL_FreeSurface(raw);
-        return;
-    }
-    SDL_BlitSurface(raw, &source_rect, cropped, NULL);
+    // Video artwork uses the same outer art box as games. Fit the complete
+    // image inside it without cropping or stretching, and fill the unused
+    // area with black (normally pillar-boxing on the sides of a 5:7 poster).
+    int target_w = (int)(g_display.width * 0.62);
+    int target_h = (int)(g_display.height * 0.58);
+    double scale_w = (double)target_w / raw->w;
+    double scale_h = (double)target_h / raw->h;
+    double scale = scale_w < scale_h ? scale_w : scale_h;
+    int scaled_w = (int)(raw->w * scale + 0.5);
+    int scaled_h = (int)(raw->h * scale + 0.5);
+    if (scaled_w < 1)
+        scaled_w = 1;
+    if (scaled_h < 1)
+        scaled_h = 1;
+    SDL_Surface *scaled = scaleSurface(raw, scaled_w, scaled_h);
     SDL_FreeSurface(raw);
-    SDL_Surface *scaled = scaleSurface(cropped, target_w, target_h);
-    SDL_FreeSurface(cropped);
     if (scaled == NULL)
         return;
-#ifdef PLATFORM_MIYOOMINI
-    rotate180InPlace(scaled);
-#endif
-    artwork = SDL_DisplayFormatAlpha(scaled);
-    if (artwork == NULL)
-        artwork = scaled;
-    else
+
+    SDL_Surface *framed = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, target_w, target_h, 32, 0x000000ff, 0x0000ff00,
+        0x00ff0000, 0xff000000);
+    if (framed == NULL) {
         SDL_FreeSurface(scaled);
+        return;
+    }
+    SDL_FillRect(framed, NULL, SDL_MapRGBA(framed->format, 0, 0, 0, 255));
+    SDL_Rect image_pos = {(target_w - scaled->w) / 2,
+                          (target_h - scaled->h) / 2, 0, 0};
+    SDL_BlitSurface(scaled, NULL, framed, &image_pos);
+    SDL_FreeSurface(scaled);
+#ifdef PLATFORM_MIYOOMINI
+    rotate180InPlace(framed);
+#endif
+    artwork = SDL_DisplayFormatAlpha(framed);
+    if (artwork == NULL)
+        artwork = framed;
+    else
+        SDL_FreeSurface(framed);
+    artwork_cache[cache_slot] = artwork;
+    snprintf(artwork_cache_path[cache_slot], STR_MAX, "%s", imgpath);
 }
 
 static SDL_Surface *loadCrtFallback(int width, int height)
@@ -870,7 +892,10 @@ static void renderTimeChip(int remaining)
 
 static void renderFloorIndicator(void)
 {
-    if (!floor_locked) {
+    // A series folder is a child navigation level, not another floor. The
+    // user must press B to leave it before GAMES becomes reachable again.
+    if (!floor_locked &&
+        !(current_floor == FLOOR_VIDEOS && current_folder[0])) {
         if (!vertical_arrows_checked) {
             SDL_Surface *right = resource_getSurface(RIGHT_ARROW);
             if (right != NULL) {
@@ -926,8 +951,8 @@ static void renderCarousel(int remaining)
             fallback_label = slash != NULL ? slash + 1 : current_folder;
         }
         SDL_Color fallback_color = theme()->grid.selectedcolor;
-        int tile_h = (int)(g_display.height * 0.52);
-        int tile_w = tile_h * 5 / 7;
+        int tile_w = (int)(g_display.width * 0.62);
+        int tile_h = (int)(g_display.height * 0.58);
         int text_w = tile_w - (int)(30.0 * g_scale);
         SDL_Surface *crt = loadCrtFallback(tile_w, tile_h);
         if (crt != NULL) {
@@ -1362,6 +1387,9 @@ static bool switchFloor(ContentFloor target, int remaining)
 {
     if (target == current_floor)
         return games_count > 0;
+    if (current_floor == FLOOR_VIDEOS && current_folder[0] &&
+        target == FLOOR_GAMES)
+        return games_count > 0;
     rememberSelection();
     int direction = target == FLOOR_VIDEOS ? 1 : -1;
 
@@ -1414,7 +1442,9 @@ static bool switchFloor(ContentFloor target, int remaining)
                        (int)(365.0 * g_scale)};
     if (region.y + region.h > g_display.height)
         region.h = g_display.height - region.y;
-    const int frames = 10;
+    // Eight short steps stay visibly smooth while avoiding the sluggish
+    // pause of the original longer transition on Miyoo hardware.
+    const int frames = 8;
     for (int i = 1; i <= frames; i++) {
         int progress = region.h * i / frames;
         SDL_BlitSurface(chrome_frame, NULL, screen, NULL);
@@ -1422,7 +1452,7 @@ static bool switchFloor(ContentFloor target, int remaining)
         blitMovingRegion(new_frame, region,
                          direction * (progress - region.h));
         flip();
-        msleep(8);
+        msleep(2);
     }
     if (old_frame != NULL)
         SDL_FreeSurface(old_frame);
@@ -1516,7 +1546,10 @@ int main(int argc, char *argv[])
     list_addItem(&menu_list, (ListItem){.label = "Turn off timer",
                                         .item_type = ACTION,
                                         .disabled = menu_remaining < 0});
-    list_addItem(&menu_list, (ListItem){.label = "Lock current floor",
+    list_addItem(&menu_list,
+                 (ListItem){.label = current_floor == FLOOR_VIDEOS
+                                               ? "Lock on Videos"
+                                               : "Lock on Games",
                                         .item_type = TOGGLE,
                                         .value = menu_lock_floor ? 1 : 0,
                                         .action = onLockFloorToggle});
@@ -1599,7 +1632,8 @@ int main(int argc, char *argv[])
                                             : SCREEN_EMPTY;
                     break;
                 case SW_BTN_DOWN:
-                    if (!floor_locked && current_floor == FLOOR_VIDEOS)
+                    if (!floor_locked && current_floor == FLOOR_VIDEOS &&
+                        !current_folder[0])
                         active_screen = switchFloor(FLOOR_GAMES, remaining)
                                             ? SCREEN_CAROUSEL
                                             : SCREEN_EMPTY;
@@ -1643,7 +1677,7 @@ int main(int argc, char *argv[])
                                         ? SCREEN_CAROUSEL
                                         : SCREEN_EMPTY;
                 else if (!floor_locked && changed_key == SW_BTN_DOWN &&
-                         current_floor == FLOOR_VIDEOS)
+                         current_floor == FLOOR_VIDEOS && !current_folder[0])
                     active_screen = switchFloor(FLOOR_GAMES, remaining)
                                         ? SCREEN_CAROUSEL
                                         : SCREEN_EMPTY;
@@ -1951,8 +1985,11 @@ int main(int argc, char *argv[])
         msleep(10);
     }
 
-    if (artwork != NULL)
-        SDL_FreeSurface(artwork);
+    artwork = NULL;
+    for (int i = 0; i < 2; i++) {
+        if (artwork_cache[i] != NULL)
+            SDL_FreeSurface(artwork_cache[i]);
+    }
     if (crt_fallback != NULL)
         SDL_FreeSurface(crt_fallback);
     if (icon_x != NULL)

@@ -987,6 +987,7 @@ parent_menu() {
         [ "$(config_get lock_current_floor)" = "true" ] && lock_val=1
         "$kidui_bin" --parent-menu \
             --remaining "$(timer_remaining)" \
+            --floor "$(printf '%s' "$active_floor" | tr '[:lower:]' '[:upper:]')" \
             --lock-floor "$lock_val" > "$uilog" 2>&1
         menu_rc=$?
 
