@@ -1,14 +1,14 @@
-# Super Kids Mode for Onion OS
+# Kids Mode for Onion OS
 
-Super Kids Mode combines games and videos in one simple, protected launcher
+Kids Mode combines games and videos in one simple, protected launcher
 for the Miyoo Mini and Miyoo Mini Plus. It is designed for young children:
 large artwork, a small set of useful controls, automatic resume, an optional
 session timer, and a PIN-protected parent menu.
 
 The existing `v1.0.0` release remains published under the former **Kids Mode
 Deluxe** name. Its install archive is still named `KidsMode-Deluxe.zip`.
-The current source and all future builds use the Super Kids Mode name and
-folders. Super Kids Mode is treated as a separate, clean installation; no
+The current source and all future builds use the Kids Mode name and
+folders. Kids Mode is treated as a separate, clean installation; no
 settings or playback state are imported automatically from the former app.
 
 Games stay on the lower section and videos stay on the upper section. The two
@@ -47,52 +47,63 @@ V4 display sizes are supported in the code, but feedback is welcome.
 
 ## Installation
 
-1. Download `Super-Kids-Mode.zip` from a Super Kids Mode release, or use the
-   `Super-Kids-Mode-build` artifact while testing the current source. The
+1. Download `Kids-Mode.zip` from a Kids Mode release, or use the
+   `Kids-Mode-build` artifact while testing the current source. The
    historical `v1.0.0` release remains available as `KidsMode-Deluxe.zip`.
 2. Extract the ZIP.
-3. Copy the `SuperKidsMode` folder into the `App` folder on the SD card. The
+3. Copy the `KidsMode` folder into the `App` folder on the SD card. The
    final path must be:
 
    ```text
-   /mnt/SDCARD/App/SuperKidsMode/
+   /mnt/SDCARD/App/KidsMode/
    ```
 
 4. Add the games intended for the child to Onion's Favorites list.
 5. Add videos as described in the Media section below.
 6. Reinsert the SD card, refresh the Apps list or reboot, then open
-   **Apps → Super Kids Mode**.
+   **Apps → Kids Mode**.
 7. On first launch, choose and confirm a four-digit PIN, then select a session
    timer or choose `OFF`.
 
-Super Kids Mode remains active after a reboot until it is exited through the
+Kids Mode remains active after a reboot until it is exited through the
 parent menu.
 
 PIN, timer state, selections and playback positions are stored under
-`Saves/SuperKidsMode`.
+`Saves/KidsMode`.
 
-### Moving files manually from Kids Mode Deluxe
+### Clean installation and manual file move
 
-Exit Kids Mode Deluxe through its parent menu before installing Super Kids
-Mode. Copy the new `App/SuperKidsMode` folder and launch it once to create the
-new folders. Then move the videos and images manually:
+Exit the previous mode through its parent menu before replacing it. Back up
+the SD card, then remove any former `App/KidsMode`, `App/KidsModeDeluxe` or
+`App/SuperKidsMode` folder. Also remove the former `Saves/kidmode` folder:
+on the SD card, `kidmode` and `KidsMode` are the same name, so leaving it in
+place would reuse the former PIN, timer and state instead of starting clean.
+
+Do **not** remove `Saves/KidsProfile`, `Saves/CurrentProfile`,
+`Saves/MainProfile` or `Saves/GuestProfile`. `KidsProfile` contains the
+child's game saves and remains separate from the app settings.
+
+Copy the new `App/KidsMode` folder and launch it once. Kids Mode creates a
+fresh `Saves/KidsMode` folder, PIN, timer state and playback history. Move
+the videos, series folders and `Imgs` folder manually from whichever former
+media folder exists:
 
 ```text
-Media/VideoKidsMode        → Media/SuperKidsMode
+Media/VideoKidsMode        → Media/KidsMode
+Media/SuperKidsMode        → Media/KidsMode
 ```
 
-Super Kids Mode creates a fresh PIN, timer state and playback history in
-`Saves/SuperKidsMode`; the previous `Saves/kidmode` folder is not imported.
-After checking that everything opens correctly, the former
-`App/KidsModeDeluxe` folder can be removed. The `v1.0.0` GitHub release itself
-is not changed.
+Move the **contents**, not the former media folder itself, to avoid creating
+`Media/KidsMode/VideoKidsMode` or `Media/KidsMode/SuperKidsMode`. The old
+`Saves/VideoCarousel` folder is not used and may be removed after testing.
+The historical `v1.0.0` GitHub release itself is not changed.
 
 ## Media layout
 
 Videos belong in:
 
 ```text
-/mnt/SDCARD/Media/SuperKidsMode/
+/mnt/SDCARD/Media/KidsMode/
 ```
 
 Supported formats are MP4, MKV, AVI, MOV, M4V and WebM. Entries are sorted
@@ -102,7 +113,7 @@ Artwork belongs in the shared `Imgs` folder and must use the same base name as
 the video. PNG, JPG and JPEG are accepted:
 
 ```text
-Media/SuperKidsMode/
+Media/KidsMode/
 ├── The Lion King.mp4
 ├── The Visitors.mkv
 └── Imgs/
@@ -118,7 +129,7 @@ titles use up to six balanced lines before reducing the font size.
 For movies, portrait cinema-poster artwork is recommended: the whole poster
 is preserved and the app adds black side bars inside the square carousel tile
 when needed. For series, the cleanest result is usually obtained without any
-artwork. Super Kids Mode then creates the black card automatically, places
+artwork. Kids Mode then creates the black card automatically, places
 the episode name inside it and keeps the series name below it. If series or
 episode artwork is provided, the image is kept untouched and the episode name
 is displayed below it.
@@ -128,7 +139,7 @@ is displayed below it.
 One folder level is supported:
 
 ```text
-Media/SuperKidsMode/
+Media/KidsMode/
 ├── Ulysses 31/
 │   ├── Episode 01.mp4
 │   ├── Episode 02.mp4
@@ -168,7 +179,7 @@ inside a series folder; press B to return to the main video carousel first.
 ## While playing a game
 
 The game itself keeps its normal controls. A single press of MENU saves and
-returns directly to the Super Kids Mode carousel. RetroArch configuration and
+returns directly to the Kids Mode carousel. RetroArch configuration and
 dangerous hotkeys are hidden while the mode is active and restored on exit.
 
 Restarting with X skips Onion's automatic resume state but does not erase
@@ -200,7 +211,7 @@ combination does not accidentally leave the video.
 Hold SELECT + START for about three seconds, enter the four-digit PIN, then
 choose:
 
-- **Exit Super Kids Mode** — restore Onion and return to its normal interface.
+- **Exit Kids Mode** — restore Onion and return to its normal interface.
 - **Add play time** — add 5 to 120 minutes to the current session.
 - **Turn off timer** — continue without a time limit.
 - **Games only / Videos only** — lock the section currently being viewed. The
@@ -225,45 +236,45 @@ real state at shutdown.
 
 Nothing on the SD card is permanently locked.
 
-- **Forgotten PIN:** edit `App/SuperKidsMode/kidmode.json`, clear `pin_hash`
+- **Forgotten PIN:** edit `App/KidsMode/kidmode.json`, clear `pin_hash`
   and `pin_salt`, and set `pin_plain` to a new four-digit PIN. Also delete
-  `Saves/SuperKidsMode/pin_backup.json` so the previous PIN is not restored.
+  `Saves/KidsMode/pin_backup.json` so the previous PIN is not restored.
 - **Force exit from a computer:** delete the hidden `/.kidmode` file at the
   root of the SD card, then boot normally.
-- **Log file:** `.tmp_update/logs/superkidsmode.log` records startup and recovery
+- **Log file:** `.tmp_update/logs/kidsmode.log` records startup and recovery
   information.
 - **Interface failure:** after repeated launcher failures, the safety routine
   returns to normal Onion instead of creating a boot loop.
 
 To uninstall, exit through the parent menu first, then remove
-`App/SuperKidsMode`. The optional saved state can also be removed from
-`Saves/SuperKidsMode` if it is no longer needed.
+`App/KidsMode`. The optional saved state can also be removed from
+`Saves/KidsMode` if it is no longer needed.
 
 ## Building from source
 
 Every push starts the GitHub Actions workflow. It cross-compiles
-`src/superKidsMode`, places `kidui` and `libvcinput.so` inside
-`App/SuperKidsMode/bin`, and uploads the green artifact named
-`Super-Kids-Mode-build`.
+`src/kidsMode`, places `kidui` and `libvcinput.so` inside
+`App/KidsMode/bin`, and uploads the green artifact named
+`Kids-Mode-build`.
 
-Tagged builds additionally create `Super-Kids-Mode.zip` and attach it to the
+Tagged builds additionally create `Kids-Mode.zip` and attach it to the
 GitHub Release.
 
-For a local build, copy `src/superKidsMode` into an Onion source tree and use
+For a local build, copy `src/kidsMode` into an Onion source tree and use
 the Miyoo Mini toolchain:
 
 ```sh
 git clone https://github.com/OnionUI/Onion
-cp -r src/superKidsMode Onion/src/
+cp -r src/kidsMode Onion/src/
 docker run --rm -v "$PWD/Onion":/root/workspace \
   aemiii91/miyoomini-toolchain:latest \
-  /bin/bash -c "source /root/.bashrc; cd src/superKidsMode && make"
+  /bin/bash -c "source /root/.bashrc; cd src/kidsMode && make"
 ```
 
 ## Credits
 
 - Original Kids Mode concept and implementation by Reddit user `u/daverad`.
-- Super Kids Mode games-and-videos version maintained by
+- Kids Mode games-and-videos version maintained by
   [Veuks](https://github.com/Veuks).
 - Built on [Onion OS](https://github.com/OnionUI/Onion) and its native UI
   components.
