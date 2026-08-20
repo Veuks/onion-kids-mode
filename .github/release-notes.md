@@ -1,6 +1,6 @@
-# Super Kids Mode
+# Kids Mode
 
-Super Kids Mode brings favorite games and children's videos together in one
+Kids Mode brings favorite games and children's videos together in one
 protected Onion-style launcher for Miyoo Mini and Mini Plus.
 
 ## Highlights
@@ -8,15 +8,17 @@ protected Onion-style launcher for Miyoo Mini and Mini Plus.
 - Games on the lower section and videos on the upper section, with a smooth
   vertical transition.
 - Optional Games-only or Videos-only lock in the PIN-protected parent menu.
-- Video resume, restart confirmation, series folders and optional shared
-  folder artwork. Series without artwork use automatic black episode cards;
-  illustrated series keep episode names below their images.
-- Each series folder remembers and restores its own last selected episode.
+- Recursive folders for categories such as Films, Series and Songs. A opens
+  the selected folder and B returns exactly one level.
+- Local artwork folders such as `Films/Imgs` and
+  `Series/Ulysses 31/Imgs`. Folder covers apply only to the folder itself;
+  videos without an exact matching image keep their automatic black card.
+- Every folder level remembers and restores its own last selected item.
 - Automatic restoration of the real shutdown state: running content resumes,
   while a carousel shutdown returns to the same selection. Games and Videos
   also keep separate selections while switching between sections.
 - Shared play timer, extra-time controls and automatic power-off after the
-  Time's up screen, now headed by the Super Kids Mode banner.
+  Time's up screen, now headed by the Kids Mode banner.
 - Simplified video controls with progressive seeking and on-screen seek values.
 - ScreenScraper Mix V1 reflection and uniform square video artwork.
 - Cinema-poster artwork is recommended for movies; long automatic episode
@@ -25,11 +27,14 @@ protected Onion-style launcher for Miyoo Mini and Mini Plus.
 
 ## Install
 
-1. Download `Super-Kids-Mode.zip`.
-2. Copy `SuperKidsMode` into the SD card's `App` folder.
-3. Add videos to `Media/SuperKidsMode` and covers to
-   `Media/SuperKidsMode/Imgs`.
-4. Reboot or refresh Apps, then launch **Super Kids Mode**.
+1. Download `Kids-Mode.zip`.
+2. Exit and remove any previous Kids Mode app folder. For a clean start,
+   back up and remove the former `Saves/kidmode` folder, but keep
+   `Saves/KidsProfile` because it contains the child's game saves.
+3. Copy `KidsMode` into the SD card's `App` folder.
+4. Add videos under `Media/KidsMode`. Put each cover in the local `Imgs`
+   folder beside its videos, such as `Films/Imgs`.
+5. Reboot or refresh Apps, then launch **Kids Mode**.
 
-Requires Onion OS 4.3 or newer. Read the included README for controls, series
-folders and PIN recovery.
+Requires Onion OS 4.3 or newer. Read the included README for controls, nested
+folders, local artwork and PIN recovery.
