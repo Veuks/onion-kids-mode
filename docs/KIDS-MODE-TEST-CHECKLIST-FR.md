@@ -26,6 +26,8 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - L'image portant le nom d'un dossier s'applique aux vidéos sans image propre
   qu'il contient. Une image portant exactement le nom d'un épisode reste
   prioritaire.
+- Sans image dans le dossier courant, la vignette remonte vers le dossier
+  parent puis jusqu'à la catégorie racine (`Films`, `Séries`, etc.).
 - Le nom de l'épisode ou du fichier reste affiché sous l'image héritée.
 - Les titres des cartes noires du carrousel suivent la même règle.
 - Avec une image de série ou d'épisode, le nom de l'épisode reste sous l'image.

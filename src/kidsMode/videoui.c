@@ -728,6 +728,28 @@ static bool findArtworkInFolder(const char *folder, const char *label,
     return false;
 }
 
+static bool findNearestFolderArtwork(const char *folder, char *out,
+                                     size_t out_size)
+{
+    if (folder == NULL || folder[0] == '\0')
+        return false;
+
+    char cursor[STR_MAX];
+    snprintf(cursor, sizeof(cursor), "%s", folder);
+    while (strcmp(cursor, VIDEOS_DIR) != 0) {
+        char *slash = strrchr(cursor, '/');
+        if (slash == NULL || slash[1] == '\0')
+            break;
+        const char *folder_label = slash + 1;
+        if (findArtworkInFolder(cursor, folder_label, out, out_size))
+            return true;
+        *slash = '\0';
+        if (strncmp(cursor, VIDEOS_DIR, strlen(VIDEOS_DIR)) != 0)
+            break;
+    }
+    return false;
+}
+
 static void findArtwork(const char *browse_dir, const char *item_path,
                         const char *label, bool is_folder, char *out,
                         size_t out_size)
@@ -751,14 +773,12 @@ static void findArtwork(const char *browse_dir, const char *item_path,
         findArtworkInFolder(VIDEOS_DIR, label, out, out_size))
         return;
 
-    // A file without its own image reuses the cover of the folder containing
-    // it. Exact episode/movie artwork above always wins.
-    if (!is_folder && strcmp(browse_dir, VIDEOS_DIR) != 0) {
-        const char *slash = strrchr(browse_dir, '/');
-        const char *folder_label = slash != NULL ? slash + 1 : browse_dir;
-        if (findArtworkInFolder(browse_dir, folder_label, out, out_size))
-            return;
-    }
+    // An item without its own image reuses the nearest available folder
+    // cover. Search upwards until the category at the media root, so content
+    // can fall back to Films.png, Series.png, Songs.png, etc. Exact artwork
+    // above always wins.
+    if (findNearestFolderArtwork(browse_dir, out, out_size))
+        return;
 }
 
 static void loadVideos(void)
@@ -1540,7 +1560,7 @@ static void renderCarousel(int remaining)
         int top_y = bottom_y - line_h;
         // Folder captions use only the folder name. Files always keep their
         // own movie/episode name below the image, including when they inherit
-        // their containing folder's cover.
+        // a cover from the current folder or one of its parents.
         const char *display_title = games[current].item.label;
 
         // Recompute only when the selection changes — TTF measuring/

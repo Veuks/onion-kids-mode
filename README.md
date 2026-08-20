@@ -143,6 +143,11 @@ episodes without their own image. An exact episode image such as
 `Imgs/Episode 02.jpg` takes priority. Folder captions show only the folder
 name; movie and episode names remain below the selected image.
 
+Artwork fallback follows the folder hierarchy. If the current folder has no
+cover, Kids Mode searches its parent folders up to the category at the media
+root. For example, content under `Series/Ulysses 31` can fall back to
+`Series/Imgs/Series.png` when `Ulysses 31/Imgs/Ulysses 31.png` does not exist.
+
 The same rule can give category folders their own artwork:
 `Films/Imgs/Films.png`, `Series/Imgs/Series.png` or `Songs/Imgs/Songs.png`.
 Without one, Kids Mode creates an automatic black folder card. The older
