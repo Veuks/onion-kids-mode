@@ -202,6 +202,7 @@ normal in-game save data.
 | MENU + RIGHT | Fast-forward progressively |
 | MENU + DOWN | Rewind 10 minutes |
 | MENU + UP | Fast-forward 10 minutes |
+| MENU + X while paused | Capture the current frame for the carousel |
 | MENU alone | Save the position and return to the carousel |
 | Other buttons | Ignored by the player |
 
@@ -212,6 +213,12 @@ rewinding and at the bottom-right when moving forward.
 
 Volume and brightness shortcuts remain usable. Releasing MENU after using a
 combination does not accidentally leave the video.
+
+To create a carousel image from a video, pause with B and press MENU + X.
+Kids Mode saves `Imgs/Video name.bmp` beside that video. A later capture
+replaces the BMP. Captured BMP files take priority over supplied PNG/JPG
+posters; deleting the BMP restores the former poster or inherited folder
+cover.
 
 ## Parent menu
 

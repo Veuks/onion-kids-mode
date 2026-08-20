@@ -712,7 +712,10 @@ static bool directoryHasVideos(const char *path, int depth)
 static bool findArtworkInFolder(const char *folder, const char *label,
                                 char *out, size_t out_size)
 {
-    const char *art_exts[] = {"png", "PNG", "jpg", "JPG", "jpeg", "JPEG"};
+    // A frame captured in the player is stored as BMP and deliberately has
+    // priority over a supplied poster. Deleting the BMP restores the poster.
+    const char *art_exts[] = {"bmp", "BMP", "png", "PNG", "jpg", "JPG",
+                              "jpeg", "JPEG"};
     if (folder == NULL || folder[0] == '\0' || label == NULL ||
         label[0] == '\0')
         return false;

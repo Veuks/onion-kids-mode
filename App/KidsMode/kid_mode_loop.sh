@@ -1177,6 +1177,12 @@ play_video() {
     video="$1" fresh="$2"
     [ -f "$video" ] || return 1
     mkdir -p "$positions"
+    video_dir="${video%/*}"
+    video_name="${video##*/}"
+    video_base="${video_name%.*}"
+    screenshot_dir="$video_dir/Imgs"
+    screenshot_file="$screenshot_dir/$video_base.bmp"
+    mkdir -p "$screenshot_dir"
     key="$(video_key "$video")"
     posfile="$positions/$key.pos"
     runtime_pos="/tmp/kidsmode_position.$$"
@@ -1195,6 +1201,7 @@ play_video() {
     cd "$sysdir" || return 1
     VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
         VC_CHECKPOINT_FILE="$posfile" \
+        VC_SCREENSHOT_FILE="$screenshot_file" \
         LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
         "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" -ss "$start" &
     pid=$!

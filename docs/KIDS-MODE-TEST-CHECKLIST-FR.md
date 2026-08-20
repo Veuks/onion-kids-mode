@@ -35,6 +35,10 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - Avec une image de série ou d'épisode, le nom de l'épisode reste sous l'image.
 - Le verrou **Games only / Videos only** masque la flèche verticale.
 - A reprend et X redémarre après confirmation.
+- En pause, MENU + X crée `Imgs/Nom de la vidéo.bmp`. Une seconde capture
+  remplace ce fichier et le BMP apparaît dans le carrousel à l'endroit.
+- MENU + X pendant la lecture ne crée aucune capture. Supprimer le BMP
+  restaure l'affiche PNG/JPG ou l'image héritée du dossier.
 - Une extinction pendant un jeu ou une vidéo reprend le contenu.
 - Une extinction depuis le carrousel restaure seulement la sélection.
 - Le timer est partagé entre les jeux et les vidéos.

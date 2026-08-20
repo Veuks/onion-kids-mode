@@ -14,10 +14,12 @@ static poll_fn real_poll;
 static wait_fn real_wait;
 static peep_fn real_peep;
 static overlay_fn real_overlay;
+static SDL_Overlay *last_overlay;
 static bool inside_event_call;
 static bool paused;
 static bool menu_down;
 static bool menu_used;
+static bool screenshot_down;
 static Uint32 menu_pressed_at;
 static SDLKey seek_input = SDLK_UNKNOWN;
 static Uint32 seek_started_at;
@@ -34,6 +36,103 @@ static bool seek_notice_forward;
 static Uint32 seek_notice_until;
 static bool seek_notice_drawn;
 static SDL_Rect seek_notice_rect;
+
+static Uint8 clamp_color(int value)
+{
+    if (value < 0)
+        return 0;
+    if (value > 255)
+        return 255;
+    return (Uint8)value;
+}
+
+static bool save_paused_frame(void)
+{
+    const char *target = getenv("VC_SCREENSHOT_FILE");
+    if (target == NULL || target[0] == '\0' || last_overlay == NULL)
+        return false;
+    if (last_overlay->format != SDL_YV12_OVERLAY &&
+        last_overlay->format != SDL_IYUV_OVERLAY)
+        return false;
+    if (SDL_LockYUVOverlay(last_overlay) != 0)
+        return false;
+
+    int source_w = last_overlay->w;
+    int source_h = last_overlay->h;
+    int output_w = source_w;
+    int output_h = source_h;
+    if (output_w > 640) {
+        output_h = (int)((long long)output_h * 640 / output_w);
+        output_w = 640;
+    }
+    if (output_h > 480) {
+        output_w = (int)((long long)output_w * 480 / output_h);
+        output_h = 480;
+    }
+    if (output_w < 1)
+        output_w = 1;
+    if (output_h < 1)
+        output_h = 1;
+
+    SDL_Surface *shot = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, output_w, output_h, 32, 0x00ff0000, 0x0000ff00,
+        0x000000ff, 0xff000000);
+    if (shot == NULL) {
+        SDL_UnlockYUVOverlay(last_overlay);
+        return false;
+    }
+
+    Uint8 *y_plane = last_overlay->pixels[0];
+    Uint8 *u_plane = last_overlay->format == SDL_YV12_OVERLAY
+                         ? last_overlay->pixels[2]
+                         : last_overlay->pixels[1];
+    Uint8 *v_plane = last_overlay->format == SDL_YV12_OVERLAY
+                         ? last_overlay->pixels[1]
+                         : last_overlay->pixels[2];
+    int y_pitch = last_overlay->pitches[0];
+    int u_pitch = last_overlay->format == SDL_YV12_OVERLAY
+                      ? last_overlay->pitches[2]
+                      : last_overlay->pitches[1];
+    int v_pitch = last_overlay->format == SDL_YV12_OVERLAY
+                      ? last_overlay->pitches[1]
+                      : last_overlay->pitches[2];
+
+    if (SDL_MUSTLOCK(shot))
+        SDL_LockSurface(shot);
+    for (int y = 0; y < output_h; y++) {
+        Uint32 *row = (Uint32 *)((Uint8 *)shot->pixels + y * shot->pitch);
+        // FFplay is rotated 180 degrees for the Miyoo display. Reverse both
+        // axes while capturing so the saved carousel image is upright.
+        int source_y = source_h - 1 - (int)((long long)y * source_h / output_h);
+        for (int x = 0; x < output_w; x++) {
+            int source_x =
+                source_w - 1 - (int)((long long)x * source_w / output_w);
+            int yy = y_plane[source_y * y_pitch + source_x] - 16;
+            int uu = u_plane[(source_y / 2) * u_pitch + source_x / 2] - 128;
+            int vv = v_plane[(source_y / 2) * v_pitch + source_x / 2] - 128;
+            if (yy < 0)
+                yy = 0;
+            int red = (298 * yy + 409 * vv + 128) >> 8;
+            int green = (298 * yy - 100 * uu - 208 * vv + 128) >> 8;
+            int blue = (298 * yy + 516 * uu + 128) >> 8;
+            row[x] = SDL_MapRGB(shot->format, clamp_color(red),
+                                clamp_color(green), clamp_color(blue));
+        }
+    }
+    if (SDL_MUSTLOCK(shot))
+        SDL_UnlockSurface(shot);
+    SDL_UnlockYUVOverlay(last_overlay);
+
+    char temporary[2048];
+    snprintf(temporary, sizeof(temporary), "%s.tmp", target);
+    remove(temporary);
+    bool saved = SDL_SaveBMP(shot, temporary) == 0 &&
+                 rename(temporary, target) == 0;
+    if (!saved)
+        remove(temporary);
+    SDL_FreeSurface(shot);
+    return saved;
+}
 
 __attribute__((constructor)) static void vcinput_loaded(void)
 {
@@ -255,6 +354,9 @@ static bool map_event(SDL_Event *event)
     Uint8 state = event->key.state;
     SDLKey in = event->key.keysym.sym;
 
+    if (in == SDLK_LSHIFT && state == SDL_RELEASED)
+        screenshot_down = false;
+
     if (in == SDLK_ESCAPE) {
         if (state == SDL_PRESSED) {
             // Ignore MENU auto-repeat: only the first press starts the
@@ -297,6 +399,16 @@ static bool map_event(SDL_Event *event)
         }
         if (progressive_seek(event, now))
             return false;
+        return true;
+    }
+
+    if (menu_down && in == SDLK_LSHIFT) { /* Miyoo X: capture paused frame */
+        menu_used = true;
+        if (state == SDL_PRESSED && !screenshot_down) {
+            screenshot_down = true;
+            if (paused)
+                save_paused_frame();
+        }
         return true;
     }
 
@@ -418,6 +530,7 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
         real_overlay = (overlay_fn)dlsym(RTLD_NEXT, "SDL_DisplayYUVOverlay");
     if (!real_overlay)
         return -1;
+    last_overlay = overlay;
     int result = real_overlay(overlay, dstrect);
     draw_seek_notice();
     return result;

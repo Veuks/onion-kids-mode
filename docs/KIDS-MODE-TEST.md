@@ -36,6 +36,12 @@ nearest parent cover up to the root category must be inherited. Test both
 `Folder/Imgs/Folder.png` and `Parent/Imgs/Folder.png`; both placements must be
 accepted. PNG, JPG and JPEG are accepted.
 
+Pause a video with B, then press MENU + X. Return to the carousel and verify
+that `Imgs/Video name.bmp` shows the captured frame upright. Repeat at another
+frame and verify that the same BMP is replaced. Delete the BMP and verify that
+the previous PNG/JPG poster or inherited folder cover becomes visible again.
+MENU + X while playback is running must not create a capture.
+
 Test at least three levels: open `Series`, open `Ulysses 31`, select an
 episode, then press B twice. Reopen both folders and verify that each level
 restores its own last selection. The downward Games arrow must remain hidden
