@@ -138,10 +138,10 @@ Media/KidsMode/
 
 For a folder cover, place an image named after that folder inside its own
 `Imgs` directory. For example, `Series/Ulysses 31/Imgs/Ulysses 31.png` is used
-only for the Ulysses 31 folder in its parent carousel. It is not inherited by
-the episodes. An episode receives artwork only when an exact matching image
-exists, such as `Imgs/Episode 02.jpg`; otherwise Kids Mode displays its black
-automatic card with the episode title.
+for the Ulysses 31 folder in its parent carousel and as fallback artwork for
+episodes without their own image. An exact episode image such as
+`Imgs/Episode 02.jpg` takes priority. Folder captions show only the folder
+name; movie and episode names remain below the selected image.
 
 The same rule can give category folders their own artwork:
 `Films/Imgs/Films.png`, `Series/Imgs/Series.png` or `Songs/Imgs/Songs.png`.

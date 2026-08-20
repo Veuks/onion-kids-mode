@@ -745,12 +745,20 @@ static void findArtwork(const char *browse_dir, const char *item_path,
     if (findArtworkInFolder(browse_dir, label, out, out_size))
         return;
 
-    // Keep older layouts working as a final fallback while local Imgs
-    // folders take priority. Only an exact item name is accepted: a folder
-    // cover is never inherited by the videos inside it.
+    // Keep older layouts working while local exact-name artwork takes
+    // priority.
     if (strcmp(browse_dir, VIDEOS_DIR) != 0 &&
         findArtworkInFolder(VIDEOS_DIR, label, out, out_size))
         return;
+
+    // A file without its own image reuses the cover of the folder containing
+    // it. Exact episode/movie artwork above always wins.
+    if (!is_folder && strcmp(browse_dir, VIDEOS_DIR) != 0) {
+        const char *slash = strrchr(browse_dir, '/');
+        const char *folder_label = slash != NULL ? slash + 1 : browse_dir;
+        if (findArtworkInFolder(browse_dir, folder_label, out, out_size))
+            return;
+    }
 }
 
 static void loadVideos(void)
@@ -1482,10 +1490,14 @@ static void renderCarousel(int remaining)
                      theme()->hint.color, 0);
         }
         else {
-        // Missing artwork: use a clean black card. At the media root the
-        // movie/folder name uses the active theme accent color; inside a
-        // folder the item-title overlay below supplies the text.
+        // Missing artwork: use a clean black card. For a file inside a
+        // folder, this represents the folder's automatic cover; the selected
+        // file name remains in the caption below.
         const char *fallback_label = games[current].item.label;
+        if (current_folder[0] && !games[current].is_folder) {
+            const char *slash = strrchr(current_folder, '/');
+            fallback_label = slash != NULL ? slash + 1 : current_folder;
+        }
         SDL_Color fallback_color = theme()->grid.selectedcolor;
         int tile_h = (int)(g_display.height * 0.58);
         int tile_w = tile_h;
@@ -1499,9 +1511,8 @@ static void renderCarousel(int remaining)
                      0x000000);
         }
 
-        if (!current_folder[0])
-            drawAdaptiveCardTitle(fallback_label, cx, art_cy, tile_w,
-                                  fallback_color, true);
+        drawAdaptiveCardTitle(fallback_label, cx, art_cy, tile_w,
+                              fallback_color, true);
         }
     }
 
@@ -1514,12 +1525,8 @@ static void renderCarousel(int remaining)
             blendScreenReflection(reflection, cx - reflection->w / 2,
                                   art_cy - reflection->h / 2);
         }
-        // Keep supplied artwork untouched. The title-in-card layout is the
-        // automatic presentation used when an item has no image of its own
-        // and no shared folder image to fall back to.
-        if (current_folder[0] && games[current].item.imgpath[0] == '\0')
-            drawAdaptiveCardTitle(games[current].item.label, cx, art_cy,
-                                  reflection_size, COLOR_WHITE, false);
+        // Supplied artwork, including an inherited folder cover, stays
+        // untouched. The selected file or folder name is shown below it.
     }
 
     // Game title in the theme's list font (big + bold). Short titles now
@@ -1531,32 +1538,10 @@ static void renderCarousel(int remaining)
         int bottom_y = (int)(400.0 * g_scale) + content_offset_y;
         int line_h = TTF_FontLineSkip(getFontGameLabel());
         int top_y = bottom_y - line_h;
-        // Every folder uses the same path-style caption: ".../Folder" with
-        // supplied artwork, or the minimal "..." below an automatic card.
-        // Videos keep the established series layout inside a folder.
-        char folder_display_title[STR_MAX] = "";
+        // Folder captions use only the folder name. Files always keep their
+        // own movie/episode name below the image, including when they inherit
+        // their containing folder's cover.
         const char *display_title = games[current].item.label;
-        if (current_floor == FLOOR_VIDEOS && games[current].is_folder) {
-            if (games[current].item.imgpath[0] != '\0') {
-                snprintf(folder_display_title, sizeof(folder_display_title),
-                         ".../%s", games[current].item.label);
-                display_title = folder_display_title;
-            }
-            else {
-                display_title = "...";
-            }
-        }
-        else if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
-            if (games[current].item.imgpath[0] == '\0') {
-                const char *slash = strrchr(current_folder, '/');
-                display_title = slash != NULL ? slash + 1 : current_folder;
-            }
-            else {
-                // With supplied series/episode art, retain the established
-                // layout: the selected episode name sits below the image.
-                display_title = games[current].item.label;
-            }
-        }
 
         // Recompute only when the selection changes — TTF measuring/
         // rendering isn't free, no need to redo it every frame.

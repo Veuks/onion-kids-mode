@@ -21,14 +21,12 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - La flèche vers les jeux reste masquée jusqu'au retour à `Media/KidsMode`.
 - Chaque dossier utilise son propre `Imgs` : par exemple `Films/Imgs` et
   `Séries/Ulysse 31/Imgs`.
-- Un dossier vidéo affiche `...` sans image, ou `.../Nom du dossier` avec une
-  image portant son nom dans son propre `Imgs`.
-- L'image portant le nom d'un dossier ne s'applique pas aux vidéos qu'il
-  contient. Un épisode sans image portant exactement son nom conserve sa carte
-  noire et son titre.
-- Dans une série sans image, son nom est sous la carte noire et le nom de
-  l'épisode est centré dedans, sur six lignes au maximum avant réduction de la
-  police.
+- Sous une vignette de dossier, seul le nom du dossier est affiché, sans
+  préfixe `.../`.
+- L'image portant le nom d'un dossier s'applique aux vidéos sans image propre
+  qu'il contient. Une image portant exactement le nom d'un épisode reste
+  prioritaire.
+- Le nom de l'épisode ou du fichier reste affiché sous l'image héritée.
 - Les titres des cartes noires du carrousel suivent la même règle.
 - Avec une image de série ou d'épisode, le nom de l'épisode reste sous l'image.
 - Le verrou **Games only / Videos only** masque la flèche verticale.

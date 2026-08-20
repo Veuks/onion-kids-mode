@@ -28,10 +28,10 @@ section. UP/DOWN and the vertical arrow are hidden while it is enabled.
 Videos go in `/mnt/SDCARD/Media/KidsMode` and can be nested, for example
 `Series/Ulysses 31/Episode 01.mp4`. Each directory has its own `Imgs` folder:
 `Films/Imgs/Movie.jpg` or `Series/Ulysses 31/Imgs/Episode 01.png`. An image
-named after a directory inside its own `Imgs` folder is used only as that
-folder's cover. It is never inherited by the videos inside it. A video without
-an exact matching image must retain its automatic black title card. PNG, JPG
-and JPEG are accepted.
+named after a directory inside its own `Imgs` folder is used as that folder's
+cover and inherited by videos without their own image. An exact movie or
+episode image must take priority. Folder captions show only the folder name;
+video names remain below the image. PNG, JPG and JPEG are accepted.
 
 Test at least three levels: open `Series`, open `Ulysses 31`, select an
 episode, then press B twice. Reopen both folders and verify that each level
