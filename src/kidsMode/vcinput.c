@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
-#include <SDL/SDL_rotozoom.h>
 #include <dlfcn.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -40,8 +39,6 @@ static bool key_repeat_enabled;
 static char seek_notice[8];
 static bool seek_notice_forward;
 static Uint32 seek_notice_until;
-static bool seek_notice_drawn;
-static SDL_Rect seek_notice_rect;
 static bool player_config_ready;
 static bool audio_mode;
 static const char *artwork_file;
@@ -57,6 +54,8 @@ static SDL_Surface *audio_artwork;
 static bool audio_artwork_loaded;
 static bool inside_present;
 static SDLKey wake_key = SDLK_UNKNOWN;
+static long last_presented_second = -1;
+static bool overlay_force_redraw = true;
 
 #define AUDIO_DIM_DELAY 10000
 #define AUDIO_OFF_DELAY 15000
@@ -70,6 +69,9 @@ static void update_screen(SDL_Surface *surface, Sint32 x, Sint32 y,
     if (real_update)
         real_update(surface, x, y, width, height);
 }
+
+static void update_clock(void);
+static void draw_player_overlay(void);
 
 static Uint8 clamp_color(int value)
 {
@@ -295,6 +297,7 @@ static void mark_menu_exit(void)
 static void update_clock(void)
 {
     Uint32 now = SDL_GetTicks();
+    long previous_second = position_seconds;
     load_player_config(now);
     update_duration(now);
     update_backlight(now);
@@ -318,6 +321,9 @@ static void update_clock(void)
             save_checkpoint();
         last_save = now;
     }
+    if (audio_mode && backlight_stage != 2 && !inside_present &&
+        position_seconds != previous_second)
+        draw_player_overlay();
 }
 
 static void key(SDL_Event *event, SDLKey sym, Uint8 state)
@@ -443,6 +449,32 @@ static void format_time(long seconds, bool remaining, char *out,
                  minutes, secs);
 }
 
+static void rotate_surface_180(SDL_Surface *surface)
+{
+    if (surface == NULL || surface->format->BytesPerPixel != 4)
+        return;
+    bool locked = SDL_MUSTLOCK(surface);
+    if (locked && SDL_LockSurface(surface) != 0)
+        return;
+    int count = surface->w * surface->h;
+    for (int i = 0; i < count / 2; i++) {
+        int x1 = i % surface->w;
+        int y1 = i / surface->w;
+        int opposite = count - 1 - i;
+        int x2 = opposite % surface->w;
+        int y2 = opposite / surface->w;
+        Uint32 *p1 = (Uint32 *)((Uint8 *)surface->pixels +
+                                y1 * surface->pitch) + x1;
+        Uint32 *p2 = (Uint32 *)((Uint8 *)surface->pixels +
+                                y2 * surface->pitch) + x2;
+        Uint32 swap = *p1;
+        *p1 = *p2;
+        *p2 = swap;
+    }
+    if (locked)
+        SDL_UnlockSurface(surface);
+}
+
 static void load_audio_artwork(SDL_Surface *surface)
 {
     if (audio_artwork_loaded)
@@ -460,7 +492,38 @@ static void load_audio_artwork(SDL_Surface *surface)
     double scale_w = (double)tile / raw->w;
     double scale_h = (double)tile / raw->h;
     double scale = scale_w < scale_h ? scale_w : scale_h;
-    audio_artwork = rotozoomSurface(raw, 180.0, scale, 1);
+    int scaled_w = (int)(raw->w * scale + 0.5);
+    int scaled_h = (int)(raw->h * scale + 0.5);
+    if (scaled_w < 1)
+        scaled_w = 1;
+    if (scaled_h < 1)
+        scaled_h = 1;
+
+    // Keep the player's cover independent from libSDL_rotozoom. That
+    // library has device-specific orientation side effects and was also
+    // making repeated presentation calls much less stable on the Miyoo.
+    SDL_Surface *source = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, raw->w, raw->h, 32, 0x00ff0000, 0x0000ff00,
+        0x000000ff, 0xff000000);
+    audio_artwork = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, scaled_w, scaled_h, 32, 0x00ff0000, 0x0000ff00,
+        0x000000ff, 0xff000000);
+    if (source != NULL && audio_artwork != NULL) {
+        SDL_SetAlpha(raw, 0, 255);
+        SDL_BlitSurface(raw, NULL, source, NULL);
+        if (SDL_SoftStretch(source, NULL, audio_artwork, NULL) != 0) {
+            SDL_FreeSurface(audio_artwork);
+            audio_artwork = NULL;
+        }
+        else
+            rotate_surface_180(audio_artwork);
+    }
+    else if (audio_artwork != NULL) {
+        SDL_FreeSurface(audio_artwork);
+        audio_artwork = NULL;
+    }
+    if (source != NULL)
+        SDL_FreeSurface(source);
     SDL_FreeSurface(raw);
 }
 
@@ -503,16 +566,23 @@ static void draw_progress_bar(SDL_Surface *surface)
 
     int scale = surface->w >= 600 ? 2 : 1;
     int logical_y = surface->h - 39;
-    int bar_x = (int)(surface->w * 0.17);
-    int bar_w = surface->w - bar_x * 2;
     int bar_y = surface->h - 28;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
     Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
     Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
 
+    int elapsed_width = text_width(elapsed_text, scale);
+    int remaining_width = text_width(remaining_text, scale);
+    int bar_x = 16 + elapsed_width + 16;
+    int bar_right = surface->w - 16 - remaining_width - 16;
+    int bar_w = bar_right - bar_x;
+    if (bar_w < surface->w / 4) {
+        bar_x = (int)(surface->w * 0.24);
+        bar_w = surface->w - bar_x * 2;
+    }
+
     draw_rotated_text(surface, elapsed_text, 16, logical_y, scale, black,
                       white);
-    int remaining_width = text_width(remaining_text, scale);
     draw_rotated_text(surface, remaining_text,
                       surface->w - 16 - remaining_width, logical_y, scale,
                       black, white);
@@ -529,7 +599,6 @@ static void draw_progress_bar(SDL_Surface *surface)
                 SDL_Rect pixel = {physical_x + dx, physical_y + dy, 1, 1};
                 SDL_FillRect(surface, &pixel, accent);
             }
-    update_screen(surface, 0, 0, surface->w, surface->h);
 }
 
 static void draw_seek_notice(void)
@@ -538,16 +607,7 @@ static void draw_seek_notice(void)
     if (!surface)
         return;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
-    bool cleared_notice = seek_notice_drawn;
-    SDL_Rect cleared_rect = seek_notice_rect;
-    if (seek_notice_drawn) {
-        SDL_FillRect(surface, &seek_notice_rect, black);
-        seek_notice_drawn = false;
-    }
     if (!seek_notice[0] || SDL_GetTicks() >= seek_notice_until) {
-        if (cleared_notice)
-            update_screen(surface, seek_notice_rect.x, seek_notice_rect.y,
-                          seek_notice_rect.w, seek_notice_rect.h);
         seek_notice[0] = '\0';
         return;
     }
@@ -560,21 +620,11 @@ static void draw_seek_notice(void)
     int x = seek_notice_forward ? 18 : surface->w - width - 18;
     // Leave the lowest row free for the progress line and its time labels.
     int y = 70;
-    SDL_Rect new_rect = {x - 2, y - 2, width + 4, 7 * scale + 4};
-    if (cleared_notice &&
-        (cleared_rect.x != new_rect.x || cleared_rect.y != new_rect.y ||
-         cleared_rect.w != new_rect.w || cleared_rect.h != new_rect.h))
-        update_screen(surface, cleared_rect.x, cleared_rect.y,
-                      cleared_rect.w, cleared_rect.h);
     Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
     for (int i = 0; i < length; i++)
         draw_glyph(surface, seek_notice[length - 1 - i],
                    x + i * 6 * scale, y, scale,
                    black, white);
-    seek_notice_rect = new_rect;
-    seek_notice_drawn = true;
-    update_screen(surface, seek_notice_rect.x, seek_notice_rect.y,
-                  seek_notice_rect.w, seek_notice_rect.h);
 }
 
 static void set_seek_notice(bool forward, long step)
@@ -585,16 +635,35 @@ static void set_seek_notice(bool forward, long step)
     seek_notice_forward = forward;
     seek_notice_until = SDL_GetTicks() + 900;
     progress_until = SDL_GetTicks() + 1200;
+    overlay_force_redraw = true;
+}
+
+static void paint_player_overlay(SDL_Surface *surface)
+{
+    draw_audio_background(surface);
+    draw_progress_bar(surface);
+    draw_seek_notice();
+}
+
+static bool player_overlay_visible(void)
+{
+    Uint32 now = SDL_GetTicks();
+    if (audio_mode)
+        return backlight_stage != 2;
+    if (duration_seconds > 0 && (paused || now < progress_until))
+        return true;
+    return seek_notice[0] != '\0' && now < seek_notice_until;
 }
 
 static void draw_player_overlay(void)
 {
     SDL_Surface *surface = SDL_GetVideoSurface();
-    if (surface == NULL)
+    if (surface == NULL || !player_overlay_visible())
         return;
-    draw_audio_background(surface);
-    draw_progress_bar(surface);
-    draw_seek_notice();
+    paint_player_overlay(surface);
+    update_screen(surface, 0, 0, surface->w, surface->h);
+    last_presented_second = position_seconds;
+    overlay_force_redraw = false;
 }
 
 static bool progressive_seek(SDL_Event *event, Uint32 now)
@@ -859,11 +928,24 @@ void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
         return;
     }
 
-    inside_present = true;
-    real_update(surface, x, y, width, height);
     load_player_config(SDL_GetTicks());
-    if (audio_mode)
-        draw_player_overlay();
+    if (!audio_mode) {
+        real_update(surface, x, y, width, height);
+        return;
+    }
+
+    // FFplay's audio visualizer can request many full redraws per second.
+    // Do not present those intermediate frames: they caused alternating
+    // orientations, flicker and unnecessary load. Present our stable audio
+    // screen only when its displayed second or state actually changes.
+    inside_present = true;
+    update_clock();
+    if (overlay_force_redraw || position_seconds != last_presented_second) {
+        paint_player_overlay(surface);
+        real_update(surface, 0, 0, surface->w, surface->h);
+        last_presented_second = position_seconds;
+        overlay_force_redraw = false;
+    }
     inside_present = false;
 }
 
@@ -876,14 +958,23 @@ int SDL_Flip(SDL_Surface *surface)
     if (inside_present)
         return real_flip(surface);
 
-    inside_present = true;
     load_player_config(SDL_GetTicks());
-    // With a double-buffered audio display, drawing after SDL_Flip would
-    // modify the next (hidden) buffer. Paint first so the cover and progress
-    // are the frame that actually becomes visible.
-    if (audio_mode)
-        draw_player_overlay();
+    if (!audio_mode)
+        return real_flip(surface);
+
+    inside_present = true;
+    update_clock();
+    if (!overlay_force_redraw &&
+        position_seconds == last_presented_second) {
+        inside_present = false;
+        return 0;
+    }
+    // Paint before flipping so the stable cover/progress frame, rather than
+    // FFplay's visualizer, is the buffer that becomes visible.
+    paint_player_overlay(surface);
     int result = real_flip(surface);
+    last_presented_second = position_seconds;
+    overlay_force_redraw = false;
     inside_present = false;
     return result;
 }
