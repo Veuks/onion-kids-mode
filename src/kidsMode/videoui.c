@@ -689,17 +689,17 @@ static bool directoryHasVideos(const char *path, int depth)
     while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.')
             continue;
-        if (hasVideoExtension(de->d_name) &&
+        char child[STR_MAX];
+        snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+        struct stat st;
+        if (lstat(child, &st) != 0)
+            continue;
+        if (S_ISREG(st.st_mode) && hasVideoExtension(de->d_name) &&
             strcasecmp(de->d_name, "FFplay controls.mp4") != 0) {
             found = true;
             break;
         }
-        if (strcasecmp(de->d_name, "Imgs") == 0)
-            continue;
-        char child[STR_MAX];
-        snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
-        struct stat st;
-        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode) &&
+        if (S_ISDIR(st.st_mode) && strcasecmp(de->d_name, "Imgs") != 0 &&
             directoryHasVideos(child, depth + 1)) {
             found = true;
             break;
@@ -763,11 +763,14 @@ static void loadVideos(void)
     while (games_count < MAX_GAMES && (de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.')
             continue;
-        bool is_video = hasVideoExtension(de->d_name);
-        bool is_folder = false;
         char fullpath[STR_MAX];
         snprintf(fullpath, sizeof(fullpath), "%s/%s", browse_dir, de->d_name);
-        if (!is_video && strcasecmp(de->d_name, "Imgs") != 0)
+        struct stat st;
+        if (lstat(fullpath, &st) != 0)
+            continue;
+        bool is_video = S_ISREG(st.st_mode) && hasVideoExtension(de->d_name);
+        bool is_folder = false;
+        if (S_ISDIR(st.st_mode) && strcasecmp(de->d_name, "Imgs") != 0)
             is_folder = directoryHasVideos(fullpath, 1);
         if (!is_video && !is_folder)
             continue;
