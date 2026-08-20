@@ -82,6 +82,8 @@ static void update_screen(SDL_Surface *surface, Sint32 x, Sint32 y,
 
 static void update_clock(void);
 static void draw_player_overlay(void);
+static void draw_audio_progress_only(void);
+static void draw_seek_notice(void);
 
 static Uint8 clamp_color(int value)
 {
@@ -336,8 +338,12 @@ static void update_clock(void)
         last_save = now;
     }
     if (audio_mode && backlight_stage != 2 && !inside_present &&
-        position_seconds != previous_second)
-        draw_player_overlay();
+        position_seconds != previous_second) {
+        if (overlay_force_redraw)
+            draw_player_overlay();
+        else
+            draw_audio_progress_only();
+    }
 }
 
 static void key(SDL_Event *event, SDLKey sym, Uint8 state)
@@ -703,6 +709,32 @@ static void draw_progress_bar(SDL_Surface *surface)
             }
 }
 
+static void draw_audio_progress_only(void)
+{
+    if (!audio_mode || backlight_stage == 2)
+        return;
+    SDL_Surface *surface = hardware_surface != NULL
+                               ? hardware_surface
+                               : SDL_GetVideoSurface();
+    if (surface == NULL)
+        return;
+
+    // Progress and seek feedback occupy the physical top 100 pixels on the
+    // rotated Miyoo framebuffer. Updating only this strip leaves the cover
+    // and title completely untouched instead of making the whole audio
+    // screen flash each second.
+    Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
+    SDL_Rect strip = {0, 0, surface->w, 100};
+    SDL_FillRect(surface, &strip, black);
+    draw_progress_bar(surface);
+    draw_seek_notice();
+    bool was_inside_present = inside_present;
+    inside_present = true;
+    update_screen(surface, 0, 0, surface->w, 100);
+    inside_present = was_inside_present;
+    last_presented_second = position_seconds;
+}
+
 static void draw_seek_notice(void)
 {
     SDL_Surface *surface = SDL_GetVideoSurface();
@@ -870,9 +902,12 @@ static bool map_event(SDL_Event *event)
     }
 
     if ((audio_mode || paused) && backlight_stage != 0) {
-        // A, B and MENU can wake an audio screen or a paused video. Consume
-        // the whole gesture so waking cannot also resume, pause or leave.
-        if ((in == SDLK_SPACE || in == SDLK_LCTRL || in == SDLK_ESCAPE) &&
+        // The player buttons and D-pad can wake an audio screen or a paused
+        // video. Consume the whole gesture so waking cannot also seek,
+        // resume, pause, capture or leave.
+        if ((in == SDLK_SPACE || in == SDLK_LCTRL || in == SDLK_ESCAPE ||
+             in == SDLK_LSHIFT || in == SDLK_LALT || in == SDLK_LEFT ||
+             in == SDLK_RIGHT || in == SDLK_UP || in == SDLK_DOWN) &&
             state == SDL_PRESSED) {
             wake_key = in;
             restore_backlight();
