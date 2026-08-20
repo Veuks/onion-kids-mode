@@ -71,12 +71,15 @@ menu_exit_marker=/tmp/kidsmode_video_menu_exit
 libvcinput="$appdir/bin/libvcinput.so"
 game_selection_file="$backupdir/game_selection.txt"
 video_selection_file="$backupdir/video_selection.txt"
-series_selections_dir="$backupdir/series_selections"
+# Keep the established on-card directory name so this update does not create
+# a duplicate beside existing per-series selections. It now stores the last
+# selected item for every media folder, not only series.
+folder_selections_dir="$backupdir/series_selections"
 
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
 
-mkdir -p "$backupdir" "$positions" "$series_selections_dir" "$videosdir/Imgs"
+mkdir -p "$backupdir" "$positions" "$folder_selections_dir" "$videosdir/Imgs"
 [ -x "$ffplay" ] || ffplay="$(command -v ffplay)"
 
 log() {
@@ -1099,34 +1102,44 @@ video_key() {
     fi
 }
 
-# Remember one carousel selection per series folder. A separate file for each
-# folder keeps the state simple and lets every series reopen on its own last
-# selected episode, even after browsing another series or rebooting.
-series_selection_file() {
-    series_key="$(video_key "$1")" || return 1
-    printf '%s/%s.txt\n' "$series_selections_dir" "$series_key"
+# Remember one carousel selection per media folder. A separate file for each
+# level lets Films, Series, individual shows and deeper folders all reopen on
+# their own last selected item, even after browsing elsewhere or rebooting.
+folder_selection_file() {
+    folder_key="$(video_key "$1")" || return 1
+    printf '%s/%s.txt\n' "$folder_selections_dir" "$folder_key"
 }
 
-remember_series_selection() {
-    series_folder="$1"
-    series_video="$2"
-    case "$series_video" in
-        "$series_folder"/*) [ -f "$series_video" ] || return 0 ;;
+remember_folder_selection() {
+    browse_folder="$1"
+    selected_item="$2"
+    case "$selected_item" in
+        "$browse_folder"/*)
+            selected_parent="${selected_item%/*}"
+            [ "$selected_parent" = "$browse_folder" ] || return 0
+            [ -f "$selected_item" ] || [ -d "$selected_item" ] || return 0
+            ;;
         *) return 0 ;;
     esac
-    mkdir -p "$series_selections_dir"
-    series_file="$(series_selection_file "$series_folder")" || return 0
-    printf '%s\n' "$series_video" > "$series_file.tmp" &&
-        mv -f "$series_file.tmp" "$series_file"
+    mkdir -p "$folder_selections_dir"
+    folder_state_file="$(folder_selection_file "$browse_folder")" || return 0
+    printf '%s\n' "$selected_item" > "$folder_state_file.tmp" &&
+        mv -f "$folder_state_file.tmp" "$folder_state_file"
 }
 
-last_series_selection() {
-    series_folder="$1"
-    series_file="$(series_selection_file "$series_folder")" || return 0
-    [ -f "$series_file" ] || return 0
-    series_video="$(sed -n 1p "$series_file")"
-    case "$series_video" in
-        "$series_folder"/*) [ -f "$series_video" ] && printf '%s\n' "$series_video" ;;
+last_folder_selection() {
+    browse_folder="$1"
+    folder_state_file="$(folder_selection_file "$browse_folder")" || return 0
+    [ -f "$folder_state_file" ] || return 0
+    selected_item="$(sed -n 1p "$folder_state_file")"
+    case "$selected_item" in
+        "$browse_folder"/*)
+            selected_parent="${selected_item%/*}"
+            if [ "$selected_parent" = "$browse_folder" ] &&
+                { [ -f "$selected_item" ] || [ -d "$selected_item" ]; }; then
+                printf '%s\n' "$selected_item"
+            fi
+            ;;
     esac
 }
 
@@ -1343,7 +1356,7 @@ cmd_run() {
             fi
         fi
         [ -n "$active_folder" ] &&
-            remember_series_selection "$active_folder" "$ui_video_selection"
+            remember_folder_selection "$active_folder" "$ui_video_selection"
         state_save "$active_floor" carousel "$last_video" "$active_folder"
 
         check_off_order "End"
@@ -1355,11 +1368,11 @@ cmd_run() {
                     FOLDER)
                         active_floor=videos
                         active_folder="$(sed -n 2p "$uiresult")"
-                        folder_selection="$(last_series_selection "$active_folder")"
+                        folder_selection="$(last_folder_selection "$active_folder")"
                         if [ -n "$folder_selection" ]; then
                             printf '%s\n' "$folder_selection" > "$video_selection_file"
                         else
-                            printf '%s\n' "$active_folder" > "$video_selection_file"
+                            printf '\n' > "$video_selection_file"
                         fi
                         last_video=""
                         state_save videos carousel "" "$active_folder"
@@ -1367,10 +1380,25 @@ cmd_run() {
                         ;;
                     BACK)
                         active_floor=videos
-                        folder_selection="$(sed -n 2p "$uiresult")"
-                        active_folder=""
-                        printf '%s\n' "$folder_selection" > "$video_selection_file"
-                        state_save videos carousel "$last_video" ""
+                        leaving_folder="$(sed -n 2p "$uiresult")"
+                        case "$leaving_folder" in
+                            "$videosdir"/*) ;;
+                            *) continue ;;
+                        esac
+                        parent_folder="${leaving_folder%/*}"
+                        case "$parent_folder" in
+                            "$videosdir") active_folder="" ;;
+                            "$videosdir"/*)
+                                if [ -d "$parent_folder" ]; then
+                                    active_folder="$parent_folder"
+                                else
+                                    active_folder=""
+                                fi
+                                ;;
+                            *) active_folder="" ;;
+                        esac
+                        printf '%s\n' "$leaving_folder" > "$video_selection_file"
+                        state_save videos carousel "$last_video" "$active_folder"
                         continue
                         ;;
                     PLAY | RESTART)

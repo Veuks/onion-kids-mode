@@ -60,6 +60,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "components/JsonGameEntry.h"
@@ -75,6 +76,7 @@
 #include "utils/str.h"
 
 #define MAX_GAMES 500
+#define MAX_FOLDER_DEPTH 16
 #define PIN_LEN 4
 #define UNLOCK_HOLD_MS 3000
 #define UNLOCK_BAR_SHOW_MS 800
@@ -675,16 +677,30 @@ static int compareVideos(const void *a, const void *b)
     return strcasecmp(va->item.label, vb->item.label);
 }
 
-static bool directoryHasVideos(const char *path)
+static bool directoryHasVideos(const char *path, int depth)
 {
+    if (depth > MAX_FOLDER_DEPTH)
+        return false;
     DIR *dir = opendir(path);
     if (dir == NULL)
         return false;
     struct dirent *de;
     bool found = false;
     while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] != '.' && hasVideoExtension(de->d_name) &&
+        if (de->d_name[0] == '.')
+            continue;
+        if (hasVideoExtension(de->d_name) &&
             strcasecmp(de->d_name, "FFplay controls.mp4") != 0) {
+            found = true;
+            break;
+        }
+        if (strcasecmp(de->d_name, "Imgs") == 0)
+            continue;
+        char child[STR_MAX];
+        snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
+        struct stat st;
+        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode) &&
+            directoryHasVideos(child, depth + 1)) {
             found = true;
             break;
         }
@@ -693,33 +709,53 @@ static bool directoryHasVideos(const char *path)
     return found;
 }
 
-static void findArtwork(const char *label, const char *folder_label,
-                        char *out, size_t out_size)
+static bool findArtworkInFolder(const char *folder, const char *label,
+                                char *out, size_t out_size)
 {
     const char *art_exts[] = {"png", "PNG", "jpg", "JPG", "jpeg", "JPEG"};
-    out[0] = '\0';
-    const char *labels[] = {label, folder_label};
-    for (size_t l = 0; l < 2 && out[0] == '\0'; l++) {
-        if (labels[l] == NULL || labels[l][0] == '\0')
-            continue;
-        for (size_t i = 0; i < sizeof(art_exts) / sizeof(art_exts[0]); i++) {
-            char candidate[STR_MAX];
-            snprintf(candidate, sizeof(candidate), "%s/Imgs/%s.%s",
-                     VIDEOS_DIR, labels[l], art_exts[i]);
-            if (access(candidate, F_OK) == 0) {
-                snprintf(out, out_size, "%s", candidate);
-                break;
-            }
+    if (folder == NULL || folder[0] == '\0' || label == NULL ||
+        label[0] == '\0')
+        return false;
+    for (size_t i = 0; i < sizeof(art_exts) / sizeof(art_exts[0]); i++) {
+        char candidate[STR_MAX];
+        snprintf(candidate, sizeof(candidate), "%s/Imgs/%s.%s", folder,
+                 label, art_exts[i]);
+        if (access(candidate, F_OK) == 0) {
+            snprintf(out, out_size, "%s", candidate);
+            return true;
         }
     }
+    return false;
+}
+
+static void findArtwork(const char *browse_dir, const char *item_path,
+                        const char *label, bool is_folder, char *out,
+                        size_t out_size)
+{
+    out[0] = '\0';
+
+    // A folder can carry its own cover in Folder/Imgs/Folder.png. This
+    // keeps category and series artwork beside the media it describes.
+    if (is_folder &&
+        findArtworkInFolder(item_path, label, out, out_size))
+        return;
+
+    // Item-specific artwork always comes from the Imgs directory beside
+    // that item: Films/Imgs/Movie.jpg, Series/Show/Imgs/Episode.png, etc.
+    if (findArtworkInFolder(browse_dir, label, out, out_size))
+        return;
+
+    // Keep older layouts working as a final fallback while local Imgs
+    // folders take priority. Only an exact item name is accepted: a folder
+    // cover is never inherited by the videos inside it.
+    if (strcmp(browse_dir, VIDEOS_DIR) != 0 &&
+        findArtworkInFolder(VIDEOS_DIR, label, out, out_size))
+        return;
 }
 
 static void loadVideos(void)
 {
     const char *browse_dir = current_folder[0] ? current_folder : VIDEOS_DIR;
-    const char *folder_label = current_folder[0]
-                                   ? strrchr(current_folder, '/') + 1
-                                   : NULL;
     DIR *dir = opendir(browse_dir);
     if (dir == NULL)
         return;
@@ -731,9 +767,8 @@ static void loadVideos(void)
         bool is_folder = false;
         char fullpath[STR_MAX];
         snprintf(fullpath, sizeof(fullpath), "%s/%s", browse_dir, de->d_name);
-        if (!current_folder[0] && !is_video &&
-            strcasecmp(de->d_name, "Imgs") != 0)
-            is_folder = directoryHasVideos(fullpath);
+        if (!is_video && strcasecmp(de->d_name, "Imgs") != 0)
+            is_folder = directoryHasVideos(fullpath, 1);
         if (!is_video && !is_folder)
             continue;
         if (is_video && strcasecmp(de->d_name, "FFplay controls.mp4") == 0)
@@ -747,8 +782,8 @@ static void loadVideos(void)
             if (dot != NULL)
                 *dot = '\0';
         }
-        findArtwork(entry.label, folder_label, entry.imgpath,
-                    sizeof(entry.imgpath));
+        findArtwork(browse_dir, fullpath, entry.label, is_folder,
+                    entry.imgpath, sizeof(entry.imgpath));
         games[games_count].item = entry;
         games[games_count].is_folder = is_folder;
         games_count++;
@@ -1389,8 +1424,8 @@ static void renderTimeChip(int remaining)
 
 static void renderFloorIndicator(void)
 {
-    // A series folder is a child navigation level, not another floor. The
-    // user must press B to leave it before GAMES becomes reachable again.
+    // A media folder is a child navigation level, not another floor. The
+    // user must return to the media root before GAMES becomes reachable.
     if (!floor_locked &&
         !(current_floor == FLOOR_VIDEOS && current_folder[0])) {
         if (!vertical_arrows_checked) {
@@ -1444,9 +1479,9 @@ static void renderCarousel(int remaining)
                      theme()->hint.color, 0);
         }
         else {
-        // Missing artwork: use a clean black card. On the main carousel the
+        // Missing artwork: use a clean black card. At the media root the
         // movie/folder name uses the active theme accent color; inside a
-        // series, the shared episode-title overlay below supplies the text.
+        // folder the item-title overlay below supplies the text.
         const char *fallback_label = games[current].item.label;
         SDL_Color fallback_color = theme()->grid.selectedcolor;
         int tile_h = (int)(g_display.height * 0.58);
@@ -1477,8 +1512,8 @@ static void renderCarousel(int remaining)
                                   art_cy - reflection->h / 2);
         }
         // Keep supplied artwork untouched. The title-in-card layout is the
-        // automatic presentation used only when a series episode has no
-        // image of its own (and no shared folder image to fall back to).
+        // automatic presentation used when an item has no image of its own
+        // and no shared folder image to fall back to.
         if (current_folder[0] && games[current].item.imgpath[0] == '\0')
             drawAdaptiveCardTitle(games[current].item.label, cx, art_cy,
                                   reflection_size, COLOR_WHITE, false);
@@ -1493,13 +1528,22 @@ static void renderCarousel(int remaining)
         int bottom_y = (int)(400.0 * g_scale) + content_offset_y;
         int line_h = TTF_FontLineSkip(getFontGameLabel());
         int top_y = bottom_y - line_h;
-        // Main carousel: an illustrated series uses a path-style
-        // ".../Folder" caption, while an automatic black card keeps the
-        // minimal "..." caption. Inside the folder, the two layouts are
-        // selected according to whether episode/shared artwork is available.
+        // Every folder uses the same path-style caption: ".../Folder" with
+        // supplied artwork, or the minimal "..." below an automatic card.
+        // Videos keep the established series layout inside a folder.
         char folder_display_title[STR_MAX] = "";
         const char *display_title = games[current].item.label;
-        if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
+        if (current_floor == FLOOR_VIDEOS && games[current].is_folder) {
+            if (games[current].item.imgpath[0] != '\0') {
+                snprintf(folder_display_title, sizeof(folder_display_title),
+                         ".../%s", games[current].item.label);
+                display_title = folder_display_title;
+            }
+            else {
+                display_title = "...";
+            }
+        }
+        else if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
             if (games[current].item.imgpath[0] == '\0') {
                 const char *slash = strrchr(current_folder, '/');
                 display_title = slash != NULL ? slash + 1 : current_folder;
@@ -1508,16 +1552,6 @@ static void renderCarousel(int remaining)
                 // With supplied series/episode art, retain the established
                 // layout: the selected episode name sits below the image.
                 display_title = games[current].item.label;
-            }
-        }
-        else if (current_floor == FLOOR_VIDEOS && games[current].is_folder) {
-            if (games[current].item.imgpath[0] != '\0') {
-                snprintf(folder_display_title, sizeof(folder_display_title),
-                         ".../%s", games[current].item.label);
-                display_title = folder_display_title;
-            }
-            else {
-                display_title = "...";
             }
         }
 
@@ -1575,7 +1609,7 @@ static void renderCarousel(int remaining)
         screen, games[current].is_folder ? "OPEN"
                 : current_floor == FLOOR_GAMES ? "PLAY"
                                                : "PLAY",
-        NULL);
+        games[current].is_folder && current_folder[0] ? "BACK" : NULL);
     // No X-button icon ships with Onion's theme (only BUTTON_A/BUTTON_B),
     // so we draw a small badge ourselves. To guarantee it lands in the
     // right spot regardless of theme (icon size and "PLAY" label width
@@ -1614,8 +1648,8 @@ static void renderCarousel(int remaining)
                       resource_getFont(HINT), theme()->hint.color, 0,
                       TEXT_LEFT);
 
-        // Inside a series folder, B returns to the main carousel. Keep the
-        // kid-facing order A:PLAY, X:RESTART, B:BACK.
+        // Inside any media folder, B returns one level. Keep the kid-facing
+        // order A:PLAY, X:RESTART, B:BACK.
         if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
             int restart_w = 0, restart_h = 0;
             TTF_SizeUTF8(resource_getFont(HINT), "RESTART", &restart_w,
@@ -2207,7 +2241,13 @@ int main(int argc, char *argv[])
                 }
             }
             else if (active_screen == SCREEN_EMPTY) {
-                if (!floor_locked && changed_key == SW_BTN_UP &&
+                if (changed_key == SW_BTN_B && current_floor == FLOOR_VIDEOS &&
+                    current_folder[0]) {
+                    writeResult("BACK", current_folder, NULL);
+                    exit_code = 0;
+                    quit = true;
+                }
+                else if (!floor_locked && changed_key == SW_BTN_UP &&
                     current_floor == FLOOR_GAMES)
                     active_screen = switchFloor(FLOOR_VIDEOS, remaining)
                                         ? SCREEN_CAROUSEL

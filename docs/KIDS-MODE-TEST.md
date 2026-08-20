@@ -15,9 +15,9 @@ child's game saves, and move videos and artwork manually to `Media/KidsMode`.
 - DOWN from Videos returns to Games.
 - Select a different item on each section, switch repeatedly between them,
   and verify that each section returns to its own last selected item.
-- A launches, plays or opens a series folder.
+- A launches, plays or opens the selected folder.
 - X restarts after confirmation.
-- B returns from a series folder.
+- B returns exactly one folder level.
 - Hold SELECT + START for three seconds to open the PIN screen.
 
 The parent menu's **Games only / Videos only** toggle locks the visible
@@ -25,17 +25,19 @@ section. UP/DOWN and the vertical arrow are hidden while it is enabled.
 
 ## Media
 
-Videos go in `/mnt/SDCARD/Media/KidsMode`. Covers go in its `Imgs`
-folder and use the same base name. PNG, JPG and JPEG are accepted. One series
-folder level is supported. Without artwork, the series name is shown below
-the black card and the episode name is centred inside it on up to six lines
-before adaptive font sizing begins. Automatic black cards in the main
-carousel use the same layout. When artwork exists,
-the main carousel uses `.../Folder name` and the episode name remains below
-the image. Portrait cinema posters are recommended for movies; series are
-usually clearest without artwork. Leave a series after selecting an episode,
-open it again, and verify that the same episode is selected. Repeat with a
-second series to confirm that each folder keeps its own selection.
+Videos go in `/mnt/SDCARD/Media/KidsMode` and can be nested, for example
+`Series/Ulysses 31/Episode 01.mp4`. Each directory has its own `Imgs` folder:
+`Films/Imgs/Movie.jpg` or `Series/Ulysses 31/Imgs/Episode 01.png`. An image
+named after a directory inside its own `Imgs` folder is used only as that
+folder's cover. It is never inherited by the videos inside it. A video without
+an exact matching image must retain its automatic black title card. PNG, JPG
+and JPEG are accepted.
+
+Test at least three levels: open `Series`, open `Ulysses 31`, select an
+episode, then press B twice. Reopen both folders and verify that each level
+restores its own last selection. The downward Games arrow must remain hidden
+until the media root is reached. Without artwork, titles use automatic black
+cards; portrait cinema posters remain recommended for movies.
 
 ## Resume and timer
 

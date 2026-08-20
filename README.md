@@ -18,14 +18,14 @@ sections use the active Onion theme and slide smoothly between each other.
 
 - One protected app for both favorite games and children's videos.
 - Games are taken directly from Onion's Favorites list.
-- Videos, movies and one-level series folders are supported.
+- Videos and nested folders for movies, series or songs are supported.
 - Automatic resume follows the real shutdown state:
   - shut down while playing and that game or video resumes;
   - shut down from a carousel and the same section and selection return;
   - switching between Games and Videos restores the last selection on each.
 - Video progress is saved regularly and completed videos restart from the
   beginning the next time they are opened.
-- Each series folder reopens on its own last selected episode.
+- Every folder level reopens on its own last selected item.
 - Optional shared session timer from 5 to 120 minutes, or no timer.
 - PIN-protected parent menu with extra time, timer removal, exit, and a
   Games-only or Videos-only lock.
@@ -98,67 +98,67 @@ Move the **contents**, not the former media folder itself, to avoid creating
 `Saves/VideoCarousel` folder is not used and may be removed after testing.
 The historical `v1.0.0` GitHub release itself is not changed.
 
-## Media layout
+## Media folders and local artwork
 
-Videos belong in:
+All media belongs under:
 
 ```text
 /mnt/SDCARD/Media/KidsMode/
 ```
 
-Supported formats are MP4, MKV, AVI, MOV, M4V and WebM. Entries are sorted
-alphabetically.
+Supported formats are MP4, MKV, AVI, MOV, M4V and WebM. Videos can be organised
+through multiple folder levels. A folder appears when it contains at least one
+supported video, either directly or in one of its subfolders. Entries are
+sorted alphabetically.
 
-Artwork belongs in the shared `Imgs` folder and must use the same base name as
-the video. PNG, JPG and JPEG are accepted:
-
-```text
-Media/KidsMode/
-├── The Lion King.mp4
-├── The Visitors.mkv
-└── Imgs/
-    ├── The Lion King.png
-    └── The Visitors.jpg
-```
-
-Artwork is fitted inside a square without stretching. Black side bars are
-added when necessary. If no image exists, the app creates a black card with
-the filename centred in the current theme's accent color. Automatic card
-titles use up to six balanced lines before reducing the font size.
-
-For movies, portrait cinema-poster artwork is recommended: the whole poster
-is preserved and the app adds black side bars inside the square carousel tile
-when needed. For series, the cleanest result is usually obtained without any
-artwork. Kids Mode then creates the black card automatically, places
-the episode name inside it and keeps the series name below it. If series or
-episode artwork is provided, the image is kept untouched and the episode name
-is displayed below it.
-
-### Series folders
-
-One folder level is supported:
+Each directory can have its own `Imgs` folder. An image uses the same base name
+as the video beside it. PNG, JPG and JPEG are accepted. This organisation is
+recommended:
 
 ```text
 Media/KidsMode/
-├── Ulysses 31/
-│   ├── Episode 01.mp4
-│   ├── Episode 02.mp4
-│   └── Episode 03.mp4
-└── Imgs/
-    ├── Ulysses 31.png
-    └── Episode 02.jpg
+├── Films/
+│   ├── The Lion King.mp4
+│   ├── The Visitors.mkv
+│   └── Imgs/
+│       ├── The Lion King.png
+│       └── The Visitors.jpg
+├── Series/
+│   └── Ulysses 31/
+│       ├── Episode 01.mp4
+│       ├── Episode 02.mp4
+│       └── Imgs/
+│           ├── Ulysses 31.png
+│           └── Episode 02.jpg
+└── Songs/
+    ├── Song 01.mp4
+    └── Imgs/
+        └── Song 01.png
 ```
 
-`Imgs/Ulysses 31.png` is used for the folder and as the default image for all
-episodes. An image matching an episode name takes priority. The folder name is
-already shown in its artwork, so an illustrated folder uses the path-style
-caption `.../Ulysses 31` in the main carousel; a folder without artwork uses
-simply `...`. Inside a folder without artwork, the series name moves below the
-black card and the selected episode name is drawn inside it. Long episode names
-wrap over up to six lines; the font becomes smaller only when six lines
-still do not fit. When an image is available, the episode name is displayed
-below the image instead. When a series folder is opened again, the carousel
-returns to the last episode selected in that folder.
+For a folder cover, place an image named after that folder inside its own
+`Imgs` directory. For example, `Series/Ulysses 31/Imgs/Ulysses 31.png` is used
+only for the Ulysses 31 folder in its parent carousel. It is not inherited by
+the episodes. An episode receives artwork only when an exact matching image
+exists, such as `Imgs/Episode 02.jpg`; otherwise Kids Mode displays its black
+automatic card with the episode title.
+
+The same rule can give category folders their own artwork:
+`Films/Imgs/Films.png`, `Series/Imgs/Series.png` or `Songs/Imgs/Songs.png`.
+Without one, Kids Mode creates an automatic black folder card. The older
+shared `Media/KidsMode/Imgs` layout remains accepted as a fallback, but local
+`Imgs` folders take priority and prevent identical filenames in different
+categories from sharing the wrong image.
+
+Artwork is fitted inside a square without stretching, with black side bars
+when necessary. Portrait cinema posters are recommended for movies. If no
+image exists, the app creates a black card and wraps its title over up to six
+balanced lines before reducing the font size.
+
+Press A to descend into a folder and B to return exactly one level. Every
+folder remembers its own last selected video or subfolder, including after a
+reboot. Folder nesting is supported up to sixteen levels, which is effectively
+unlimited for normal use.
 
 ## Carousel controls
 
@@ -167,14 +167,14 @@ returns to the last episode selected in that folder.
 | LEFT / RIGHT | Browse the current section |
 | UP | Move from Games to Videos |
 | DOWN | Move from Videos to Games |
-| A | Launch/resume a game, play/resume a video, or open a series folder |
+| A | Launch/resume a game, play/resume a video, or open a folder |
 | X | Restart the selected game or video after confirmation |
-| B | Return from a series folder |
+| B | Return to the previous folder level |
 | Hold SELECT + START for 3 seconds | Open the PIN screen and parent menu |
 | MENU | No action in the carousel |
 
 UP and DOWN are unavailable while a section is locked. DOWN is also disabled
-inside a series folder; press B to return to the main video carousel first.
+inside any media folder; press B as needed to return to the media root first.
 
 ## While playing a game
 
