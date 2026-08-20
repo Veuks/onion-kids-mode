@@ -11,4 +11,4 @@ include ../common/commands.mk
 include ../common/recipes.mk
 
 libvcinput.so: vcinput.c
-	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ldl -lSDL
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ldl -lSDL -lSDL_image -lSDL_rotozoom

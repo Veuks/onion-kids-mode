@@ -69,8 +69,10 @@ ffplay=/mnt/SDCARD/.tmp_update/bin/ffplay
 player_pid=/tmp/kidsmode_player.pid
 menu_exit_marker=/tmp/kidsmode_video_menu_exit
 libvcinput="$appdir/bin/libvcinput.so"
+brightness_pwm=/sys/devices/soc0/soc/1f003400.pwm/pwm/pwmchip0/pwm0/duty_cycle
 game_selection_file="$backupdir/game_selection.txt"
 video_selection_file="$backupdir/video_selection.txt"
+last_artwork_file="$backupdir/last_artwork.txt"
 # Keep the established on-card directory name so this update does not create
 # a duplicate beside existing per-series selections. It now stores the last
 # selected item for every media folder, not only series.
@@ -1173,8 +1175,28 @@ hide_ffplay_state() {
     done
 }
 
+watch_media_duration() {
+    duration_log="$1" duration_output="$2" watched_pid="$3"
+    tries=0
+    while [ "$tries" -lt 100 ] && [ -d "/proc/$watched_pid" ]; do
+        stamp="$(sed -n \
+            's/.*Duration: \([0-9][0-9]*:[0-9][0-9]*:[0-9][0-9]*\).*/\1/p' \
+            "$duration_log" 2> /dev/null | sed -n '1p')"
+        if [ -n "$stamp" ]; then
+            awk -F: '{print ($1 + 0) * 3600 + ($2 + 0) * 60 + ($3 + 0)}' \
+                <<EOF > "$duration_output"
+$stamp
+EOF
+            return 0
+        fi
+        tries=$((tries + 1))
+        sleep 0.1
+    done
+    return 1
+}
+
 play_video() {
-    video="$1" fresh="$2"
+    video="$1" fresh="$2" artwork_file="$3"
     [ -f "$video" ] || return 1
     mkdir -p "$positions"
     video_dir="${video%/*}"
@@ -1183,9 +1205,26 @@ play_video() {
     screenshot_dir="$video_dir/Imgs"
     screenshot_file="$screenshot_dir/$video_base.bmp"
     mkdir -p "$screenshot_dir"
+    media_kind=video
+    case "$video_name" in
+        *.[mM][pP]3 | *.[mM]4[aA] | *.[aA][aA][cC] | *.[fF][lL][aA][cC] | \
+        *.[oO][gG][gG] | *.[oO][pP][uU][sS] | *.[wW][aA][vV] | \
+        *.[wW][mM][aA]) media_kind=audio ;;
+    esac
+    [ "$media_kind" = audio ] && screenshot_file=""
     key="$(video_key "$video")"
     posfile="$positions/$key.pos"
     runtime_pos="/tmp/kidsmode_position.$$"
+    duration_file="/tmp/kidsmode_duration.$$"
+    duration_log="/tmp/kidsmode_ffplay.$$"
+    rm -f "$duration_file" "$duration_log"
+    brightness_restore=""
+    if [ "$media_kind" = audio ] && [ -r "$brightness_pwm" ]; then
+        brightness_restore="$(cat "$brightness_pwm" 2> /dev/null)"
+        case "$brightness_restore" in
+            '' | *[!0-9]*) brightness_restore="" ;;
+        esac
+    fi
     start=0
     if [ "$fresh" != yes ] && [ -f "$posfile" ]; then
         start="$(cat "$posfile" 2> /dev/null)"
@@ -1199,18 +1238,40 @@ play_video() {
     ensure_audio_server
     touch /tmp/stay_awake
     cd "$sysdir" || return 1
-    VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
-        VC_CHECKPOINT_FILE="$posfile" \
-        VC_SCREENSHOT_FILE="$screenshot_file" \
-        LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-        "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" -ss "$start" &
+    if [ "$media_kind" = audio ]; then
+        VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
+            VC_CHECKPOINT_FILE="$posfile" VC_SCREENSHOT_FILE="" \
+            VC_MEDIA_KIND=audio VC_ARTWORK_FILE="$artwork_file" \
+            VC_DURATION_FILE="$duration_file" \
+            VC_BRIGHTNESS_FILE="$brightness_pwm" \
+            VC_BRIGHTNESS_RESTORE="$brightness_restore" \
+            LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
+            "$ffplay" -autoexit -i "$video" -ss "$start" 2> "$duration_log" &
+    else
+        VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
+            VC_CHECKPOINT_FILE="$posfile" \
+            VC_SCREENSHOT_FILE="$screenshot_file" VC_MEDIA_KIND=video \
+            VC_DURATION_FILE="$duration_file" \
+            LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
+            "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" -ss "$start" \
+            2> "$duration_log" &
+    fi
     pid=$!
     printf '%s\n' "$pid" > "$player_pid"
+    watch_media_duration "$duration_log" "$duration_file" "$pid" &
+    duration_watcher=$!
     wait "$pid"
     player_status=$?
+    kill "$duration_watcher" 2> /dev/null
+    wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
+    if [ "$media_kind" = audio ] && [ -n "$brightness_restore" ] &&
+        [ -w "$brightness_pwm" ]; then
+        printf '%s\n' "$brightness_restore" > "$brightness_pwm"
+    fi
     [ -f "$runtime_pos" ] && cp -f "$runtime_pos" "$posfile"
-    rm -f "$runtime_pos" "$player_pid" /tmp/stay_awake
+    rm -f "$runtime_pos" "$duration_file" "$duration_log" "$player_pid" \
+        /tmp/stay_awake
     find /mnt/SDCARD/App/FFplay "$sysdir" -name pos.cfg -exec rm -f {} \; 2> /dev/null
     restore_ffplay_state
     check_off_order "End_Save"
@@ -1258,7 +1319,8 @@ cmd_run() {
     if [ "$(state_get '.active_mode')" = running ] && [ -f "$last_video" ] &&
         [ "$(timer_remaining)" != 0 ]; then
         active_floor=videos
-        play_video "$last_video" no
+        resume_artwork="$(sed -n 1p "$last_artwork_file" 2> /dev/null)"
+        play_video "$last_video" no "$resume_artwork"
     fi
 
     # A game left in cmd_to_run.sh means the device powered off mid-game:
@@ -1411,8 +1473,12 @@ cmd_run() {
                     PLAY | RESTART)
                         active_floor=videos
                         last_video="$(sed -n 2p "$uiresult")"
+                        last_artwork="$(sed -n 3p "$uiresult")"
+                        printf '%s\n' "$last_artwork" > "$last_artwork_file"
                         printf '%s\n' "$last_video" > "$video_selection_file"
-                        play_video "$last_video" "$([ "$sel_verb" = RESTART ] && echo yes || echo no)"
+                        play_video "$last_video" \
+                            "$([ "$sel_verb" = RESTART ] && echo yes || echo no)" \
+                            "$last_artwork"
                         ui_fails=0
                         continue
                         ;;

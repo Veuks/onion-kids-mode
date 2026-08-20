@@ -25,9 +25,9 @@ section. UP/DOWN and the vertical arrow are hidden while it is enabled.
 
 ## Media
 
-Videos go in `/mnt/SDCARD/Media/KidsMode` and can be nested, for example
+Videos and audio go in `/mnt/SDCARD/Media/KidsMode` and can be nested, for example
 `Series/Ulysses 31/Episode 01.mp4`. Each directory has its own `Imgs` folder:
-`Films/Imgs/Movie.jpg` or `Series/Ulysses 31/Imgs/Episode 01.png`. An image
+`Movies/Imgs/Movie.jpg` or `Series/Ulysses 31/Imgs/Episode 01.png`. An image
 named after a directory inside its own `Imgs` folder is used as that folder's
 cover and inherited by videos without their own image. An exact movie or
 episode image must take priority. Folder captions show only the folder name;
@@ -41,6 +41,15 @@ that `Imgs/Video name.bmp` shows the captured frame upright. Repeat at another
 frame and verify that the same BMP is replaced. Delete the BMP and verify that
 the previous PNG/JPG poster or inherited folder cover becomes visible again.
 MENU + X while playback is running must not create a capture.
+
+Test MP3 and at least one other audio format. Verify that playback displays
+the exact file cover when present and otherwise inherits the nearest folder
+cover. The progress line must show elapsed time on the left and remaining time
+on the right. After 10 seconds without input, brightness must drop to minimum;
+after 5 more seconds the backlight must turn off without stopping playback or
+the timer. Press A once: the screen must return and playback must not otherwise
+change. During video playback, verify that the progress line appears on pause
+and seek, then disappears on resume.
 
 Test at least three levels: open `Series`, open `Ulysses 31`, select an
 episode, then press B twice. Reopen both folders and verify that each level

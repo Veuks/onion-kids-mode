@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include <SDL/SDL.h>
+#include <SDL/SDL_image.h>
+#include <SDL/SDL_rotozoom.h>
 #include <dlfcn.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -10,10 +12,14 @@ typedef int (*poll_fn)(SDL_Event *);
 typedef int (*wait_fn)(SDL_Event *);
 typedef int (*peep_fn)(SDL_Event *, int, SDL_eventaction, Uint32);
 typedef int (*overlay_fn)(SDL_Overlay *, SDL_Rect *);
+typedef int (*flip_fn)(SDL_Surface *);
+typedef void (*update_fn)(SDL_Surface *, Sint32, Sint32, Uint32, Uint32);
 static poll_fn real_poll;
 static wait_fn real_wait;
 static peep_fn real_peep;
 static overlay_fn real_overlay;
+static flip_fn real_flip;
+static update_fn real_update;
 static SDL_Overlay *last_overlay;
 static bool inside_event_call;
 static bool paused;
@@ -36,6 +42,33 @@ static bool seek_notice_forward;
 static Uint32 seek_notice_until;
 static bool seek_notice_drawn;
 static SDL_Rect seek_notice_rect;
+static bool player_config_ready;
+static bool audio_mode;
+static const char *artwork_file;
+static const char *duration_file;
+static const char *brightness_file;
+static long duration_seconds;
+static Uint32 last_duration_check;
+static Uint32 progress_until;
+static Uint32 last_activity;
+static int backlight_stage;
+static long saved_brightness_raw;
+static SDL_Surface *audio_artwork;
+static bool audio_artwork_loaded;
+static bool inside_present;
+
+#define AUDIO_DIM_DELAY 10000
+#define AUDIO_OFF_DELAY 15000
+#define AUDIO_DIM_RAW 3
+
+static void update_screen(SDL_Surface *surface, Sint32 x, Sint32 y,
+                          Uint32 width, Uint32 height)
+{
+    if (!real_update)
+        real_update = (update_fn)dlsym(RTLD_NEXT, "SDL_UpdateRect");
+    if (real_update)
+        real_update(surface, x, y, width, height);
+}
 
 static Uint8 clamp_color(int value)
 {
@@ -143,6 +176,91 @@ __attribute__((constructor)) static void vcinput_loaded(void)
     }
 }
 
+static long read_number_file(const char *path)
+{
+    if (path == NULL || path[0] == '\0')
+        return -1;
+    FILE *fp = fopen(path, "r");
+    if (fp == NULL)
+        return -1;
+    char value[64] = "";
+    bool read_ok = fgets(value, sizeof(value), fp) != NULL;
+    fclose(fp);
+    if (!read_ok)
+        return -1;
+    char *end = NULL;
+    long result = strtol(value, &end, 10);
+    return end != value && result >= 0 ? result : -1;
+}
+
+static bool write_backlight(long value)
+{
+    if (brightness_file == NULL || brightness_file[0] == '\0' || value < 0)
+        return false;
+    FILE *fp = fopen(brightness_file, "w");
+    if (fp == NULL)
+        return false;
+    bool written = fprintf(fp, "%ld\n", value) > 0;
+    fclose(fp);
+    return written;
+}
+
+static void restore_backlight(void)
+{
+    if (backlight_stage != 0 && saved_brightness_raw > 0)
+        write_backlight(saved_brightness_raw);
+    backlight_stage = 0;
+}
+
+__attribute__((destructor)) static void vcinput_unloaded(void)
+{
+    restore_backlight();
+}
+
+static void load_player_config(Uint32 now)
+{
+    if (player_config_ready)
+        return;
+    const char *kind = getenv("VC_MEDIA_KIND");
+    audio_mode = kind != NULL && strcmp(kind, "audio") == 0;
+    artwork_file = getenv("VC_ARTWORK_FILE");
+    duration_file = getenv("VC_DURATION_FILE");
+    brightness_file = getenv("VC_BRIGHTNESS_FILE");
+    const char *brightness = getenv("VC_BRIGHTNESS_RESTORE");
+    saved_brightness_raw = brightness ? strtol(brightness, NULL, 10) : -1;
+    if (saved_brightness_raw <= 0)
+        saved_brightness_raw = read_number_file(brightness_file);
+    last_activity = now;
+    player_config_ready = true;
+}
+
+static void update_duration(Uint32 now)
+{
+    if (duration_seconds > 0 || now - last_duration_check < 250)
+        return;
+    last_duration_check = now;
+    long value = read_number_file(duration_file);
+    if (value > 0)
+        duration_seconds = value;
+}
+
+static void update_backlight(Uint32 now)
+{
+    if (!audio_mode || brightness_file == NULL || saved_brightness_raw <= 0)
+        return;
+    Uint32 idle = now - last_activity;
+    if (backlight_stage == 0 && idle >= AUDIO_DIM_DELAY) {
+        long current = read_number_file(brightness_file);
+        if (current > 0)
+            saved_brightness_raw = current;
+        if (write_backlight(AUDIO_DIM_RAW))
+            backlight_stage = 1;
+    }
+    if (backlight_stage == 1 && idle >= AUDIO_OFF_DELAY &&
+        write_backlight(0))
+        backlight_stage = 2;
+}
+
 static void write_position(const char *path)
 {
     if (!path || !*path)
@@ -176,6 +294,9 @@ static void mark_menu_exit(void)
 static void update_clock(void)
 {
     Uint32 now = SDL_GetTicks();
+    load_player_config(now);
+    update_duration(now);
+    update_backlight(now);
     if (!clock_ready) {
         const char *start = getenv("VC_START_SECONDS");
         position_seconds = start ? strtol(start, NULL, 10) : 0;
@@ -223,7 +344,15 @@ static const unsigned char *glyph_rows(char c)
     static const unsigned char minus[7] = {0, 0, 0, 31, 0, 0, 0};
     static const unsigned char zero[7] = {14, 17, 19, 21, 25, 17, 14};
     static const unsigned char one[7] = {4, 12, 4, 4, 4, 4, 14};
+    static const unsigned char two[7] = {14, 17, 1, 2, 4, 8, 31};
+    static const unsigned char three[7] = {30, 1, 1, 14, 1, 1, 30};
+    static const unsigned char four[7] = {2, 6, 10, 18, 31, 2, 2};
     static const unsigned char five[7] = {31, 16, 16, 30, 1, 1, 30};
+    static const unsigned char six[7] = {14, 16, 16, 30, 17, 17, 14};
+    static const unsigned char seven[7] = {31, 1, 2, 4, 8, 8, 8};
+    static const unsigned char eight[7] = {14, 17, 17, 14, 17, 17, 14};
+    static const unsigned char nine[7] = {14, 17, 17, 15, 1, 1, 14};
+    static const unsigned char colon[7] = {0, 4, 4, 0, 4, 4, 0};
     static const unsigned char ess[7] = {0, 0, 15, 16, 14, 1, 30};
     static const unsigned char em[7] = {0, 0, 26, 21, 21, 21, 21};
     switch (c) {
@@ -231,7 +360,15 @@ static const unsigned char *glyph_rows(char c)
     case '-': return minus;
     case '0': return zero;
     case '1': return one;
+    case '2': return two;
+    case '3': return three;
+    case '4': return four;
     case '5': return five;
+    case '6': return six;
+    case '7': return seven;
+    case '8': return eight;
+    case '9': return nine;
+    case ':': return colon;
     case 's': return ess;
     case 'm': return em;
     default: return NULL;
@@ -262,6 +399,138 @@ static void draw_glyph(SDL_Surface *surface, char c, int x, int y, int scale,
             }
 }
 
+static int text_width(const char *text, int scale)
+{
+    int length = text == NULL ? 0 : (int)strlen(text);
+    return length > 0 ? length * 6 * scale - scale : 0;
+}
+
+static void draw_logical_rect(SDL_Surface *surface, int x, int y, int w,
+                              int h, Uint32 color)
+{
+    SDL_Rect physical = {surface->w - x - w, surface->h - y - h, w, h};
+    SDL_FillRect(surface, &physical, color);
+}
+
+static void draw_rotated_text(SDL_Surface *surface, const char *text,
+                              int logical_x, int logical_y, int scale,
+                              Uint32 black, Uint32 color)
+{
+    int length = (int)strlen(text);
+    int width = text_width(text, scale);
+    int physical_x = surface->w - logical_x - width;
+    int physical_y = surface->h - logical_y - 7 * scale;
+    for (int i = 0; i < length; i++)
+        draw_glyph(surface, text[length - 1 - i],
+                   physical_x + i * 6 * scale, physical_y, scale, black,
+                   color);
+}
+
+static void format_time(long seconds, bool remaining, char *out,
+                        size_t out_size)
+{
+    if (seconds < 0)
+        seconds = 0;
+    long hours = seconds / 3600;
+    long minutes = (seconds % 3600) / 60;
+    long secs = seconds % 60;
+    if (hours > 0)
+        snprintf(out, out_size, "%s%ld:%02ld:%02ld", remaining ? "-" : "",
+                 hours, minutes, secs);
+    else
+        snprintf(out, out_size, "%s%ld:%02ld", remaining ? "-" : "",
+                 minutes, secs);
+}
+
+static void load_audio_artwork(SDL_Surface *surface)
+{
+    if (audio_artwork_loaded)
+        return;
+    audio_artwork_loaded = true;
+    if (artwork_file == NULL || artwork_file[0] == '\0')
+        return;
+    SDL_Surface *raw = IMG_Load(artwork_file);
+    if (raw == NULL || raw->w < 1 || raw->h < 1) {
+        if (raw != NULL)
+            SDL_FreeSurface(raw);
+        return;
+    }
+    int tile = (int)(surface->h * 0.58);
+    double scale_w = (double)tile / raw->w;
+    double scale_h = (double)tile / raw->h;
+    double scale = scale_w < scale_h ? scale_w : scale_h;
+    audio_artwork = rotozoomSurface(raw, 180.0, scale, 1);
+    SDL_FreeSurface(raw);
+}
+
+static void draw_audio_background(SDL_Surface *surface)
+{
+    if (!audio_mode || backlight_stage == 2)
+        return;
+    Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
+    SDL_FillRect(surface, NULL, black);
+    load_audio_artwork(surface);
+    if (audio_artwork != NULL) {
+        int logical_center_y = (int)(surface->h * 0.40);
+        int physical_center_y = surface->h - logical_center_y;
+        SDL_Rect position = {(surface->w - audio_artwork->w) / 2,
+                             physical_center_y - audio_artwork->h / 2, 0, 0};
+        SDL_BlitSurface(audio_artwork, NULL, surface, &position);
+    }
+}
+
+static void draw_progress_bar(SDL_Surface *surface)
+{
+    if (duration_seconds <= 0)
+        return;
+    Uint32 now = SDL_GetTicks();
+    if (!audio_mode && !paused && now >= progress_until)
+        return;
+    if (audio_mode && backlight_stage == 2)
+        return;
+
+    long elapsed = position_seconds;
+    if (elapsed < 0)
+        elapsed = 0;
+    if (elapsed > duration_seconds)
+        elapsed = duration_seconds;
+    long remaining = duration_seconds - elapsed;
+    char elapsed_text[24];
+    char remaining_text[24];
+    format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
+    format_time(remaining, true, remaining_text, sizeof(remaining_text));
+
+    int scale = surface->w >= 600 ? 2 : 1;
+    int logical_y = surface->h - 39;
+    int bar_x = (int)(surface->w * 0.17);
+    int bar_w = surface->w - bar_x * 2;
+    int bar_y = surface->h - 28;
+    Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
+    Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
+    Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
+
+    draw_rotated_text(surface, elapsed_text, 16, logical_y, scale, black,
+                      white);
+    int remaining_width = text_width(remaining_text, scale);
+    draw_rotated_text(surface, remaining_text,
+                      surface->w - 16 - remaining_width, logical_y, scale,
+                      black, white);
+    draw_logical_rect(surface, bar_x, bar_y - 1, bar_w, 3, black);
+    draw_logical_rect(surface, bar_x, bar_y, bar_w, 1, accent);
+
+    int knob_x = bar_x + (int)((long long)bar_w * elapsed / duration_seconds);
+    int physical_x = surface->w - knob_x;
+    int physical_y = surface->h - bar_y;
+    const int radius = 5;
+    for (int dy = -radius; dy <= radius; dy++)
+        for (int dx = -radius; dx <= radius; dx++)
+            if (dx * dx + dy * dy <= radius * radius) {
+                SDL_Rect pixel = {physical_x + dx, physical_y + dy, 1, 1};
+                SDL_FillRect(surface, &pixel, accent);
+            }
+    update_screen(surface, 0, 0, surface->w, surface->h);
+}
+
 static void draw_seek_notice(void)
 {
     SDL_Surface *surface = SDL_GetVideoSurface();
@@ -276,8 +545,8 @@ static void draw_seek_notice(void)
     }
     if (!seek_notice[0] || SDL_GetTicks() >= seek_notice_until) {
         if (cleared_notice)
-            SDL_UpdateRect(surface, seek_notice_rect.x, seek_notice_rect.y,
-                           seek_notice_rect.w, seek_notice_rect.h);
+            update_screen(surface, seek_notice_rect.x, seek_notice_rect.y,
+                          seek_notice_rect.w, seek_notice_rect.h);
         seek_notice[0] = '\0';
         return;
     }
@@ -288,13 +557,14 @@ static void draw_seek_notice(void)
     // Coordinates are pre-rotated as well: logical top-left becomes the
     // physical bottom-right, and logical top-right becomes bottom-left.
     int x = seek_notice_forward ? 18 : surface->w - width - 18;
-    int y = 20;
+    // Leave the lowest row free for the progress line and its time labels.
+    int y = 70;
     SDL_Rect new_rect = {x - 2, y - 2, width + 4, 7 * scale + 4};
     if (cleared_notice &&
         (cleared_rect.x != new_rect.x || cleared_rect.y != new_rect.y ||
          cleared_rect.w != new_rect.w || cleared_rect.h != new_rect.h))
-        SDL_UpdateRect(surface, cleared_rect.x, cleared_rect.y,
-                       cleared_rect.w, cleared_rect.h);
+        update_screen(surface, cleared_rect.x, cleared_rect.y,
+                      cleared_rect.w, cleared_rect.h);
     Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
     for (int i = 0; i < length; i++)
         draw_glyph(surface, seek_notice[length - 1 - i],
@@ -302,8 +572,8 @@ static void draw_seek_notice(void)
                    black, white);
     seek_notice_rect = new_rect;
     seek_notice_drawn = true;
-    SDL_UpdateRect(surface, seek_notice_rect.x, seek_notice_rect.y,
-                   seek_notice_rect.w, seek_notice_rect.h);
+    update_screen(surface, seek_notice_rect.x, seek_notice_rect.y,
+                  seek_notice_rect.w, seek_notice_rect.h);
 }
 
 static void set_seek_notice(bool forward, long step)
@@ -313,6 +583,17 @@ static void set_seek_notice(bool forward, long step)
              step >= 60 ? "m" : "s");
     seek_notice_forward = forward;
     seek_notice_until = SDL_GetTicks() + 900;
+    progress_until = SDL_GetTicks() + 1200;
+}
+
+static void draw_player_overlay(void)
+{
+    SDL_Surface *surface = SDL_GetVideoSurface();
+    if (surface == NULL)
+        return;
+    draw_audio_background(surface);
+    draw_progress_bar(surface);
+    draw_seek_notice();
 }
 
 static bool progressive_seek(SDL_Event *event, Uint32 now)
@@ -353,6 +634,19 @@ static bool map_event(SDL_Event *event)
         return false;
     Uint8 state = event->key.state;
     SDLKey in = event->key.keysym.sym;
+    Uint32 now = SDL_GetTicks();
+    load_player_config(now);
+
+    if (audio_mode && backlight_stage != 0) {
+        if (in == SDLK_SPACE && state == SDL_PRESSED) {
+            restore_backlight();
+            last_activity = now;
+            draw_player_overlay();
+        }
+        return true;
+    }
+    if (state == SDL_PRESSED)
+        last_activity = now;
 
     if (in == SDLK_LSHIFT && state == SDL_RELEASED)
         screenshot_down = false;
@@ -434,6 +728,7 @@ static bool map_event(SDL_Event *event)
     if (in == SDLK_SPACE) { /* Miyoo A: resume only */
         if (state == SDL_PRESSED && paused) {
             paused = false;
+            progress_until = 0;
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
         }
@@ -442,6 +737,7 @@ static bool map_event(SDL_Event *event)
     if (in == SDLK_LCTRL) { /* Miyoo B: pause only */
         if (state == SDL_PRESSED && !paused) {
             paused = true;
+            draw_player_overlay();
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
         }
@@ -532,6 +828,47 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
         return -1;
     last_overlay = overlay;
     int result = real_overlay(overlay, dstrect);
-    draw_seek_notice();
+    draw_player_overlay();
+    return result;
+}
+
+void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
+                    Uint32 height)
+{
+    if (!real_update)
+        real_update = (update_fn)dlsym(RTLD_NEXT, "SDL_UpdateRect");
+    if (!real_update)
+        return;
+    if (inside_present) {
+        real_update(surface, x, y, width, height);
+        return;
+    }
+
+    inside_present = true;
+    real_update(surface, x, y, width, height);
+    load_player_config(SDL_GetTicks());
+    if (audio_mode)
+        draw_player_overlay();
+    inside_present = false;
+}
+
+int SDL_Flip(SDL_Surface *surface)
+{
+    if (!real_flip)
+        real_flip = (flip_fn)dlsym(RTLD_NEXT, "SDL_Flip");
+    if (!real_flip)
+        return -1;
+    if (inside_present)
+        return real_flip(surface);
+
+    inside_present = true;
+    load_player_config(SDL_GetTicks());
+    // With a double-buffered audio display, drawing after SDL_Flip would
+    // modify the next (hidden) buffer. Paint first so the cover and progress
+    // are the frame that actually becomes visible.
+    if (audio_mode)
+        draw_player_overlay();
+    int result = real_flip(surface);
+    inside_present = false;
     return result;
 }

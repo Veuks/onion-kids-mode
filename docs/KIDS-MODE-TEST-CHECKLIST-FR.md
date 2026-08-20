@@ -13,21 +13,21 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - GAUCHE/DROITE parcourt la section affichée.
 - HAUT passe des jeux aux vidéos et BAS revient aux jeux.
 - La flèche du bas reste au-dessus des commandes PLAY et RESTART.
-- Les dossiers `Films`, `Séries` et `Chansons` apparaissent s'ils contiennent
-  une vidéo directement ou dans un sous-dossier.
+- Les dossiers `Movies`, `Series`, `Music` et `Stories` apparaissent s'ils
+  contiennent un média directement ou dans un sous-dossier.
 - A ouvre plusieurs niveaux de dossiers et B remonte exactement d'un niveau.
 - Chaque niveau retrouve sa dernière sélection après un aller-retour et après
   un redémarrage.
 - La flèche vers les jeux reste masquée jusqu'au retour à `Media/KidsMode`.
-- Chaque dossier utilise son propre `Imgs` : par exemple `Films/Imgs` et
-  `Séries/Ulysse 31/Imgs`.
+- Chaque dossier utilise son propre `Imgs` : par exemple `Movies/Imgs` et
+  `Series/Ulysses 31/Imgs`.
 - Sous une vignette de dossier, seul le nom du dossier est affiché, sans
   préfixe `.../`.
 - L'image portant le nom d'un dossier s'applique aux vidéos sans image propre
   qu'il contient. Une image portant exactement le nom d'un épisode reste
   prioritaire.
 - Sans image dans le dossier courant, la vignette remonte vers le dossier
-  parent puis jusqu'à la catégorie racine (`Films`, `Séries`, etc.).
+  parent puis jusqu'à la catégorie racine (`Movies`, `Series`, etc.).
 - L'héritage fonctionne aussi bien avec `Dossier/Imgs/Dossier.png` qu'avec
   `Parent/Imgs/Dossier.png`.
 - Le nom de l'épisode ou du fichier reste affiché sous l'image héritée.
@@ -39,6 +39,15 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
   remplace ce fichier et le BMP apparaît dans le carrousel à l'endroit.
 - MENU + X pendant la lecture ne crée aucune capture. Supprimer le BMP
   restaure l'affiche PNG/JPG ou l'image héritée du dossier.
+- Les fichiers MP3, M4A, AAC, FLAC, OGG, OPUS, WAV et WMA apparaissent et se
+  lancent comme les vidéos.
+- Pendant un fichier audio, la pochette correcte est affichée avec une ligne
+  de progression, le temps écoulé à gauche et le temps restant à droite.
+- Après 10 secondes sans action, la luminosité passe au minimum. Cinq secondes
+  plus tard, le rétroéclairage s'éteint sans interrompre le son ni le timer.
+- Un premier appui sur A rallume uniquement l'écran, sans autre action.
+- Sur une vidéo, la progression apparaît en pause ou pendant une recherche,
+  puis disparaît à la reprise.
 - Une extinction pendant un jeu ou une vidéo reprend le contenu.
 - Une extinction depuis le carrousel restaure seulement la sélection.
 - Le timer est partagé entre les jeux et les vidéos.

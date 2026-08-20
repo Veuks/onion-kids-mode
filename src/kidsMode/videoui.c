@@ -624,14 +624,18 @@ static void sigHandler(int sig)
     }
 }
 
-static bool hasVideoExtension(const char *name)
+static bool hasMediaExtension(const char *name)
 {
     const char *dot = strrchr(name, '.');
     if (dot == NULL)
         return false;
     return strcasecmp(dot, ".mp4") == 0 || strcasecmp(dot, ".mkv") == 0 ||
            strcasecmp(dot, ".avi") == 0 || strcasecmp(dot, ".mov") == 0 ||
-           strcasecmp(dot, ".m4v") == 0 || strcasecmp(dot, ".webm") == 0;
+           strcasecmp(dot, ".m4v") == 0 || strcasecmp(dot, ".webm") == 0 ||
+           strcasecmp(dot, ".mp3") == 0 || strcasecmp(dot, ".m4a") == 0 ||
+           strcasecmp(dot, ".aac") == 0 || strcasecmp(dot, ".flac") == 0 ||
+           strcasecmp(dot, ".ogg") == 0 || strcasecmp(dot, ".opus") == 0 ||
+           strcasecmp(dot, ".wav") == 0 || strcasecmp(dot, ".wma") == 0;
 }
 
 static void resetEntries(void)
@@ -681,8 +685,8 @@ static int compareVideos(const void *a, const void *b)
 
 static const char *visibleFolderName(const char *name)
 {
-    if (name != NULL && name[0] == '_' && name[1] == '_' && name[2] != '\0')
-        return name + 2;
+    if (name != NULL && name[0] == '_' && name[1] != '\0')
+        return name + 1;
     return name;
 }
 
@@ -705,7 +709,7 @@ static bool directoryHasVideos(const char *path, int depth)
             continue;
         if (de->d_name[0] == '.')
             continue;
-        if (S_ISREG(st.st_mode) && hasVideoExtension(de->d_name) &&
+        if (S_ISREG(st.st_mode) && hasMediaExtension(de->d_name) &&
             strcasecmp(de->d_name, "FFplay controls.mp4") != 0) {
             found = true;
             break;
@@ -825,23 +829,23 @@ static void loadVideos(void)
             continue;
         bool captionless_folder =
             S_ISDIR(st.st_mode) && de->d_name[0] == '_' &&
-            de->d_name[1] == '_' && de->d_name[2] != '\0';
+            de->d_name[1] != '\0';
         if (de->d_name[0] == '.')
             continue;
-        bool is_video = S_ISREG(st.st_mode) && hasVideoExtension(de->d_name);
+        bool is_media = S_ISREG(st.st_mode) && hasMediaExtension(de->d_name);
         bool is_folder = false;
         if (S_ISDIR(st.st_mode) && strcasecmp(de->d_name, "Imgs") != 0)
             is_folder = directoryHasVideos(fullpath, 1);
-        if (!is_video && !is_folder)
+        if (!is_media && !is_folder)
             continue;
-        if (is_video && strcasecmp(de->d_name, "FFplay controls.mp4") == 0)
+        if (is_media && strcasecmp(de->d_name, "FFplay controls.mp4") == 0)
             continue;
         JsonGameEntry entry;
         memset(&entry, 0, sizeof(entry));
         snprintf(entry.rompath, sizeof(entry.rompath), "%s", fullpath);
         snprintf(entry.label, sizeof(entry.label), "%s",
-                 captionless_folder ? de->d_name + 2 : de->d_name);
-        if (is_video) {
+                 captionless_folder ? de->d_name + 1 : de->d_name);
+        if (is_media) {
             char *dot = strrchr(entry.label, '.');
             if (dot != NULL)
                 *dot = '\0';
@@ -1721,10 +1725,10 @@ static void renderEmpty(void)
     renderBase();
     int cx = g_display.width / 2;
     const bool videos = current_floor == FLOOR_VIDEOS;
-    drawText(videos ? "No videos yet!" : "No favorite games yet!", cx,
+    drawText(videos ? "No media yet!" : "No favorite games yet!", cx,
              (int)(g_display.height * 0.42),
              getFontBigValue(), theme()->list.color, g_display.width - 40);
-    drawText(videos ? "Add videos to Media/KidsMode"
+    drawText(videos ? "Add media to Media/KidsMode"
                     : "Add games to Onion Favorites",
              cx,
              (int)(g_display.height * 0.58), getFontInfo(),
@@ -2257,7 +2261,10 @@ int main(int argc, char *argv[])
                                     games[current].item.rompath);
                     else
                         writeResult(games[current].is_folder ? "FOLDER" : "PLAY",
-                                    games[current].item.rompath, NULL);
+                                    games[current].item.rompath,
+                                    games[current].is_folder
+                                        ? NULL
+                                        : games[current].item.imgpath);
                     exit_code = 0;
                     quit = true;
                     break;
@@ -2309,7 +2316,7 @@ int main(int argc, char *argv[])
                                     games[current].item.rompath);
                     else
                         writeResult("RESTART", games[current].item.rompath,
-                                    NULL);
+                                    games[current].item.imgpath);
                     exit_code = 0;
                     quit = true;
                     break;
