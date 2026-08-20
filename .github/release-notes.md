@@ -13,7 +13,8 @@ protected Onion-style launcher for Miyoo Mini and Mini Plus.
 - Local artwork folders such as `Films/Imgs` and
   `Series/Ulysses 31/Imgs`. Videos without an exact matching image reuse their
   nearest available folder cover, searching up to the root category, while
-  exact movie or episode artwork takes priority.
+  exact movie or episode artwork takes priority. Covers are inherited whether
+  stored in the folder's own `Imgs` or in its parent's `Imgs`.
 - Every folder level remembers and restores its own last selected item.
 - Automatic restoration of the real shutdown state: running content resumes,
   while a carousel shutdown returns to the same selection. Games and Videos
