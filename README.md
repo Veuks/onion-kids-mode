@@ -147,6 +147,8 @@ Artwork fallback follows the folder hierarchy. If the current folder has no
 cover, Kids Mode searches its parent folders up to the category at the media
 root. For example, content under `Series/Ulysses 31` can fall back to
 `Series/Imgs/Series.png` when `Ulysses 31/Imgs/Ulysses 31.png` does not exist.
+At every level, a folder cover may also be stored in its parent's `Imgs`
+directory, such as `Media/KidsMode/Imgs/Series.png`; both layouts are inherited.
 
 The same rule can give category folders their own artwork:
 `Films/Imgs/Films.png`, `Series/Imgs/Series.png` or `Songs/Imgs/Songs.png`.

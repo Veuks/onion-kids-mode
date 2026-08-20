@@ -28,6 +28,8 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
   prioritaire.
 - Sans image dans le dossier courant, la vignette remonte vers le dossier
   parent puis jusqu'à la catégorie racine (`Films`, `Séries`, etc.).
+- L'héritage fonctionne aussi bien avec `Dossier/Imgs/Dossier.png` qu'avec
+  `Parent/Imgs/Dossier.png`.
 - Le nom de l'épisode ou du fichier reste affiché sous l'image héritée.
 - Les titres des cartes noires du carrousel suivent la même règle.
 - Avec une image de série ou d'épisode, le nom de l'épisode reste sous l'image.

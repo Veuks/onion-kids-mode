@@ -32,8 +32,9 @@ named after a directory inside its own `Imgs` folder is used as that folder's
 cover and inherited by videos without their own image. An exact movie or
 episode image must take priority. Folder captions show only the folder name;
 video names remain below the image. If the current folder has no cover, the
-nearest parent cover up to the root category must be inherited. PNG, JPG and
-JPEG are accepted.
+nearest parent cover up to the root category must be inherited. Test both
+`Folder/Imgs/Folder.png` and `Parent/Imgs/Folder.png`; both placements must be
+accepted. PNG, JPG and JPEG are accepted.
 
 Test at least three levels: open `Series`, open `Ulysses 31`, select an
 episode, then press B twice. Reopen both folders and verify that each level

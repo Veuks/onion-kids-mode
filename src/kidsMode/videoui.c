@@ -741,8 +741,21 @@ static bool findNearestFolderArtwork(const char *folder, char *out,
         if (slash == NULL || slash[1] == '\0')
             break;
         const char *folder_label = slash + 1;
+
+        // Accept both supported cover layouts:
+        //   Folder/Imgs/Folder.png
+        //   Parent/Imgs/Folder.png
         if (findArtworkInFolder(cursor, folder_label, out, out_size))
             return true;
+        char parent[STR_MAX];
+        size_t parent_len = (size_t)(slash - cursor);
+        if (parent_len >= sizeof(parent))
+            break;
+        memcpy(parent, cursor, parent_len);
+        parent[parent_len] = '\0';
+        if (findArtworkInFolder(parent, folder_label, out, out_size))
+            return true;
+
         *slash = '\0';
         if (strncmp(cursor, VIDEOS_DIR, strlen(VIDEOS_DIR)) != 0)
             break;
