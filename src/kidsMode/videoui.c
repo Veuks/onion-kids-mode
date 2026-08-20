@@ -134,6 +134,7 @@ static KeyState keystate[320] = {(KeyState)0};
 typedef struct {
     JsonGameEntry item;
     bool is_folder;
+    bool hide_label;
 } VideoEntry;
 
 static VideoEntry games[MAX_GAMES];
@@ -665,6 +666,7 @@ static void loadFavorites(void)
             snprintf(entry.label, sizeof(entry.label), "???");
         games[games_count].item = entry;
         games[games_count].is_folder = false;
+        games[games_count].hide_label = false;
         games_count++;
     }
     fclose(fp);
@@ -677,6 +679,13 @@ static int compareVideos(const void *a, const void *b)
     return strcasecmp(va->item.label, vb->item.label);
 }
 
+static const char *visibleFolderName(const char *name)
+{
+    if (name != NULL && name[0] == '_' && name[1] == '_' && name[2] != '\0')
+        return name + 2;
+    return name;
+}
+
 static bool directoryHasVideos(const char *path, int depth)
 {
     if (depth > MAX_FOLDER_DEPTH)
@@ -687,12 +696,14 @@ static bool directoryHasVideos(const char *path, int depth)
     struct dirent *de;
     bool found = false;
     while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.')
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
             continue;
         char child[STR_MAX];
         snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
         struct stat st;
         if (lstat(child, &st) != 0)
+            continue;
+        if (de->d_name[0] == '.')
             continue;
         if (S_ISREG(st.st_mode) && hasVideoExtension(de->d_name) &&
             strcasecmp(de->d_name, "FFplay controls.mp4") != 0) {
@@ -743,7 +754,7 @@ static bool findNearestFolderArtwork(const char *folder, char *out,
         char *slash = strrchr(cursor, '/');
         if (slash == NULL || slash[1] == '\0')
             break;
-        const char *folder_label = slash + 1;
+        const char *folder_label = visibleFolderName(slash + 1);
 
         // Accept both supported cover layouts:
         //   Folder/Imgs/Folder.png
@@ -805,12 +816,17 @@ static void loadVideos(void)
         return;
     struct dirent *de;
     while (games_count < MAX_GAMES && (de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.')
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
             continue;
         char fullpath[STR_MAX];
         snprintf(fullpath, sizeof(fullpath), "%s/%s", browse_dir, de->d_name);
         struct stat st;
         if (lstat(fullpath, &st) != 0)
+            continue;
+        bool captionless_folder =
+            S_ISDIR(st.st_mode) && de->d_name[0] == '_' &&
+            de->d_name[1] == '_' && de->d_name[2] != '\0';
+        if (de->d_name[0] == '.')
             continue;
         bool is_video = S_ISREG(st.st_mode) && hasVideoExtension(de->d_name);
         bool is_folder = false;
@@ -823,7 +839,8 @@ static void loadVideos(void)
         JsonGameEntry entry;
         memset(&entry, 0, sizeof(entry));
         snprintf(entry.rompath, sizeof(entry.rompath), "%s", fullpath);
-        snprintf(entry.label, sizeof(entry.label), "%s", de->d_name);
+        snprintf(entry.label, sizeof(entry.label), "%s",
+                 captionless_folder ? de->d_name + 2 : de->d_name);
         if (is_video) {
             char *dot = strrchr(entry.label, '.');
             if (dot != NULL)
@@ -833,6 +850,7 @@ static void loadVideos(void)
                     entry.imgpath, sizeof(entry.imgpath));
         games[games_count].item = entry;
         games[games_count].is_folder = is_folder;
+        games[games_count].hide_label = captionless_folder;
         games_count++;
     }
     closedir(dir);
@@ -1532,7 +1550,8 @@ static void renderCarousel(int remaining)
         const char *fallback_label = games[current].item.label;
         if (current_folder[0] && !games[current].is_folder) {
             const char *slash = strrchr(current_folder, '/');
-            fallback_label = slash != NULL ? slash + 1 : current_folder;
+            fallback_label = visibleFolderName(
+                slash != NULL ? slash + 1 : current_folder);
         }
         SDL_Color fallback_color = theme()->grid.selectedcolor;
         int tile_h = (int)(g_display.height * 0.58);
@@ -1569,7 +1588,7 @@ static void renderCarousel(int remaining)
     // sit on the top line instead of the bottom one; a title too long to
     // fit still splits into two balanced-width lines (top + bottom,
     // unchanged) instead of scrolling or truncating.
-    {
+    if (!(current_floor == FLOOR_VIDEOS && games[current].hide_label)) {
         int avail_w = g_display.width - (int)(90.0 * g_scale);
         int bottom_y = (int)(400.0 * g_scale) + content_offset_y;
         int line_h = TTF_FontLineSkip(getFontGameLabel());
