@@ -12,6 +12,7 @@ typedef int (*wait_fn)(SDL_Event *);
 typedef int (*peep_fn)(SDL_Event *, int, SDL_eventaction, Uint32);
 typedef int (*overlay_fn)(SDL_Overlay *, SDL_Rect *);
 typedef int (*flip_fn)(SDL_Surface *);
+typedef SDL_Surface *(*set_mode_fn)(int, int, int, Uint32);
 typedef void (*update_fn)(SDL_Surface *, Sint32, Sint32, Uint32, Uint32);
 typedef void (*updates_fn)(SDL_Surface *, int, SDL_Rect *);
 static poll_fn real_poll;
@@ -19,6 +20,7 @@ static wait_fn real_wait;
 static peep_fn real_peep;
 static overlay_fn real_overlay;
 static flip_fn real_flip;
+static set_mode_fn real_set_mode;
 static update_fn real_update;
 static updates_fn real_updates;
 static SDL_Overlay *last_overlay;
@@ -57,6 +59,8 @@ static Uint32 last_activity;
 static int backlight_stage;
 static long saved_brightness_raw;
 static SDL_Surface *audio_artwork;
+static SDL_Surface *audio_visualizer_surface;
+static SDL_Surface *hardware_surface;
 static bool audio_artwork_loaded;
 static bool inside_present;
 static SDLKey wake_key = SDLK_UNKNOWN;
@@ -774,11 +778,16 @@ static bool player_overlay_needs_redraw(void)
 
 static void draw_player_overlay(void)
 {
-    SDL_Surface *surface = SDL_GetVideoSurface();
+    SDL_Surface *surface = hardware_surface != NULL
+                               ? hardware_surface
+                               : SDL_GetVideoSurface();
     if (surface == NULL || !player_overlay_visible())
         return;
+    bool was_inside_present = inside_present;
+    inside_present = true;
     paint_player_overlay(surface);
     update_screen(surface, 0, 0, surface->w, surface->h);
+    inside_present = was_inside_present;
     last_presented_second = position_seconds;
     overlay_force_redraw = false;
 }
@@ -1044,6 +1053,36 @@ int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
     return kept;
 }
 
+SDL_Surface *SDL_SetVideoMode(int width, int height, int bpp, Uint32 flags)
+{
+    if (!real_set_mode)
+        real_set_mode = (set_mode_fn)dlsym(RTLD_NEXT, "SDL_SetVideoMode");
+    if (!real_set_mode)
+        return NULL;
+
+    load_player_config(SDL_GetTicks());
+    hardware_surface = real_set_mode(width, height, bpp, flags);
+    if (!audio_mode || hardware_surface == NULL)
+        return hardware_surface;
+
+    // Old SDL FFplay draws its audio waveform directly into the surface's
+    // pixels before calling SDL_UpdateRect. Give those writes a software-only
+    // target; our artwork/progress UI is painted separately on the real
+    // hardware surface. This isolates audio without touching video playback.
+    SDL_PixelFormat *format = hardware_surface->format;
+    audio_visualizer_surface = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, width, height, format->BitsPerPixel,
+        format->Rmask, format->Gmask, format->Bmask, format->Amask);
+    if (audio_visualizer_surface != NULL) {
+        SDL_FillRect(audio_visualizer_surface, NULL,
+                     SDL_MapRGB(audio_visualizer_surface->format, 0, 0, 0));
+        overlay_force_redraw = true;
+        draw_player_overlay();
+    }
+    return audio_visualizer_surface != NULL ? audio_visualizer_surface
+                                            : hardware_surface;
+}
+
 int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
 {
     load_player_config(SDL_GetTicks());
@@ -1071,13 +1110,10 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
             seek_notice_until = now + 2000;
         progress_waiting_for_video = false;
     }
-    // Keep video controls stable instead of repainting them at the frame
-    // rate or at every clock tick. Their fully composed frame changes only
-    // after an explicit control action; repeated updates caused flicker.
     // The Miyoo YUV plane is refreshed for every decoded frame and can cover
     // the RGB controls plane. Reapply the already-composed controls after
-    // each video frame for their full lifetime. Native RGB refresh paths are
-    // suppressed below, so the two planes no longer alternate or flicker.
+    // each video frame for their full lifetime. Every native video refresh
+    // still passes straight through to FFplay, including while paused.
     if (player_overlay_visible())
         draw_player_overlay();
     return result;
@@ -1096,18 +1132,8 @@ void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
     }
 
     load_player_config(SDL_GetTicks());
-    if (!audio_mode && !player_overlay_visible()) {
-        real_update(surface, x, y, width, height);
-        return;
-    }
-
     if (!audio_mode) {
-        // FFplay may keep refreshing its RGB window while the YUV video is
-        // paused. Do not let those redundant refreshes alternate with the
-        // progress overlay.
-        update_clock();
-        if (player_overlay_needs_redraw())
-            draw_player_overlay();
+        real_update(surface, x, y, width, height);
         return;
     }
 
@@ -1117,12 +1143,8 @@ void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
     // screen only when its displayed second or state actually changes.
     inside_present = true;
     update_clock();
-    if (player_overlay_needs_redraw()) {
-        paint_player_overlay(surface);
-        real_update(surface, 0, 0, surface->w, surface->h);
-        last_presented_second = position_seconds;
-        overlay_force_redraw = false;
-    }
+    if (player_overlay_needs_redraw())
+        draw_player_overlay();
     inside_present = false;
 }
 
@@ -1138,7 +1160,7 @@ void SDL_UpdateRects(SDL_Surface *surface, int numrects, SDL_Rect *rects)
     }
 
     load_player_config(SDL_GetTicks());
-    if (!audio_mode && !player_overlay_visible()) {
+    if (!audio_mode) {
         real_updates(surface, numrects, rects);
         return;
     }
@@ -1146,23 +1168,11 @@ void SDL_UpdateRects(SDL_Surface *surface, int numrects, SDL_Rect *rects)
     // FFplay's audio waveform uses the plural SDL update entry point on
     // some Onion builds. Block it exactly like SDL_UpdateRect/SDL_Flip and
     // present one complete artwork/progress frame instead.
-    if (audio_mode) {
-        inside_present = true;
-        update_clock();
-        if (player_overlay_needs_redraw()) {
-            paint_player_overlay(surface);
-            SDL_Rect full = {0, 0, surface->w, surface->h};
-            real_updates(surface, 1, &full);
-            last_presented_second = position_seconds;
-            overlay_force_redraw = false;
-        }
-        inside_present = false;
-        return;
-    }
-
+    inside_present = true;
     update_clock();
     if (player_overlay_needs_redraw())
         draw_player_overlay();
+    inside_present = false;
 }
 
 int SDL_Flip(SDL_Surface *surface)
@@ -1175,15 +1185,8 @@ int SDL_Flip(SDL_Surface *surface)
         return real_flip(surface);
 
     load_player_config(SDL_GetTicks());
-    if (!audio_mode && !player_overlay_visible())
+    if (!audio_mode)
         return real_flip(surface);
-
-    if (!audio_mode) {
-        update_clock();
-        if (player_overlay_needs_redraw())
-            draw_player_overlay();
-        return 0;
-    }
 
     inside_present = true;
     update_clock();
@@ -1191,12 +1194,10 @@ int SDL_Flip(SDL_Surface *surface)
         inside_present = false;
         return 0;
     }
-    // Paint before flipping so the stable cover/progress frame, rather than
-    // FFplay's visualizer, is the buffer that becomes visible.
-    paint_player_overlay(surface);
-    int result = real_flip(surface);
-    last_presented_second = position_seconds;
-    overlay_force_redraw = false;
+    // The surface being flipped is the private software visualizer surface;
+    // never present it. Refresh the independent hardware UI instead.
+    draw_player_overlay();
+    int result = 0;
     inside_present = false;
     return result;
 }
