@@ -249,7 +249,10 @@ static void update_duration(Uint32 now)
 
 static void update_backlight(Uint32 now)
 {
-    if (!audio_mode || brightness_file == NULL || saved_brightness_raw <= 0)
+    // Audio playback may sleep while it keeps playing. Video playback may
+    // sleep only while paused; an actively playing video always stays lit.
+    if ((!audio_mode && !paused) || brightness_file == NULL ||
+        saved_brightness_raw <= 0)
         return;
     Uint32 idle = now - last_activity;
     if (backlight_stage == 0 && idle >= AUDIO_DIM_DELAY) {
@@ -633,8 +636,8 @@ static void set_seek_notice(bool forward, long step)
              forward ? '+' : '-', step >= 60 ? step / 60 : step,
              step >= 60 ? "m" : "s");
     seek_notice_forward = forward;
-    seek_notice_until = SDL_GetTicks() + 900;
-    progress_until = SDL_GetTicks() + 1200;
+    seek_notice_until = SDL_GetTicks() + 2000;
+    progress_until = SDL_GetTicks() + 2000;
     overlay_force_redraw = true;
 }
 
@@ -648,11 +651,23 @@ static void paint_player_overlay(SDL_Surface *surface)
 static bool player_overlay_visible(void)
 {
     Uint32 now = SDL_GetTicks();
+    if (backlight_stage == 2)
+        return false;
     if (audio_mode)
-        return backlight_stage != 2;
+        return true;
     if (duration_seconds > 0 && (paused || now < progress_until))
         return true;
     return seek_notice[0] != '\0' && now < seek_notice_until;
+}
+
+static bool player_overlay_needs_redraw(void)
+{
+    if (overlay_force_redraw)
+        return true;
+    // Audio time must advance once per second. For video, keep the exact same
+    // composed controls frame on screen for its whole two-second lifetime.
+    // Repainting it every second over the hardware YUV plane caused flicker.
+    return audio_mode && position_seconds != last_presented_second;
 }
 
 static void draw_player_overlay(void)
@@ -716,10 +731,9 @@ static bool map_event(SDL_Event *event)
         return true;
     }
 
-    if (audio_mode && backlight_stage != 0) {
-        // A, B and MENU can all wake an audio-only screen. Consume the whole
-        // gesture so the wake press cannot also resume, pause or leave the
-        // player.
+    if ((audio_mode || paused) && backlight_stage != 0) {
+        // A, B and MENU can wake an audio screen or a paused video. Consume
+        // the whole gesture so waking cannot also resume, pause or leave.
         if ((in == SDLK_SPACE || in == SDLK_LCTRL || in == SDLK_ESCAPE) &&
             state == SDL_PRESSED) {
             wake_key = in;
@@ -811,8 +825,11 @@ static bool map_event(SDL_Event *event)
 
     if (in == SDLK_SPACE) { /* Miyoo A: resume only */
         if (state == SDL_PRESSED && paused) {
+            restore_backlight();
+            last_activity = now;
             paused = false;
-            progress_until = 0;
+            progress_until = now + 2000;
+            overlay_force_redraw = true;
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
         }
@@ -821,6 +838,8 @@ static bool map_event(SDL_Event *event)
     if (in == SDLK_LCTRL) { /* Miyoo B: pause only */
         if (state == SDL_PRESSED && !paused) {
             paused = true;
+            last_activity = now;
+            overlay_force_redraw = true;
             draw_player_overlay();
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
@@ -906,13 +925,29 @@ int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
 
 int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
 {
+    load_player_config(SDL_GetTicks());
+    if (audio_mode) {
+        // Some audio files expose their embedded cover as a YUV video frame.
+        // Presenting it through the Miyoo hardware overlay makes it flicker
+        // over our audio UI and can leave an inverted layer after FFplay exits.
+        // Suppress every hardware-video frame while in audio mode.
+        update_clock();
+        if (player_overlay_needs_redraw())
+            draw_player_overlay();
+        return 0;
+    }
     if (!real_overlay)
         real_overlay = (overlay_fn)dlsym(RTLD_NEXT, "SDL_DisplayYUVOverlay");
     if (!real_overlay)
         return -1;
     last_overlay = overlay;
     int result = real_overlay(overlay, dstrect);
-    draw_player_overlay();
+    update_clock();
+    // Keep video controls stable instead of repainting them at the frame
+    // rate or at every clock tick. Their fully composed frame changes only
+    // after an explicit control action; repeated updates caused flicker.
+    if (player_overlay_needs_redraw())
+        draw_player_overlay();
     return result;
 }
 
@@ -929,8 +964,18 @@ void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
     }
 
     load_player_config(SDL_GetTicks());
-    if (!audio_mode) {
+    if (!audio_mode && !player_overlay_visible()) {
         real_update(surface, x, y, width, height);
+        return;
+    }
+
+    if (!audio_mode) {
+        // FFplay may keep refreshing its RGB window while the YUV video is
+        // paused. Do not let those redundant refreshes alternate with the
+        // progress overlay.
+        update_clock();
+        if (player_overlay_needs_redraw())
+            draw_player_overlay();
         return;
     }
 
@@ -940,7 +985,7 @@ void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
     // screen only when its displayed second or state actually changes.
     inside_present = true;
     update_clock();
-    if (overlay_force_redraw || position_seconds != last_presented_second) {
+    if (player_overlay_needs_redraw()) {
         paint_player_overlay(surface);
         real_update(surface, 0, 0, surface->w, surface->h);
         last_presented_second = position_seconds;
@@ -959,13 +1004,19 @@ int SDL_Flip(SDL_Surface *surface)
         return real_flip(surface);
 
     load_player_config(SDL_GetTicks());
-    if (!audio_mode)
+    if (!audio_mode && !player_overlay_visible())
         return real_flip(surface);
+
+    if (!audio_mode) {
+        update_clock();
+        if (player_overlay_needs_redraw())
+            draw_player_overlay();
+        return 0;
+    }
 
     inside_present = true;
     update_clock();
-    if (!overlay_force_redraw &&
-        position_seconds == last_presented_second) {
+    if (!player_overlay_needs_redraw()) {
         inside_present = false;
         return 0;
     }

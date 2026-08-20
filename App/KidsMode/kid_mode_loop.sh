@@ -1219,7 +1219,7 @@ play_video() {
     duration_log="/tmp/kidsmode_ffplay.$$"
     rm -f "$duration_file" "$duration_log"
     brightness_restore=""
-    if [ "$media_kind" = audio ] && [ -r "$brightness_pwm" ]; then
+    if [ -r "$brightness_pwm" ]; then
         brightness_restore="$(cat "$brightness_pwm" 2> /dev/null)"
         case "$brightness_restore" in
             '' | *[!0-9]*) brightness_restore="" ;;
@@ -1239,6 +1239,9 @@ play_video() {
     touch /tmp/stay_awake
     cd "$sysdir" || return 1
     if [ "$media_kind" = audio ]; then
+        # An MP3 can contain an attached cover exposed by FFplay as a video
+        # stream. Never send that stream to the Miyoo hardware overlay: the
+        # stable audio screen is drawn by libvcinput.
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" VC_SCREENSHOT_FILE="" \
             VC_MEDIA_KIND=audio VC_ARTWORK_FILE="$artwork_file" \
@@ -1246,12 +1249,15 @@ play_video() {
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -autoexit -i "$video" -ss "$start" 2> "$duration_log" &
+            "$ffplay" -vn -autoexit -i "$video" -ss "$start" \
+                2> "$duration_log" &
     else
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" \
             VC_SCREENSHOT_FILE="$screenshot_file" VC_MEDIA_KIND=video \
             VC_DURATION_FILE="$duration_file" \
+            VC_BRIGHTNESS_FILE="$brightness_pwm" \
+            VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
             "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" -ss "$start" \
             2> "$duration_log" &
@@ -1265,8 +1271,7 @@ play_video() {
     kill "$duration_watcher" 2> /dev/null
     wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
-    if [ "$media_kind" = audio ] && [ -n "$brightness_restore" ] &&
-        [ -w "$brightness_pwm" ]; then
+    if [ -n "$brightness_restore" ] && [ -w "$brightness_pwm" ]; then
         printf '%s\n' "$brightness_restore" > "$brightness_pwm"
     fi
     [ -f "$runtime_pos" ] && cp -f "$runtime_pos" "$posfile"
