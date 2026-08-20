@@ -37,11 +37,13 @@ jobs:
           cp kidui libvcinput.so "$GITHUB_WORKSPACE/App/KidsMode/bin/"
           chmod +x "$GITHUB_WORKSPACE/App/KidsMode/bin/kidui" \
             "$GITHUB_WORKSPACE/App/KidsMode/"*.sh
-      - name: Upload app artifact
+      - name: Upload complete artifact
         uses: actions/upload-artifact@v4
         with:
           name: Kids-Mode-build
-          path: App
+          path: |
+            App
+            Media
           if-no-files-found: error
 
   release:
@@ -54,13 +56,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: Kids-Mode-build
-          path: App
+          path: .
       - name: Assemble zip
         run: |
           chmod +x App/KidsMode/bin/kidui App/KidsMode/*.sh
           cp README.md App/KidsMode/
-          cd App
-          zip -r ../Kids-Mode.zip KidsMode
+          zip -r Kids-Mode.zip App/KidsMode Media/KidsMode
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:

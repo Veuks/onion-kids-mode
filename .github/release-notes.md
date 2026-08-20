@@ -24,8 +24,8 @@ protected Onion-style launcher for Miyoo Mini and Mini Plus.
 - Simplified video controls with progressive seeking and on-screen seek values.
 - Audio playback with artwork, a progress line, elapsed and remaining time.
 - Audio display power saving: minimum brightness after 10 seconds, then
-  backlight off after another 5 seconds while playback continues. A wakes the
-  display without triggering another action.
+  backlight off after another 5 seconds while playback continues. A, B or MENU
+  wakes the display without triggering another action.
 - Video progress appears while paused or seeking and hides again on playback.
 - Paused-frame capture with MENU + X creates or replaces the selected video's
   carousel image without deleting an existing poster.
