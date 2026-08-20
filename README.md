@@ -230,8 +230,8 @@ Audio playback shows the selected file's artwork, or the nearest inherited
 folder artwork, with a thin progress line and elapsed/remaining time. After
 10 seconds without input the display changes to minimum brightness; five
 seconds later the backlight turns off while playback and the timer continue.
-Press A to restore the display. That first press only wakes it and does not
-pause, resume or seek.
+Press A, B or MENU to restore the display. That first press only wakes it and
+does not pause, resume, seek or leave the player.
 
 During video playback, the same progress line appears while paused and while
 seeking. It disappears after seeking resumes and immediately when A resumes a

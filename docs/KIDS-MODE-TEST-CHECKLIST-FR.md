@@ -45,7 +45,8 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
   de progression, le temps écoulé à gauche et le temps restant à droite.
 - Après 10 secondes sans action, la luminosité passe au minimum. Cinq secondes
   plus tard, le rétroéclairage s'éteint sans interrompre le son ni le timer.
-- Un premier appui sur A rallume uniquement l'écran, sans autre action.
+- Un premier appui sur A, B ou MENU rallume uniquement l'écran, sans reprendre,
+  mettre en pause ni quitter le lecteur.
 - Sur une vidéo, la progression apparaît en pause ou pendant une recherche,
   puis disparaît à la reprise.
 - Une extinction pendant un jeu ou une vidéo reprend le contenu.

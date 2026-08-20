@@ -56,6 +56,7 @@ static long saved_brightness_raw;
 static SDL_Surface *audio_artwork;
 static bool audio_artwork_loaded;
 static bool inside_present;
+static SDLKey wake_key = SDLK_UNKNOWN;
 
 #define AUDIO_DIM_DELAY 10000
 #define AUDIO_OFF_DELAY 15000
@@ -637,8 +638,22 @@ static bool map_event(SDL_Event *event)
     Uint32 now = SDL_GetTicks();
     load_player_config(now);
 
+    // Swallow repeats and the release belonging to a wake press. Otherwise
+    // holding B or MENU for a fraction too long could pause or leave playback
+    // immediately after the backlight comes back on.
+    if (wake_key != SDLK_UNKNOWN) {
+        if (in == wake_key && state == SDL_RELEASED)
+            wake_key = SDLK_UNKNOWN;
+        return true;
+    }
+
     if (audio_mode && backlight_stage != 0) {
-        if (in == SDLK_SPACE && state == SDL_PRESSED) {
+        // A, B and MENU can all wake an audio-only screen. Consume the whole
+        // gesture so the wake press cannot also resume, pause or leave the
+        // player.
+        if ((in == SDLK_SPACE || in == SDLK_LCTRL || in == SDLK_ESCAPE) &&
+            state == SDL_PRESSED) {
+            wake_key = in;
             restore_backlight();
             last_activity = now;
             draw_player_overlay();
