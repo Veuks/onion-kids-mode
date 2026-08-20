@@ -57,6 +57,7 @@ ticker_pid_file=/tmp/kidmode_ticker.pid
 # stack prints noise on stdout, which broke first-line parsing on hardware.
 uiresult=/tmp/kidsmode_ui_result
 lockfloor_result=/tmp/kidsmode_lockfloor_result
+categories_result=/tmp/kidsmode_categories_result
 uilog=/tmp/kidmode_ui_log
 
 # Unified video state. Game state continues to use Onion's native
@@ -115,6 +116,28 @@ config_get() {
     jq -r --arg k "$1" \
         'if has($k) and .[$k] != null then (.[$k] | tostring) else empty end' \
         "$configfile" 2> /dev/null
+}
+
+category_value() {
+    # Missing keys belong to configurations created before this option and
+    # therefore default to visible.
+    [ "$(config_get "show_$1")" = "false" ] && printf '0\n' || printf '1\n'
+}
+
+normalize_active_media_folder() {
+    case "$active_folder" in
+        "$videosdir"/*)
+            relative_folder="${active_folder#"$videosdir"/}"
+            root_folder="${relative_folder%%/*}"
+            root_folder="$(printf '%s' "$root_folder" | tr '[:upper:]' '[:lower:]')"
+            case "$root_folder" in
+                stories) [ "$(category_value stories)" = 1 ] || active_folder="" ;;
+                movies) [ "$(category_value movies)" = 1 ] || active_folder="" ;;
+                series) [ "$(category_value series)" = 1 ] || active_folder="" ;;
+                music) [ "$(category_value music)" = 1 ] || active_folder="" ;;
+            esac
+            ;;
+    esac
 }
 
 is_4_digits() {
@@ -984,13 +1007,17 @@ pick_session_timer() {
 
 parent_menu() {
     while :; do
-        rm -f "$uiresult" "$lockfloor_result"
+        rm -f "$uiresult" "$lockfloor_result" "$categories_result"
         lock_val=0
         [ "$(config_get lock_current_floor)" = "true" ] && lock_val=1
         "$kidui_bin" --parent-menu \
             --remaining "$(timer_remaining)" \
             --floor "$(printf '%s' "$active_floor" | tr '[:lower:]' '[:upper:]')" \
-            --lock-floor "$lock_val" > "$uilog" 2>&1
+            --lock-floor "$lock_val" \
+            --show-stories "$(category_value stories)" \
+            --show-movies "$(category_value movies)" \
+            --show-series "$(category_value series)" \
+            --show-music "$(category_value music)" > "$uilog" 2>&1
         menu_rc=$?
 
         if [ -f "$lockfloor_result" ]; then
@@ -1006,6 +1033,24 @@ parent_menu() {
                     log "Current floor lock turned OFF."
                     ;;
             esac
+        fi
+
+        if [ -f "$categories_result" ]; then
+            while IFS='=' read -r category new_value; do
+                case "$category:$new_value" in
+                    stories:1) config_merge '.show_stories = true' ;;
+                    stories:0) config_merge '.show_stories = false' ;;
+                    movies:1) config_merge '.show_movies = true' ;;
+                    movies:0) config_merge '.show_movies = false' ;;
+                    series:1) config_merge '.show_series = true' ;;
+                    series:0) config_merge '.show_series = false' ;;
+                    music:1) config_merge '.show_music = true' ;;
+                    music:0) config_merge '.show_music = false' ;;
+                esac
+            done < "$categories_result"
+            rm -f "$categories_result"
+            log "Visible media folders updated from the parent menu."
+            normalize_active_media_folder
         fi
 
         if [ "$menu_rc" -ne 5 ] || [ "$(sed -n 1p "$uiresult")" != "MENU" ]; then
@@ -1245,6 +1290,7 @@ play_video() {
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" VC_SCREENSHOT_FILE="" \
             VC_MEDIA_KIND=audio VC_ARTWORK_FILE="$artwork_file" \
+            VC_MEDIA_TITLE="$video_base" \
             VC_DURATION_FILE="$duration_file" \
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
@@ -1389,6 +1435,11 @@ cmd_run() {
             set -- "$@" --video-select "$video_select_path"
         [ -n "$active_folder" ] && set -- "$@" --folder "$active_folder"
         [ "$(config_get lock_current_floor)" = true ] && set -- "$@" --floor-locked
+        set -- "$@" \
+            --show-stories "$(category_value stories)" \
+            --show-movies "$(category_value movies)" \
+            --show-series "$(category_value series)" \
+            --show-music "$(category_value music)"
         if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
             "$kidui_bin" "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         elif [ "$no_pin_recovery" = "1" ]; then

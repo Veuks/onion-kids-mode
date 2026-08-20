@@ -2,5 +2,9 @@
     "pin_hash": "",
     "pin_salt": "",
     "pin_plain": "",
-    "lock_current_floor": false
+    "lock_current_floor": false,
+    "show_stories": true,
+    "show_movies": true,
+    "show_series": true,
+    "show_music": true
 }

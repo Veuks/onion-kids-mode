@@ -96,6 +96,7 @@ typedef enum { SCREEN_CAROUSEL,
                SCREEN_EMPTY,
                SCREEN_TIMESUP,
                SCREEN_MENU,
+               SCREEN_CATEGORIES,
                SCREEN_PICKTIMER,
                SCREEN_CONFIRM_RESTART } Screen;
 
@@ -103,8 +104,15 @@ typedef enum { SCREEN_CAROUSEL,
 #define MENU_ADDTIME 1
 #define MENU_NOTIMER 2
 #define MENU_LOCKFLOOR 3
-#define MENU_BACK 4
+#define MENU_CATEGORIES 4
+#define MENU_BACK 5
+#define CATEGORY_STORIES 0
+#define CATEGORY_MOVIES 1
+#define CATEGORY_SERIES 2
+#define CATEGORY_MUSIC 3
+#define CATEGORY_BACK 4
 #define LOCKFLOOR_RESULT_FILE "/tmp/kidsmode_lockfloor_result"
+#define CATEGORIES_RESULT_FILE "/tmp/kidsmode_categories_result"
 #define FLOOR_STATE_FILE "/tmp/kidsmode_floor"
 #define SELECTION_STATE_FILE "/tmp/kidsmode_selection"
 #define GAME_SELECTION_STATE_FILE "/tmp/kidsmode_game_selection"
@@ -150,6 +158,10 @@ static char game_select_path[STR_MAX] = "";
 static char video_select_path[STR_MAX] = "";
 static int content_offset_y = 0;
 static bool floor_locked = false;
+static bool show_stories = true;
+static bool show_movies = true;
+static bool show_series = true;
+static bool show_music = true;
 
 static SDL_Surface *artwork = NULL;
 // Keep the last decoded image for each floor. Switching floors normally
@@ -746,6 +758,19 @@ static bool findArtworkInFolder(const char *folder, const char *label,
     return false;
 }
 
+static bool rootCategoryVisible(const char *name)
+{
+    if (strcasecmp(name, "Stories") == 0)
+        return show_stories;
+    if (strcasecmp(name, "Movies") == 0)
+        return show_movies;
+    if (strcasecmp(name, "Series") == 0)
+        return show_series;
+    if (strcasecmp(name, "Music") == 0)
+        return show_music;
+    return true;
+}
+
 static bool findNearestFolderArtwork(const char *folder, char *out,
                                      size_t out_size)
 {
@@ -826,6 +851,9 @@ static void loadVideos(void)
         snprintf(fullpath, sizeof(fullpath), "%s/%s", browse_dir, de->d_name);
         struct stat st;
         if (lstat(fullpath, &st) != 0)
+            continue;
+        if (!current_folder[0] && S_ISDIR(st.st_mode) &&
+            !rootCategoryVisible(de->d_name))
             continue;
         bool captionless_folder =
             S_ISDIR(st.st_mode) && de->d_name[0] == '_' &&
@@ -1793,6 +1821,35 @@ static void onLockFloorToggle(void *self)
     }
 }
 
+static void writeCategoryToggle(const char *name, int value)
+{
+    FILE *fp = fopen(CATEGORIES_RESULT_FILE, "a");
+    if (fp != NULL) {
+        fprintf(fp, "%s=%d\n", name, value ? 1 : 0);
+        fclose(fp);
+    }
+}
+
+static void onStoriesToggle(void *self)
+{
+    writeCategoryToggle("stories", ((ListItem *)self)->value);
+}
+
+static void onMoviesToggle(void *self)
+{
+    writeCategoryToggle("movies", ((ListItem *)self)->value);
+}
+
+static void onSeriesToggle(void *self)
+{
+    writeCategoryToggle("series", ((ListItem *)self)->value);
+}
+
+static void onMusicToggle(void *self)
+{
+    writeCategoryToggle("music", ((ListItem *)self)->value);
+}
+
 // The parent menu is a real Onion list: full-width rows, the theme's list
 // font and selection background, and an Apps-menu-style value selector on
 // the "Add play time" row.
@@ -1832,6 +1889,17 @@ static void renderMenu(List *list, int remaining)
                   resource_getFont(LIST), theme()->list.color,
                   g_display.width - 40, TEXT_RIGHT);
 
+    theme_renderFooter(screen);
+    theme_renderStandardHint(screen, "OK", "BACK");
+    theme_renderFooterStatus(screen, list->active_pos + 1, list->item_count);
+}
+
+static void renderCategories(List *list)
+{
+    renderBase();
+    theme_renderHeader(screen, "Visible media folders", false);
+    theme_renderHeaderBattery(screen, batteryPercentage());
+    theme_renderList(screen, list);
     theme_renderFooter(screen);
     theme_renderStandardHint(screen, "OK", "BACK");
     theme_renderFooterStatus(screen, list->active_pos + 1, list->item_count);
@@ -2102,6 +2170,14 @@ int main(int argc, char *argv[])
             menu_remaining = atoi(argv[++i]);
         else if (strcmp(argv[i], "--lock-floor") == 0 && i + 1 < argc)
             menu_lock_floor = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--show-stories") == 0 && i + 1 < argc)
+            show_stories = atoi(argv[++i]) != 0;
+        else if (strcmp(argv[i], "--show-movies") == 0 && i + 1 < argc)
+            show_movies = atoi(argv[++i]) != 0;
+        else if (strcmp(argv[i], "--show-series") == 0 && i + 1 < argc)
+            show_series = atoi(argv[++i]) != 0;
+        else if (strcmp(argv[i], "--show-music") == 0 && i + 1 < argc)
+            show_music = atoi(argv[++i]) != 0;
         else if (strcmp(argv[i], "--floor-locked") == 0)
             floor_locked = true;
         else if (strcmp(argv[i], "--select") == 0 && i + 1 < argc)
@@ -2141,7 +2217,7 @@ int main(int argc, char *argv[])
     int remaining = -1;
 
     // Parent menu list (native Onion list component)
-    List menu_list = list_create(5, LIST_SMALL);
+    List menu_list = list_create(6, LIST_SMALL);
     list_addItem(&menu_list,
                  (ListItem){.label = "Exit Kids Mode",
                             .item_type = ACTION});
@@ -2171,6 +2247,33 @@ int main(int argc, char *argv[])
                                 .value = menu_lock_floor ? 1 : 0,
                                 .action = onLockFloorToggle});
     list_addItem(&menu_list,
+                 (ListItem){.label = "Media folders",
+                            .item_type = ACTION});
+    list_addItem(&menu_list,
+                 (ListItem){.label = "Back", .item_type = ACTION});
+
+    List category_list = list_create(5, LIST_SMALL);
+    list_addItem(&category_list,
+                 (ListItem){.label = "Stories",
+                            .item_type = TOGGLE,
+                            .value = show_stories ? 1 : 0,
+                            .action = onStoriesToggle});
+    list_addItem(&category_list,
+                 (ListItem){.label = "Movies",
+                            .item_type = TOGGLE,
+                            .value = show_movies ? 1 : 0,
+                            .action = onMoviesToggle});
+    list_addItem(&category_list,
+                 (ListItem){.label = "Series",
+                            .item_type = TOGGLE,
+                            .value = show_series ? 1 : 0,
+                            .action = onSeriesToggle});
+    list_addItem(&category_list,
+                 (ListItem){.label = "Music",
+                            .item_type = TOGGLE,
+                            .value = show_music ? 1 : 0,
+                            .action = onMusicToggle});
+    list_addItem(&category_list,
                  (ListItem){.label = "Back", .item_type = ACTION});
 
     if (set_pin_mode) {
@@ -2417,6 +2520,10 @@ int main(int argc, char *argv[])
                         list_activateItem(&menu_list);
                         dirty = true;
                     }
+                    else if (menu_list.active_pos == MENU_CATEGORIES) {
+                        active_screen = SCREEN_CATEGORIES;
+                        dirty = true;
+                    }
                     else if (menu_list.active_pos == MENU_BACK) {
                         exit_code = 1;
                         quit = true;
@@ -2425,6 +2532,43 @@ int main(int argc, char *argv[])
                 case SW_BTN_B:
                     exit_code = 1;
                     quit = true;
+                    break;
+                default:
+                    break;
+                }
+            }
+            else if (active_screen == SCREEN_CATEGORIES) {
+                switch (changed_key) {
+                case SW_BTN_UP:
+                    list_keyUp(&category_list, false);
+                    dirty = true;
+                    break;
+                case SW_BTN_DOWN:
+                    list_keyDown(&category_list, false);
+                    dirty = true;
+                    break;
+                case SW_BTN_LEFT:
+                    if (list_keyLeft(&category_list, false))
+                        dirty = true;
+                    break;
+                case SW_BTN_RIGHT:
+                    if (list_keyRight(&category_list, false))
+                        dirty = true;
+                    break;
+                case SW_BTN_A:
+                case SW_BTN_START:
+                    if (category_list.active_pos == CATEGORY_BACK) {
+                        active_screen = SCREEN_MENU;
+                        dirty = true;
+                    }
+                    else {
+                        list_activateItem(&category_list);
+                        dirty = true;
+                    }
+                    break;
+                case SW_BTN_B:
+                    active_screen = SCREEN_MENU;
+                    dirty = true;
                     break;
                 default:
                     break;
@@ -2587,6 +2731,9 @@ int main(int argc, char *argv[])
             case SCREEN_MENU:
                 renderMenu(&menu_list, menu_remaining);
                 break;
+            case SCREEN_CATEGORIES:
+                renderCategories(&category_list);
+                break;
             case SCREEN_PICKTIMER:
                 renderPickTimer(pin_title, menu_timer_minutes, picker_no_off);
                 break;
@@ -2638,6 +2785,7 @@ int main(int argc, char *argv[])
     if (font_info != NULL)
         TTF_CloseFont(font_info);
     list_free(&menu_list);
+    list_free(&category_list);
     resources_free();
 
     // NB: deliberately no final clear+flip here — an extra page flip on the

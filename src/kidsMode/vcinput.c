@@ -13,12 +13,14 @@ typedef int (*peep_fn)(SDL_Event *, int, SDL_eventaction, Uint32);
 typedef int (*overlay_fn)(SDL_Overlay *, SDL_Rect *);
 typedef int (*flip_fn)(SDL_Surface *);
 typedef void (*update_fn)(SDL_Surface *, Sint32, Sint32, Uint32, Uint32);
+typedef void (*updates_fn)(SDL_Surface *, int, SDL_Rect *);
 static poll_fn real_poll;
 static wait_fn real_wait;
 static peep_fn real_peep;
 static overlay_fn real_overlay;
 static flip_fn real_flip;
 static update_fn real_update;
+static updates_fn real_updates;
 static SDL_Overlay *last_overlay;
 static bool inside_event_call;
 static bool paused;
@@ -29,6 +31,8 @@ static Uint32 menu_pressed_at;
 static SDLKey seek_input = SDLK_UNKNOWN;
 static Uint32 seek_started_at;
 static Uint32 seek_last_step;
+static int pending_seek_events;
+static SDLKey pending_seek_key = SDLK_UNKNOWN;
 static bool clock_ready;
 static Uint32 clock_tick;
 static Uint32 last_save;
@@ -42,11 +46,13 @@ static Uint32 seek_notice_until;
 static bool player_config_ready;
 static bool audio_mode;
 static const char *artwork_file;
+static const char *media_title;
 static const char *duration_file;
 static const char *brightness_file;
 static long duration_seconds;
 static Uint32 last_duration_check;
 static Uint32 progress_until;
+static bool progress_waiting_for_video;
 static Uint32 last_activity;
 static int backlight_stage;
 static long saved_brightness_raw;
@@ -227,6 +233,7 @@ static void load_player_config(Uint32 now)
     const char *kind = getenv("VC_MEDIA_KIND");
     audio_mode = kind != NULL && strcmp(kind, "audio") == 0;
     artwork_file = getenv("VC_ARTWORK_FILE");
+    media_title = getenv("VC_MEDIA_TITLE");
     duration_file = getenv("VC_DURATION_FILE");
     brightness_file = getenv("VC_BRIGHTNESS_FILE");
     const char *brightness = getenv("VC_BRIGHTNESS_RESTORE");
@@ -365,6 +372,31 @@ static const unsigned char *glyph_rows(char c)
     static const unsigned char colon[7] = {0, 4, 4, 0, 4, 4, 0};
     static const unsigned char ess[7] = {0, 0, 15, 16, 14, 1, 30};
     static const unsigned char em[7] = {0, 0, 26, 21, 21, 21, 21};
+    static const unsigned char letters[26][7] = {
+        {14,17,17,31,17,17,17}, {30,17,17,30,17,17,30},
+        {14,17,16,16,16,17,14}, {30,17,17,17,17,17,30},
+        {31,16,16,30,16,16,31}, {31,16,16,30,16,16,16},
+        {14,17,16,23,17,17,15}, {17,17,17,31,17,17,17},
+        {14,4,4,4,4,4,14},      {7,2,2,2,2,18,12},
+        {17,18,20,24,20,18,17}, {16,16,16,16,16,16,31},
+        {17,27,21,21,17,17,17}, {17,25,21,19,17,17,17},
+        {14,17,17,17,17,17,14}, {30,17,17,30,16,16,16},
+        {14,17,17,17,21,18,13}, {30,17,17,30,20,18,17},
+        {15,16,16,14,1,1,30},   {31,4,4,4,4,4,4},
+        {17,17,17,17,17,17,14}, {17,17,17,17,17,10,4},
+        {17,17,17,21,21,21,10}, {17,17,10,4,10,17,17},
+        {17,17,10,4,4,4,4},     {31,1,2,4,8,16,31}};
+    static const unsigned char dot[7] = {0,0,0,0,0,4,4};
+    static const unsigned char apostrophe[7] = {4,4,2,0,0,0,0};
+    static const unsigned char question[7] = {14,17,1,2,4,0,4};
+    if (c == 's')
+        return ess;
+    if (c == 'm')
+        return em;
+    if (c >= 'a' && c <= 'z')
+        c = (char)(c - 'a' + 'A');
+    if (c >= 'A' && c <= 'Z')
+        return letters[c - 'A'];
     switch (c) {
     case '+': return plus;
     case '-': return minus;
@@ -379,8 +411,9 @@ static const unsigned char *glyph_rows(char c)
     case '8': return eight;
     case '9': return nine;
     case ':': return colon;
-    case 's': return ess;
-    case 'm': return em;
+    case '.': return dot;
+    case '\'': return apostrophe;
+    case '?': return question;
     default: return NULL;
     }
 }
@@ -434,6 +467,58 @@ static void draw_rotated_text(SDL_Surface *surface, const char *text,
         draw_glyph(surface, text[length - 1 - i],
                    physical_x + i * 6 * scale, physical_y, scale, black,
                    color);
+}
+
+static void make_audio_title(char *out, size_t out_size, int max_chars)
+{
+    if (out_size == 0)
+        return;
+    out[0] = '\0';
+    if (media_title == NULL || media_title[0] == '\0' || max_chars <= 0)
+        return;
+    size_t used = 0;
+    const unsigned char *p = (const unsigned char *)media_title;
+    while (*p && used + 1 < out_size && (int)used < max_chars) {
+        unsigned char c = *p++;
+        char mapped = '?';
+        if (c < 0x80) {
+            mapped = c == '_' ? ' ' : (char)c;
+            if (mapped >= 'a' && mapped <= 'z')
+                mapped = (char)(mapped - 'a' + 'A');
+        }
+        else if (c == 0xc3 && *p) {
+            // Common French accents, kept readable by their base letter.
+            unsigned char accent = *p++;
+            if (accent == 0xa0 || accent == 0xa2 || accent == 0xa4 ||
+                accent == 0x80 || accent == 0x82 || accent == 0x84)
+                mapped = 'A';
+            else if (accent == 0xa7 || accent == 0x87)
+                mapped = 'C';
+            else if ((accent >= 0xa8 && accent <= 0xab) ||
+                     (accent >= 0x88 && accent <= 0x8b))
+                mapped = 'E';
+            else if ((accent >= 0xac && accent <= 0xaf) ||
+                     (accent >= 0x8c && accent <= 0x8f))
+                mapped = 'I';
+            else if ((accent >= 0xb2 && accent <= 0xb6) ||
+                     (accent >= 0x92 && accent <= 0x96))
+                mapped = 'O';
+            else if ((accent >= 0xb9 && accent <= 0xbc) ||
+                     (accent >= 0x99 && accent <= 0x9c))
+                mapped = 'U';
+        }
+        else {
+            while ((*p & 0xc0) == 0x80)
+                p++;
+        }
+        out[used++] = mapped;
+    }
+    out[used] = '\0';
+    if (*p && used >= 3) {
+        out[used - 3] = '.';
+        out[used - 2] = '.';
+        out[used - 1] = '.';
+    }
 }
 
 static void format_time(long seconds, bool remaining, char *out,
@@ -544,6 +629,16 @@ static void draw_audio_background(SDL_Surface *surface)
                              physical_center_y - audio_artwork->h / 2, 0, 0};
         SDL_BlitSurface(audio_artwork, NULL, surface, &position);
     }
+    int title_scale = surface->w >= 600 ? 2 : 1;
+    int max_chars = (surface->w - 32) / (6 * title_scale);
+    char title[128];
+    make_audio_title(title, sizeof(title), max_chars);
+    if (title[0] != '\0') {
+        int width = text_width(title, title_scale);
+        Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
+        draw_rotated_text(surface, title, (surface->w - width) / 2,
+                          (int)(surface->h * 0.73), title_scale, black, white);
+    }
 }
 
 static void draw_progress_bar(SDL_Surface *surface)
@@ -632,12 +727,17 @@ static void draw_seek_notice(void)
 
 static void set_seek_notice(bool forward, long step)
 {
+    Uint32 now = SDL_GetTicks();
     snprintf(seek_notice, sizeof(seek_notice), "%c%ld%s",
              forward ? '+' : '-', step >= 60 ? step / 60 : step,
              step >= 60 ? "m" : "s");
     seek_notice_forward = forward;
-    seek_notice_until = SDL_GetTicks() + 2000;
-    progress_until = SDL_GetTicks() + 2000;
+    seek_notice_until = now + 2000;
+    progress_until = now + 2000;
+    // A seek can take long enough to consume the display timeout before a
+    // decoded frame reaches the screen. Restart the two-second window on the
+    // first post-seek video frame instead of counting during the seek itself.
+    progress_waiting_for_video = !audio_mode;
     overlay_force_redraw = true;
 }
 
@@ -654,6 +754,8 @@ static bool player_overlay_visible(void)
     if (backlight_stage == 2)
         return false;
     if (audio_mode)
+        return true;
+    if (progress_waiting_for_video)
         return true;
     if (duration_seconds > 0 && (paused || now < progress_until))
         return true;
@@ -683,7 +785,9 @@ static void draw_player_overlay(void)
 
 static bool progressive_seek(SDL_Event *event, Uint32 now)
 {
-    if (seek_input != SDLK_LEFT && seek_input != SDLK_RIGHT)
+    bool horizontal = seek_input == SDLK_LEFT || seek_input == SDLK_RIGHT;
+    bool vertical = seek_input == SDLK_UP || seek_input == SDLK_DOWN;
+    if (!horizontal && !vertical)
         return false;
     if (seek_last_step != 0 && now - seek_last_step < 450)
         return false;
@@ -691,7 +795,20 @@ static bool progressive_seek(SDL_Event *event, Uint32 now)
     Uint32 held = now - seek_started_at;
     SDLKey out;
     long step;
-    if (held < 1500) {
+    if (vertical && held < 1500) {
+        // FFplay has a native one-minute key but no five-minute key. Emit
+        // five native steps; position_seconds is adjusted once for the whole
+        // logical jump so the displayed time remains exact.
+        out = seek_input == SDLK_DOWN ? SDLK_DOWN : SDLK_UP;
+        pending_seek_key = out;
+        pending_seek_events = 4;
+        step = 300;
+    }
+    else if (vertical) {
+        out = seek_input == SDLK_DOWN ? SDLK_LALT : SDLK_LSHIFT;
+        step = 600;
+    }
+    else if (held < 1500) {
         out = seek_input == SDLK_LEFT ? SDLK_LEFT : SDLK_RIGHT;
         step = 10;
     }
@@ -702,14 +819,26 @@ static bool progressive_seek(SDL_Event *event, Uint32 now)
         step = 60;
     }
 
-    position_seconds += seek_input == SDLK_LEFT ? -step : step;
+    bool backwards = seek_input == SDLK_LEFT || seek_input == SDLK_DOWN;
+    position_seconds += backwards ? -step : step;
     if (position_seconds < 0)
         position_seconds = 0;
     save_position();
     save_checkpoint();
-    set_seek_notice(seek_input == SDLK_RIGHT, step);
+    set_seek_notice(!backwards, step);
     seek_last_step = now;
     key(event, out, SDL_PRESSED);
+    return true;
+}
+
+static bool emit_pending_seek(SDL_Event *event)
+{
+    if (pending_seek_events <= 0 || pending_seek_key == SDLK_UNKNOWN)
+        return false;
+    key(event, pending_seek_key, SDL_PRESSED);
+    pending_seek_events--;
+    if (pending_seek_events == 0)
+        pending_seek_key = SDLK_UNKNOWN;
     return true;
 }
 
@@ -776,7 +905,8 @@ static bool map_event(SDL_Event *event)
         return false;
     }
 
-    if (menu_down && (in == SDLK_LEFT || in == SDLK_RIGHT)) {
+    if (menu_down && (in == SDLK_LEFT || in == SDLK_RIGHT ||
+                      in == SDLK_UP || in == SDLK_DOWN)) {
         menu_used = true;
         if (state == SDL_RELEASED) {
             if (seek_input == in)
@@ -805,22 +935,9 @@ static bool map_event(SDL_Event *event)
     }
 
     if (menu_down && state == SDL_PRESSED) {
-        SDLKey out = SDLK_UNKNOWN;
         // Any key used while MENU is held makes this a combination, even
         // when FFplay does not need the key (notably hardware volume keys).
         menu_used = true;
-        if (in == SDLK_UP) out = SDLK_LSHIFT;       /* native X: +600 s */
-        if (in == SDLK_DOWN) out = SDLK_LALT;        /* native Y: -600 s */
-        if (out != SDLK_UNKNOWN) {
-            if (in == SDLK_UP) position_seconds += 600;
-            if (in == SDLK_DOWN) position_seconds -= 600;
-            if (position_seconds < 0) position_seconds = 0;
-            save_position();
-            save_checkpoint();
-            set_seek_notice(in == SDLK_UP, 600);
-            key(event, out, SDL_PRESSED);
-            return false;
-        }
     }
 
     if (in == SDLK_SPACE) { /* Miyoo A: resume only */
@@ -829,6 +946,8 @@ static bool map_event(SDL_Event *event)
             last_activity = now;
             paused = false;
             progress_until = now + 2000;
+            seek_notice_until = now + 2000;
+            progress_waiting_for_video = !audio_mode;
             overlay_force_redraw = true;
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
@@ -866,7 +985,7 @@ int SDL_PollEvent(SDL_Event *event)
         if (!map_event(event))
             return 1;
     }
-    if (progressive_seek(event, SDL_GetTicks()))
+    if (emit_pending_seek(event) || progressive_seek(event, SDL_GetTicks()))
         return 1;
     return 0;
 }
@@ -888,7 +1007,7 @@ int SDL_WaitEvent(SDL_Event *event)
         inside_event_call = false;
         if (got && !map_event(event))
             return 1;
-        if (progressive_seek(event, SDL_GetTicks()))
+        if (emit_pending_seek(event) || progressive_seek(event, SDL_GetTicks()))
             return 1;
         SDL_Delay(10);
     }
@@ -917,9 +1036,11 @@ int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
             kept++;
         }
     }
-    if (action == SDL_GETEVENT && kept < numevents &&
-        progressive_seek(&events[kept], SDL_GetTicks()))
-        kept++;
+    if (action == SDL_GETEVENT && kept < numevents) {
+        if (emit_pending_seek(&events[kept]) ||
+            progressive_seek(&events[kept], SDL_GetTicks()))
+            kept++;
+    }
     return kept;
 }
 
@@ -943,10 +1064,21 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
     last_overlay = overlay;
     int result = real_overlay(overlay, dstrect);
     update_clock();
+    if (progress_waiting_for_video) {
+        Uint32 now = SDL_GetTicks();
+        progress_until = now + 2000;
+        if (seek_notice[0] != '\0')
+            seek_notice_until = now + 2000;
+        progress_waiting_for_video = false;
+    }
     // Keep video controls stable instead of repainting them at the frame
     // rate or at every clock tick. Their fully composed frame changes only
     // after an explicit control action; repeated updates caused flicker.
-    if (player_overlay_needs_redraw())
+    // The Miyoo YUV plane is refreshed for every decoded frame and can cover
+    // the RGB controls plane. Reapply the already-composed controls after
+    // each video frame for their full lifetime. Native RGB refresh paths are
+    // suppressed below, so the two planes no longer alternate or flicker.
+    if (player_overlay_visible())
         draw_player_overlay();
     return result;
 }
@@ -992,6 +1124,45 @@ void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
         overlay_force_redraw = false;
     }
     inside_present = false;
+}
+
+void SDL_UpdateRects(SDL_Surface *surface, int numrects, SDL_Rect *rects)
+{
+    if (!real_updates)
+        real_updates = (updates_fn)dlsym(RTLD_NEXT, "SDL_UpdateRects");
+    if (!real_updates)
+        return;
+    if (inside_present) {
+        real_updates(surface, numrects, rects);
+        return;
+    }
+
+    load_player_config(SDL_GetTicks());
+    if (!audio_mode && !player_overlay_visible()) {
+        real_updates(surface, numrects, rects);
+        return;
+    }
+
+    // FFplay's audio waveform uses the plural SDL update entry point on
+    // some Onion builds. Block it exactly like SDL_UpdateRect/SDL_Flip and
+    // present one complete artwork/progress frame instead.
+    if (audio_mode) {
+        inside_present = true;
+        update_clock();
+        if (player_overlay_needs_redraw()) {
+            paint_player_overlay(surface);
+            SDL_Rect full = {0, 0, surface->w, surface->h};
+            real_updates(surface, 1, &full);
+            last_presented_second = position_seconds;
+            overlay_force_redraw = false;
+        }
+        inside_present = false;
+        return;
+    }
+
+    update_clock();
+    if (player_overlay_needs_redraw())
+        draw_player_overlay();
 }
 
 int SDL_Flip(SDL_Surface *surface)
