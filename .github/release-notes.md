@@ -11,8 +11,9 @@ protected Onion-style launcher for Miyoo Mini and Mini Plus.
 - Recursive folders for categories such as Films, Series and Songs. A opens
   the selected folder and B returns exactly one level.
 - Local artwork folders such as `Films/Imgs` and
-  `Series/Ulysses 31/Imgs`. Folder covers apply only to the folder itself;
-  videos without an exact matching image keep their automatic black card.
+  `Series/Ulysses 31/Imgs`. Videos without an exact matching image reuse their
+  containing folder's cover, while exact movie or episode artwork takes
+  priority.
 - Every folder level remembers and restores its own last selected item.
 - Automatic restoration of the real shutdown state: running content resumes,
   while a carousel shutdown returns to the same selection. Games and Videos
