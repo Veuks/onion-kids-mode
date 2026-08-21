@@ -29,6 +29,8 @@ static bool paused;
 static bool menu_down;
 static bool menu_used;
 static bool screenshot_down;
+static bool l2_down;
+static bool r2_down;
 static Uint32 menu_pressed_at;
 static SDLKey seek_input = SDLK_UNKNOWN;
 static Uint32 seek_started_at;
@@ -66,6 +68,11 @@ static bool inside_present;
 static SDLKey wake_key = SDLK_UNKNOWN;
 static long last_presented_second = -1;
 static bool overlay_force_redraw = true;
+static bool audio_progress_ready;
+static char last_elapsed_text[24];
+static char last_remaining_text[24];
+static int last_progress_knob = -1;
+static bool seek_notice_drawn;
 
 #define AUDIO_DIM_DELAY 10000
 #define AUDIO_OFF_DELAY 15000
@@ -651,6 +658,20 @@ static void draw_audio_background(SDL_Surface *surface)
     }
 }
 
+static void draw_progress_knob(SDL_Surface *surface, int knob_x, int bar_y,
+                               Uint32 color)
+{
+    int physical_x = surface->w - knob_x;
+    int physical_y = surface->h - bar_y;
+    const int radius = 5;
+    for (int dy = -radius; dy <= radius; dy++)
+        for (int dx = -radius; dx <= radius; dx++)
+            if (dx * dx + dy * dy <= radius * radius) {
+                SDL_Rect pixel = {physical_x + dx, physical_y + dy, 1, 1};
+                SDL_FillRect(surface, &pixel, color);
+            }
+}
+
 static void draw_progress_bar(SDL_Surface *surface)
 {
     if (duration_seconds <= 0)
@@ -698,15 +719,50 @@ static void draw_progress_bar(SDL_Surface *surface)
     draw_logical_rect(surface, bar_x, bar_y, bar_w, 1, accent);
 
     int knob_x = bar_x + (int)((long long)bar_w * elapsed / duration_seconds);
-    int physical_x = surface->w - knob_x;
-    int physical_y = surface->h - bar_y;
-    const int radius = 5;
-    for (int dy = -radius; dy <= radius; dy++)
-        for (int dx = -radius; dx <= radius; dx++)
-            if (dx * dx + dy * dy <= radius * radius) {
-                SDL_Rect pixel = {physical_x + dx, physical_y + dy, 1, 1};
-                SDL_FillRect(surface, &pixel, accent);
-            }
+    draw_progress_knob(surface, knob_x, bar_y, accent);
+    if (audio_mode) {
+        snprintf(last_elapsed_text, sizeof(last_elapsed_text), "%s",
+                 elapsed_text);
+        snprintf(last_remaining_text, sizeof(last_remaining_text), "%s",
+                 remaining_text);
+        last_progress_knob = knob_x;
+        audio_progress_ready = true;
+    }
+}
+
+static void update_changed_text(SDL_Surface *surface, const char *old_text,
+                                const char *new_text, int right_edge,
+                                int logical_y, int scale, Uint32 black,
+                                Uint32 white)
+{
+    int old_len = (int)strlen(old_text);
+    int new_len = (int)strlen(new_text);
+    int old_width = text_width(old_text, scale);
+    int new_width = text_width(new_text, scale);
+    int old_x = right_edge >= 0 ? right_edge - old_width : 16;
+    int new_x = right_edge >= 0 ? right_edge - new_width : 16;
+
+    if (old_len != new_len) {
+        int left = old_x < new_x ? old_x : new_x;
+        int right = old_x + old_width > new_x + new_width
+                        ? old_x + old_width
+                        : new_x + new_width;
+        draw_logical_rect(surface, left - 1, logical_y - 1,
+                          right - left + 2, 7 * scale + 2, black);
+        draw_rotated_text(surface, new_text, new_x, logical_y, scale, black,
+                          white);
+        return;
+    }
+
+    for (int i = 0; i < new_len; i++) {
+        if (old_text[i] == new_text[i])
+            continue;
+        int x = new_x + i * 6 * scale;
+        draw_logical_rect(surface, x - 1, logical_y - 1,
+                          6 * scale + 2, 7 * scale + 2, black);
+        char digit[2] = {new_text[i], '\0'};
+        draw_rotated_text(surface, digit, x, logical_y, scale, black, white);
+    }
 }
 
 static void draw_audio_progress_only(void)
@@ -719,46 +775,126 @@ static void draw_audio_progress_only(void)
     if (surface == NULL)
         return;
 
-    // Progress and seek feedback occupy the physical top 100 pixels on the
-    // rotated Miyoo framebuffer. Updating only this strip leaves the cover
-    // and title completely untouched instead of making the whole audio
-    // screen flash each second.
+    if (duration_seconds <= 0)
+        return;
+
+    long elapsed = position_seconds;
+    if (elapsed < 0)
+        elapsed = 0;
+    if (elapsed > duration_seconds)
+        elapsed = duration_seconds;
+    long remaining = duration_seconds - elapsed;
+    char elapsed_text[24];
+    char remaining_text[24];
+    format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
+    format_time(remaining, true, remaining_text, sizeof(remaining_text));
+
+    int scale = surface->w >= 600 ? 2 : 1;
+    int logical_y = surface->h - 39;
+    int bar_y = surface->h - 28;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
-    SDL_Rect strip = {0, 0, surface->w, 100};
-    SDL_FillRect(surface, &strip, black);
-    draw_progress_bar(surface);
+    Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
+    Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
+
+    if (!audio_progress_ready) {
+        draw_progress_bar(surface);
+        draw_seek_notice();
+        return;
+    }
+
+    update_changed_text(surface, last_elapsed_text, elapsed_text, -1,
+                        logical_y, scale, black, white);
+    update_changed_text(surface, last_remaining_text, remaining_text,
+                        surface->w - 16, logical_y, scale, black, white);
+
+    int elapsed_width = text_width(elapsed_text, scale);
+    int remaining_width = text_width(remaining_text, scale);
+    int bar_x = 16 + elapsed_width + 16;
+    int bar_right = surface->w - 16 - remaining_width - 16;
+    int bar_w = bar_right - bar_x;
+    if (bar_w < surface->w / 4) {
+        bar_x = (int)(surface->w * 0.24);
+        bar_w = surface->w - bar_x * 2;
+    }
+    int knob_x = bar_x + (int)((long long)bar_w * elapsed / duration_seconds);
+    bool layout_changed = strlen(last_elapsed_text) != strlen(elapsed_text) ||
+                          strlen(last_remaining_text) != strlen(remaining_text);
+    if (layout_changed) {
+        int old_elapsed_width = text_width(last_elapsed_text, scale);
+        int old_remaining_width = text_width(last_remaining_text, scale);
+        int old_bar_x = 16 + old_elapsed_width + 16;
+        int old_bar_right = surface->w - 16 - old_remaining_width - 16;
+        int old_bar_w = old_bar_right - old_bar_x;
+        if (old_bar_w < surface->w / 4) {
+            old_bar_x = (int)(surface->w * 0.24);
+            old_bar_w = surface->w - old_bar_x * 2;
+        }
+        int clear_left = old_bar_x < bar_x ? old_bar_x : bar_x;
+        int clear_right = old_bar_x + old_bar_w > bar_x + bar_w
+                              ? old_bar_x + old_bar_w
+                              : bar_x + bar_w;
+        draw_logical_rect(surface, clear_left - 7, bar_y - 7,
+                          clear_right - clear_left + 14, 15, black);
+        draw_logical_rect(surface, bar_x, bar_y - 1, bar_w, 3, black);
+        draw_logical_rect(surface, bar_x, bar_y, bar_w, 1, accent);
+        draw_progress_knob(surface, knob_x, bar_y, accent);
+    }
+    else if (last_progress_knob >= 0 && knob_x != last_progress_knob) {
+        const int radius = 6;
+        draw_logical_rect(surface, last_progress_knob - radius,
+                          bar_y - radius, radius * 2 + 1,
+                          radius * 2 + 1, black);
+        draw_logical_rect(surface, last_progress_knob - radius,
+                          bar_y - 1, radius * 2 + 1, 3, black);
+        draw_logical_rect(surface, last_progress_knob - radius,
+                          bar_y, radius * 2 + 1, 1, accent);
+        draw_progress_knob(surface, knob_x, bar_y, accent);
+    }
     draw_seek_notice();
-    bool was_inside_present = inside_present;
-    inside_present = true;
-    update_screen(surface, 0, 0, surface->w, 100);
-    inside_present = was_inside_present;
+    snprintf(last_elapsed_text, sizeof(last_elapsed_text), "%s", elapsed_text);
+    snprintf(last_remaining_text, sizeof(last_remaining_text), "%s",
+             remaining_text);
+    last_progress_knob = knob_x;
+    // Direct framebuffer writes are deliberately not followed by an SDL
+    // refresh: the Miyoo driver can turn even a tiny update into a full-page
+    // flip, which was the remaining source of random whole-screen flashes.
     last_presented_second = position_seconds;
 }
 
 static void draw_seek_notice(void)
 {
-    SDL_Surface *surface = SDL_GetVideoSurface();
+    SDL_Surface *surface = hardware_surface != NULL
+                               ? hardware_surface
+                               : SDL_GetVideoSurface();
     if (!surface)
         return;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
+    int scale = surface->w >= 600 ? 3 : 2;
+    int length = (int)strlen(seek_notice);
+    int width = length > 0 ? length * 6 * scale - scale : 0;
+    int x = seek_notice_forward ? 18 : surface->w - width - 18;
+    int y = 70;
     if (!seek_notice[0] || SDL_GetTicks() >= seek_notice_until) {
+        if (audio_mode && seek_notice_drawn && width > 0) {
+            SDL_Rect old_notice = {x - 1, y - 1, width + 2,
+                                   7 * scale + 2};
+            SDL_FillRect(surface, &old_notice, black);
+        }
+        seek_notice_drawn = false;
         seek_notice[0] = '\0';
         return;
     }
-
-    int scale = surface->w >= 600 ? 3 : 2;
-    int length = (int)strlen(seek_notice);
-    int width = length * 6 * scale - scale;
+    if (audio_mode && seek_notice_drawn)
+        return;
     // Coordinates are pre-rotated as well: logical top-left becomes the
     // physical bottom-right, and logical top-right becomes bottom-left.
-    int x = seek_notice_forward ? 18 : surface->w - width - 18;
     // Leave the lowest row free for the progress line and its time labels.
-    int y = 70;
     Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
     for (int i = 0; i < length; i++)
         draw_glyph(surface, seek_notice[length - 1 - i],
                    x + i * 6 * scale, y, scale,
                    black, white);
+    seek_notice_drawn = true;
 }
 
 static void set_seek_notice(bool forward, long step)
@@ -768,13 +904,19 @@ static void set_seek_notice(bool forward, long step)
              forward ? '+' : '-', step >= 60 ? step / 60 : step,
              step >= 60 ? "m" : "s");
     seek_notice_forward = forward;
+    seek_notice_drawn = false;
     seek_notice_until = now + 2000;
     progress_until = now + 2000;
     // A seek can take long enough to consume the display timeout before a
     // decoded frame reaches the screen. Restart the two-second window on the
     // first post-seek video frame instead of counting during the seek itself.
     progress_waiting_for_video = !audio_mode;
-    overlay_force_redraw = true;
+    if (audio_mode) {
+        overlay_force_redraw = false;
+        draw_audio_progress_only();
+    }
+    else
+        overlay_force_redraw = true;
 }
 
 static void paint_player_overlay(SDL_Surface *surface)
@@ -796,16 +938,6 @@ static bool player_overlay_visible(void)
     if (duration_seconds > 0 && (paused || now < progress_until))
         return true;
     return seek_notice[0] != '\0' && now < seek_notice_until;
-}
-
-static bool player_overlay_needs_redraw(void)
-{
-    if (overlay_force_redraw)
-        return true;
-    // Audio time must advance once per second. For video, keep the exact same
-    // composed controls frame on screen for its whole two-second lifetime.
-    // Repainting it every second over the hardware YUV plane caused flicker.
-    return audio_mode && position_seconds != last_presented_second;
 }
 
 static void draw_player_overlay(void)
@@ -912,15 +1044,20 @@ static bool map_event(SDL_Event *event)
             wake_key = in;
             restore_backlight();
             last_activity = now;
-            draw_player_overlay();
+            if (audio_mode)
+                draw_audio_progress_only();
+            else
+                draw_player_overlay();
         }
         return true;
     }
     if (state == SDL_PRESSED)
         last_activity = now;
 
-    if (in == SDLK_LSHIFT && state == SDL_RELEASED)
-        screenshot_down = false;
+    if (in == SDLK_TAB)
+        l2_down = state != SDL_RELEASED;
+    if (in == SDLK_BACKSPACE)
+        r2_down = state != SDL_RELEASED;
 
     if (in == SDLK_ESCAPE) {
         if (state == SDL_PRESSED) {
@@ -968,13 +1105,15 @@ static bool map_event(SDL_Event *event)
         return true;
     }
 
-    if (menu_down && in == SDLK_LSHIFT) { /* Miyoo X: capture paused frame */
+    if (menu_down && (in == SDLK_TAB || in == SDLK_BACKSPACE)) {
         menu_used = true;
-        if (state == SDL_PRESSED && !screenshot_down) {
+        if (l2_down && r2_down && !screenshot_down) {
             screenshot_down = true;
             if (paused)
                 save_paused_frame();
         }
+        if (!l2_down || !r2_down)
+            screenshot_down = false;
         return true;
     }
 
@@ -992,7 +1131,9 @@ static bool map_event(SDL_Event *event)
             progress_until = now + 2000;
             seek_notice_until = now + 2000;
             progress_waiting_for_video = !audio_mode;
-            overlay_force_redraw = true;
+            overlay_force_redraw = !audio_mode;
+            if (audio_mode)
+                draw_audio_progress_only();
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
         }
@@ -1002,8 +1143,11 @@ static bool map_event(SDL_Event *event)
         if (state == SDL_PRESSED && !paused) {
             paused = true;
             last_activity = now;
-            overlay_force_redraw = true;
-            draw_player_overlay();
+            overlay_force_redraw = !audio_mode;
+            if (audio_mode)
+                draw_audio_progress_only();
+            else
+                draw_player_overlay();
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
         }
@@ -1127,8 +1271,6 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
         // over our audio UI and can leave an inverted layer after FFplay exits.
         // Suppress every hardware-video frame while in audio mode.
         update_clock();
-        if (player_overlay_needs_redraw())
-            draw_player_overlay();
         return 0;
     }
     if (!real_overlay)
@@ -1176,11 +1318,7 @@ void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
     // Do not present those intermediate frames: they caused alternating
     // orientations, flicker and unnecessary load. Present our stable audio
     // screen only when its displayed second or state actually changes.
-    inside_present = true;
     update_clock();
-    if (player_overlay_needs_redraw())
-        draw_player_overlay();
-    inside_present = false;
 }
 
 void SDL_UpdateRects(SDL_Surface *surface, int numrects, SDL_Rect *rects)
@@ -1203,11 +1341,7 @@ void SDL_UpdateRects(SDL_Surface *surface, int numrects, SDL_Rect *rects)
     // FFplay's audio waveform uses the plural SDL update entry point on
     // some Onion builds. Block it exactly like SDL_UpdateRect/SDL_Flip and
     // present one complete artwork/progress frame instead.
-    inside_present = true;
     update_clock();
-    if (player_overlay_needs_redraw())
-        draw_player_overlay();
-    inside_present = false;
 }
 
 int SDL_Flip(SDL_Surface *surface)
@@ -1223,16 +1357,9 @@ int SDL_Flip(SDL_Surface *surface)
     if (!audio_mode)
         return real_flip(surface);
 
-    inside_present = true;
     update_clock();
-    if (!player_overlay_needs_redraw()) {
-        inside_present = false;
-        return 0;
-    }
     // The surface being flipped is the private software visualizer surface;
-    // never present it. Refresh the independent hardware UI instead.
-    draw_player_overlay();
-    int result = 0;
-    inside_present = false;
-    return result;
+    // never present it. update_clock performs any tiny direct framebuffer
+    // changes needed for the duration digits and progress knob.
+    return 0;
 }
