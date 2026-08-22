@@ -135,6 +135,7 @@ typedef enum { SCREEN_CAROUSEL,
 #define EPISODE_MAX_LINES 6
 #define EPISODE_MAX_WORDS 128
 #define BIG_VALUE_FONT_SIZE 48
+#define RESTART_TITLE_FONT_SIZE 26
 // Longer helper sentences use the theme's LIST font (the readable upright
 // face Onion pairs with its display font in the Apps menu) at a controlled
 // size — theme hint fonts are display faces sized for short labels
@@ -264,6 +265,7 @@ static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
 // episode titles. Most titles keep the normal large carousel font.
 static TTF_Font *font_episode_sizes[GAME_LABEL_FONT_SIZE + 1] = {NULL};
 static TTF_Font *font_bigvalue = NULL;  // theme title font, large
+static TTF_Font *font_restart_title = NULL; // restart dialog, medium-large
 static TTF_Font *font_info = NULL;      // theme list font, sentence-sized
 
 // Fonts are loaded lazily (on first actual use) rather than all three
@@ -304,6 +306,15 @@ static TTF_Font *getFontBigValue(void)
         font_bigvalue = theme_loadFont(theme()->path, theme()->title.font,
                                        BIG_VALUE_FONT_SIZE);
     return font_bigvalue;
+}
+
+static TTF_Font *getFontRestartTitle(void)
+{
+    if (font_restart_title == NULL)
+        font_restart_title =
+            theme_loadFont(theme()->path, theme()->title.font,
+                           RESTART_TITLE_FONT_SIZE);
+    return font_restart_title;
 }
 
 static TTF_Font *getFontInfo(void)
@@ -2415,10 +2426,12 @@ static void renderConfirmRestart(const char *label, int remaining)
     // important destructive action too easy to overlook.
     theme_renderDialog(screen, " ", message, true);
     SDL_Surface *pop_bg = resource_getSurface(POP_BG);
+    // The native +25 position hugs the upper edge. +50 centres this heading
+    // in the clear space above the selected content's title.
     int title_y = (g_display.height - pop_bg->h) / 2 +
-                  (int)(25.0 * g_scale);
+                  (int)(50.0 * g_scale);
     drawText("Start over?", g_display.width / 2, title_y,
-             getFontBigValue(), theme()->total.color, dialog_w);
+             getFontRestartTitle(), theme()->total.color, dialog_w);
 }
 
 static void renderTimesUp(void)
@@ -3415,6 +3428,8 @@ int main(int argc, char *argv[])
     }
     if (font_bigvalue != NULL)
         TTF_CloseFont(font_bigvalue);
+    if (font_restart_title != NULL)
+        TTF_CloseFont(font_restart_title);
     if (font_info != NULL)
         TTF_CloseFont(font_info);
     list_free(&menu_list);
