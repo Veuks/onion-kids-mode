@@ -43,7 +43,8 @@ jobs:
           name: Kids-Mode-build
           path: |
             App
-            Media
+            Media/KidsMode/Main
+            Media/KidsMode/Guest
           if-no-files-found: error
 
   release:
@@ -61,7 +62,8 @@ jobs:
         run: |
           chmod +x App/KidsMode/bin/kidui App/KidsMode/*.sh
           cp README.md App/KidsMode/
-          zip -r Kids-Mode.zip App/KidsMode Media/KidsMode
+          zip -r Kids-Mode.zip App/KidsMode \
+            Media/KidsMode/Main Media/KidsMode/Guest
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
