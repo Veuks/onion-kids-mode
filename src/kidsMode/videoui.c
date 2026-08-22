@@ -266,6 +266,7 @@ static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
 static TTF_Font *font_episode_sizes[GAME_LABEL_FONT_SIZE + 1] = {NULL};
 static TTF_Font *font_bigvalue = NULL;  // theme title font, large
 static TTF_Font *font_restart_title = NULL; // restart dialog, medium-large
+static TTF_Font *font_restart_label = NULL; // selected item, italic
 static TTF_Font *font_info = NULL;      // theme list font, sentence-sized
 
 // Fonts are loaded lazily (on first actual use) rather than all three
@@ -315,6 +316,17 @@ static TTF_Font *getFontRestartTitle(void)
             theme_loadFont(theme()->path, theme()->title.font,
                            theme()->title.size + RESTART_TITLE_FONT_OFFSET);
     return font_restart_title;
+}
+
+static TTF_Font *getFontRestartLabel(void)
+{
+    if (font_restart_label == NULL) {
+        font_restart_label = theme_loadFont(
+            theme()->path, theme()->title.font, theme()->title.size);
+        if (font_restart_label != NULL)
+            TTF_SetFontStyle(font_restart_label, TTF_STYLE_ITALIC);
+    }
+    return font_restart_label;
 }
 
 static TTF_Font *getFontInfo(void)
@@ -2404,22 +2416,31 @@ static void renderConfirmRestart(const char *label, int remaining)
 
     TTF_Font *title_font = resource_getFont(TITLE);
     int dialog_w = (int)(DIALOG_WIDTH * g_scale);
-    char wrapped_label[STR_MAX];
+    char label_line1[STR_MAX] = "";
+    char label_line2[STR_MAX] = "";
+    bool label_two_lines = false;
     int w = 0, h = 0;
     TTF_SizeUTF8(title_font, label, &w, &h);
     if (w <= dialog_w) {
-        snprintf(wrapped_label, sizeof(wrapped_label), "%s", label);
+        snprintf(label_line1, sizeof(label_line1), "%s", label);
     }
     else {
-        char l1[STR_MAX], l2[STR_MAX];
-        splitTwoLines(label, title_font, l1, sizeof(l1), l2, sizeof(l2));
-        snprintf(wrapped_label, sizeof(wrapped_label), "%s\n%s", l1, l2);
+        label_two_lines = true;
+        splitTwoLines(label, title_font, label_line1, sizeof(label_line1),
+                      label_line2, sizeof(label_line2));
     }
 
     char message[STR_MAX];
-    snprintf(message, sizeof(message),
-             "%s\n\nStart from the beginning?\nSaved progress will be reset.",
-             wrapped_label);
+    if (current_floor == FLOOR_GAMES)
+        snprintf(message, sizeof(message),
+                 label_two_lines
+                     ? " \n \n\nStart from the beginning?\nIn-game saves are kept."
+                     : " \n\nStart from the beginning?\nIn-game saves are kept.");
+    else
+        snprintf(message, sizeof(message),
+                 label_two_lines
+                     ? " \n \n\nStart from the beginning?\nSaved progress will be reset."
+                     : " \n\nStart from the beginning?\nSaved progress will be reset.");
     // Let the native dialog draw its panel, message and button hints, then
     // render this short confirmation title with the larger display face.
     // The normal Onion dialog title is deliberately compact and made this
@@ -2432,6 +2453,23 @@ static void renderConfirmRestart(const char *label, int remaining)
                   (int)(50.0 * g_scale);
     drawText("Start over?", g_display.width / 2, title_y,
              getFontRestartTitle(), theme()->total.color, dialog_w);
+
+    // Reserve the label's original lines in the native textbox above, then
+    // repaint only those lines with an italic font. This keeps Onion's exact
+    // message spacing and works identically for games, video and audio.
+    int line_height = (int)(1.2 * TTF_FontLineSkip(title_font));
+    int paragraph_spacing = (int)(0.5 * TTF_FontLineSkip(title_font));
+    int visible_lines = label_two_lines ? 4 : 3;
+    int textbox_height = visible_lines * line_height + paragraph_spacing;
+    int first_label_y = (g_display.height - pop_bg->h) / 2 +
+                        (int)(160.0 * g_scale) - textbox_height / 2 +
+                        line_height / 2;
+    drawText(label_line1, g_display.width / 2, first_label_y,
+             getFontRestartLabel(), theme()->grid.color, dialog_w);
+    if (label_two_lines)
+        drawText(label_line2, g_display.width / 2,
+                 first_label_y + line_height, getFontRestartLabel(),
+                 theme()->grid.color, dialog_w);
 }
 
 static void renderTimesUp(void)
@@ -3428,6 +3466,8 @@ int main(int argc, char *argv[])
         TTF_CloseFont(font_bigvalue);
     if (font_restart_title != NULL)
         TTF_CloseFont(font_restart_title);
+    if (font_restart_label != NULL)
+        TTF_CloseFont(font_restart_label);
     if (font_info != NULL)
         TTF_CloseFont(font_info);
     list_free(&menu_list);
