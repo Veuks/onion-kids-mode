@@ -328,6 +328,7 @@ static TTF_Font *getFontInfo(void)
 // Solid panels drawn over the theme background (PIN boxes, art fallback).
 // Fixed dark slate so white text stays readable on any theme.
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
+static const SDL_Color COLOR_RESTART_RED = {235, 64, 64};
 static const uint32_t FALLBACK_BG = 0x1A1B26; // if the theme background fails
 static const uint32_t PIN_BOX_COLOR = 0x2E3350;
 static const uint32_t PIN_BOX_ACTIVE = 0x4A5480;
@@ -2502,7 +2503,7 @@ static void renderConfirmRestart(const char *label, int remaining)
     int title_y = (g_display.height - pop_bg->h) / 2 +
                   (int)(50.0 * g_scale);
     drawText("Start over?", g_display.width / 2, title_y,
-             getFontRestartTitle(), theme()->total.color, dialog_w);
+             getFontRestartTitle(), COLOR_RESTART_RED, dialog_w);
 
     // Reserve the label's original lines in the native textbox above, then
     // repaint only those lines with an italic font. This keeps Onion's exact
@@ -2513,7 +2514,7 @@ static void renderConfirmRestart(const char *label, int remaining)
     int textbox_height = visible_lines * line_height + paragraph_spacing;
     int first_label_y = (g_display.height - pop_bg->h) / 2 +
                         (int)(160.0 * g_scale) - textbox_height / 2 +
-                        line_height / 2;
+                        line_height / 2 - (int)(8.0 * g_scale);
     drawSlantedText(label_line1, g_display.width / 2, first_label_y,
                     title_font, theme()->grid.color, dialog_w);
     if (label_two_lines)
