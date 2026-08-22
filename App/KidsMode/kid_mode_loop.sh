@@ -31,6 +31,7 @@ favfile=/mnt/SDCARD/Roms/favourite.json
 # Backups and state live OUTSIDE the app folder so that replacing
 # App/KidsMode during an update can never delete them.
 backupdir=/mnt/SDCARD/Saves/KidsMode
+favorites_repair_stamp="$backupdir/favorites_repaired.stamp"
 
 racfg=/mnt/SDCARD/RetroArch/.retroarch/retroarch.cfg
 rabackup="$backupdir/retroarch.cfg.backup"
@@ -42,6 +43,8 @@ blfbackup="$backupdir/blue_light.sh.backup"
 current_profile=/mnt/SDCARD/Saves/CurrentProfile
 kids_profile=/mnt/SDCARD/Saves/KidsProfile
 isolated_subdirs="saves states romScreens"
+profile_isolation_marker="$backupdir/profile_isolation_active"
+game_environment_marker="$backupdir/game_environment_ready"
 last_game_file="$backupdir/last_game.txt"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidsmode.log
 
@@ -78,6 +81,7 @@ last_artwork_file="$backupdir/last_artwork.txt"
 # a duplicate beside existing per-series selections. It now stores the last
 # selected item for every media folder, not only series.
 folder_selections_dir="$backupdir/series_selections"
+folder_history_file=/tmp/kidsmode_folder_history
 
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
@@ -162,8 +166,10 @@ config_merge() {
     # $1 = jq filter mutating the config; keeps all other keys intact
     ensure_config
     tmpcfg=/tmp/kidmode_config.$$
+    # Atomic rename is enough here. A global SD-card sync can take more than
+    # 20 seconds and used to freeze the final timer screen before the
+    # carousel appeared. Critical PIN data is separately backed up below.
     jq "$@" "$configfile" > "$tmpcfg" && mv -f "$tmpcfg" "$configfile"
-    sync
 }
 
 store_pin() {
@@ -190,7 +196,6 @@ backup_pin() {
     if jq '{pin_hash: (.pin_hash // ""), pin_salt: (.pin_salt // ""), pin_plain: (.pin_plain // "")}' \
         "$configfile" > "$pin_backup.tmp" 2> /dev/null; then
         mv -f "$pin_backup.tmp" "$pin_backup"
-        sync
     else
         rm -f "$pin_backup.tmp"
         return 1
@@ -466,6 +471,7 @@ restore_blf_lock() {
 # can't partially fail or leave mismatched data the way editing files in
 # place could.
 apply_profile_isolation() {
+    [ -f "$profile_isolation_marker" ] && return 0
     mkdir -p "$kids_profile" "$current_profile" "$backupdir"
     for d in $isolated_subdirs; do
         rm -rf "${backupdir:?}/profile-parked-$d"
@@ -478,10 +484,12 @@ apply_profile_isolation() {
             mkdir -p "$current_profile/$d"
         fi
     done
+    touch "$profile_isolation_marker"
     log "Switched to the kid's own saves/states/thumbnails for this session."
 }
 
 restore_profile_isolation() {
+    [ -f "$profile_isolation_marker" ] || return 0
     mkdir -p "$kids_profile"
     for d in $isolated_subdirs; do
         rm -rf "${kids_profile:?}/$d"
@@ -492,6 +500,7 @@ restore_profile_isolation() {
             mv "$backupdir/profile-parked-$d" "$current_profile/$d"
         fi
     done
+    rm -f "$profile_isolation_marker"
     log "Restored the previous saves/states/thumbnails."
 }
 
@@ -850,6 +859,16 @@ build_game_cmd() {
 # Mirrors runtime.sh launch_game: audio, LOADING splash, 560p handling on the
 # Miyoo Mini V4, playActivity tracking, and the post-game SAVING splash —
 # so Onion auto-save/resume keeps working unchanged.
+prepare_game_environment() {
+    # Prepare RetroArch and the kid save profile once per armed session, so
+    # the first game launches without an extra setup pause.
+    [ -f "$game_environment_marker" ] && return 0
+    apply_ra_lock
+    apply_profile_isolation
+    apply_keymap_override
+    touch "$game_environment_marker"
+}
+
 run_game_cmd() {
     [ -f "$sysdir/cmd_to_run.sh" ] || return 1
 
@@ -923,7 +942,6 @@ install_hook() {
     mkdir -p "$sysdir/startup"
     if ! cmp -s "$hook_src" "$hook_dst" 2> /dev/null; then
         cp "$hook_src" "$hook_dst"
-        sync
         log "Boot hook installed to $hook_dst"
     fi
     return 0
@@ -947,6 +965,27 @@ repair_favourites() {
         awk '{gsub(/\}\{/, "}\n{"); print}' "$favfile" > "$favfile.tmp" &&
             mv -f "$favfile.tmp" "$favfile"
         log "Repaired glued lines in favourite.json."
+    fi
+}
+
+repair_onion_favorites_if_needed() {
+    [ -f "$favfile" ] || return 0
+    repair_favourites
+    if [ ! -f "$favorites_repair_stamp" ] ||
+        [ "$favfile" -nt "$favorites_repair_stamp" ]; then
+        if command -v tools > /dev/null 2>&1; then
+            tools favfix > /dev/null 2>&1
+        fi
+        sorted_favorites=/tmp/kidsmode_favorites_sorted.$$
+        if jq -sc 'sort_by((.label // "") | ascii_downcase)[]' \
+            "$favfile" > "$sorted_favorites" 2> /dev/null; then
+            mv -f "$sorted_favorites" "$favfile"
+        else
+            rm -f "$sorted_favorites"
+        fi
+        log "Onion favorites repaired and sorted A-Z after a favorites change."
+        mkdir -p "$backupdir"
+        touch "$favorites_repair_stamp"
     fi
 }
 
@@ -1116,6 +1155,7 @@ disarm() {
     restore_blf_lock
     restore_profile_isolation
     restore_keymap_override
+    rm -f "$game_environment_marker"
     ensure_fav_shortcut
     rm -f "$sysdir/cmd_to_run.sh" "$uiresult"
     sync
@@ -1320,7 +1360,14 @@ play_video() {
     if [ -n "$brightness_restore" ] && [ -w "$brightness_pwm" ]; then
         printf '%s\n' "$brightness_restore" > "$brightness_pwm"
     fi
-    [ -f "$runtime_pos" ] && cp -f "$runtime_pos" "$posfile"
+    # Keep libvcinput's two-second safety checkpoint after MENU and during
+    # shutdown. FFplay may continue decoding briefly after POWER; its later
+    # runtime value must not replace the last point the child actually saw.
+    # Other exits still retain their exact runtime value.
+    if [ ! -f /tmp/.offOrder ] && [ ! -f "$menu_exit_marker" ] &&
+        [ -f "$runtime_pos" ]; then
+        cp -f "$runtime_pos" "$posfile"
+    fi
     rm -f "$runtime_pos" "$duration_file" "$duration_log" "$player_pid" \
         /tmp/stay_awake
     find /mnt/SDCARD/App/FFplay "$sysdir" -name pos.cfg -exec rm -f {} \; 2> /dev/null
@@ -1343,6 +1390,9 @@ cmd_run() {
         return 1
     fi
     chmod a+x "$kidui_bin" 2> /dev/null
+
+    prepare_game_environment
+    repair_onion_favorites_if_needed
 
     ui_fails=0
     pin_fails=0
@@ -1418,7 +1468,7 @@ cmd_run() {
             no_pin_recovery=1
         fi
 
-        rm -f "$uiresult"
+        rm -f "$uiresult" "$folder_history_file"
         game_select_path=""
         video_select_path=""
         [ -f "$game_selection_file" ] &&
@@ -1453,6 +1503,18 @@ cmd_run() {
         fi
         ui_rc=$?
         pin_notice=""
+
+        # Folder navigation now stays inside kidui instead of relaunching it.
+        # Persist every selection touched during that session once kidui
+        # eventually returns to the loop.
+        if [ -f "$folder_history_file" ]; then
+            tab_char="$(printf '\t')"
+            while IFS="$tab_char" read -r history_folder history_selection; do
+                [ -n "$history_folder" ] && [ -n "$history_selection" ] &&
+                    remember_folder_selection "$history_folder" "$history_selection"
+            done < "$folder_history_file"
+            rm -f "$folder_history_file"
+        fi
 
         ui_floor="$(cat /tmp/kidsmode_floor 2> /dev/null)"
         case "$ui_floor" in games | videos) active_floor="$ui_floor" ;; esac
@@ -1627,6 +1689,7 @@ cmd_run() {
     restore_blf_lock
     restore_profile_isolation
     restore_keymap_override
+    rm -f "$game_environment_marker"
     rm -f "$sysdir/cmd_to_run.sh"
     bootScreen clear 2> /dev/null
     return 0
@@ -1657,14 +1720,10 @@ cmd_arm() {
 
     pick_session_timer
 
-    apply_ra_lock
     apply_blf_lock
-    apply_profile_isolation
-    apply_keymap_override
     ensure_fav_shortcut
     touch "$flagfile"
-    # The launcher can start immediately; flush the SD-card changes in the
-    # background instead of freezing the final timer frame for 20+ seconds.
+    # Flush writes after launch without holding the timer screen on display.
     (sleep 2; sync) &
     log "Kids Mode armed (timer: $(get_timer_minutes) min)."
 

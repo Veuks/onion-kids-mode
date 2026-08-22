@@ -118,6 +118,8 @@ typedef enum { SCREEN_CAROUSEL,
 #define GAME_SELECTION_STATE_FILE "/tmp/kidsmode_game_selection"
 #define VIDEO_SELECTION_STATE_FILE "/tmp/kidsmode_video_selection"
 #define FOLDER_STATE_FILE "/tmp/kidsmode_folder"
+#define FOLDER_HISTORY_FILE "/tmp/kidsmode_folder_history"
+#define FOLDER_SELECTIONS_DIR "/mnt/SDCARD/Saves/KidsMode/series_selections"
 #define TIMER_STEP 5
 #define TIMER_MAX 120
 
@@ -162,6 +164,21 @@ static bool show_stories = true;
 static bool show_movies = true;
 static bool show_series = true;
 static bool show_music = true;
+
+#define MAX_FOLDER_MEMORY 128
+#define MAX_VIDEO_DIR_CACHE 512
+typedef struct {
+    char folder[STR_MAX];
+    char selection[STR_MAX];
+} FolderSelectionMemory;
+typedef struct {
+    char path[STR_MAX];
+    bool has_media;
+} VideoDirCacheEntry;
+static FolderSelectionMemory folder_memory[MAX_FOLDER_MEMORY];
+static int folder_memory_count;
+static VideoDirCacheEntry video_dir_cache[MAX_VIDEO_DIR_CACHE];
+static int video_dir_cache_count;
 
 static SDL_Surface *artwork = NULL;
 // Keep the last decoded image for each floor. Switching floors normally
@@ -702,8 +719,91 @@ static const char *visibleFolderName(const char *name)
     return name;
 }
 
+static const char *folderBrowsePath(void)
+{
+    return current_folder[0] ? current_folder : VIDEOS_DIR;
+}
+
+static void rememberFolderInMemory(const char *folder, const char *selection,
+                                   bool record_change)
+{
+    if (folder == NULL || selection == NULL || folder[0] == '\0' ||
+        selection[0] == '\0')
+        return;
+    size_t folder_len = strlen(folder);
+    if (strncmp(selection, folder, folder_len) != 0 ||
+        selection[folder_len] != '/' ||
+        strchr(selection + folder_len + 1, '/') != NULL)
+        return;
+    int slot = -1;
+    for (int i = 0; i < folder_memory_count; i++) {
+        if (strcmp(folder_memory[i].folder, folder) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        if (folder_memory_count >= MAX_FOLDER_MEMORY)
+            return;
+        slot = folder_memory_count++;
+        snprintf(folder_memory[slot].folder,
+                 sizeof(folder_memory[slot].folder), "%s", folder);
+    }
+    snprintf(folder_memory[slot].selection,
+             sizeof(folder_memory[slot].selection), "%s", selection);
+    if (record_change) {
+        FILE *fp = fopen(FOLDER_HISTORY_FILE, "a");
+        if (fp != NULL) {
+            fprintf(fp, "%s\t%s\n", folder, selection);
+            fclose(fp);
+        }
+    }
+}
+
+static const char *rememberedFolderSelection(const char *folder)
+{
+    for (int i = 0; i < folder_memory_count; i++)
+        if (strcmp(folder_memory[i].folder, folder) == 0)
+            return folder_memory[i].selection;
+    return NULL;
+}
+
+static void loadPersistedFolderSelections(void)
+{
+    DIR *dir = opendir(FOLDER_SELECTIONS_DIR);
+    if (dir == NULL)
+        return;
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.')
+            continue;
+        char path[STR_MAX];
+        snprintf(path, sizeof(path), "%s/%s", FOLDER_SELECTIONS_DIR,
+                 de->d_name);
+        FILE *fp = fopen(path, "r");
+        if (fp == NULL)
+            continue;
+        char selection[STR_MAX] = "";
+        if (fgets(selection, sizeof(selection), fp) != NULL) {
+            selection[strcspn(selection, "\r\n")] = '\0';
+            char folder[STR_MAX];
+            snprintf(folder, sizeof(folder), "%s", selection);
+            char *slash = strrchr(folder, '/');
+            if (slash != NULL) {
+                *slash = '\0';
+                rememberFolderInMemory(folder, selection, false);
+            }
+        }
+        fclose(fp);
+    }
+    closedir(dir);
+}
+
 static bool directoryHasVideos(const char *path, int depth)
 {
+    for (int i = 0; i < video_dir_cache_count; i++)
+        if (strcmp(video_dir_cache[i].path, path) == 0)
+            return video_dir_cache[i].has_media;
     if (depth > MAX_FOLDER_DEPTH)
         return false;
     DIR *dir = opendir(path);
@@ -733,6 +833,13 @@ static bool directoryHasVideos(const char *path, int depth)
         }
     }
     closedir(dir);
+    if (video_dir_cache_count < MAX_VIDEO_DIR_CACHE) {
+        snprintf(video_dir_cache[video_dir_cache_count].path,
+                 sizeof(video_dir_cache[video_dir_cache_count].path), "%s",
+                 path);
+        video_dir_cache[video_dir_cache_count].has_media = found;
+        video_dir_cache_count++;
+    }
     return found;
 }
 
@@ -928,6 +1035,68 @@ static void rememberSelection(void)
                                               : video_select_path,
                  STR_MAX, "%s", games[current].item.rompath);
     }
+}
+
+static void writeFloorState(void);
+static void writeSelectionState(void);
+static void writeFolderState(void);
+
+static void rememberCurrentVideoFolder(void)
+{
+    if (current_floor != FLOOR_VIDEOS || games_count <= 0)
+        return;
+    rememberFolderInMemory(folderBrowsePath(), games[current].item.rompath,
+                           true);
+}
+
+static bool enterCurrentVideoFolder(void)
+{
+    if (current_floor != FLOOR_VIDEOS || games_count <= 0 ||
+        !games[current].is_folder)
+        return false;
+    char next_folder[STR_MAX];
+    snprintf(next_folder, sizeof(next_folder), "%s",
+             games[current].item.rompath);
+    rememberCurrentVideoFolder();
+    snprintf(current_folder, sizeof(current_folder), "%s", next_folder);
+    const char *saved = rememberedFolderSelection(current_folder);
+    video_selection = 0;
+    snprintf(video_select_path, sizeof(video_select_path), "%s",
+             saved != NULL ? saved : "");
+    loadCurrentFloor();
+    rememberSelection();
+    writeFloorState();
+    writeSelectionState();
+    writeFolderState();
+    dirty = true;
+    return true;
+}
+
+static bool leaveCurrentVideoFolder(void)
+{
+    if (current_floor != FLOOR_VIDEOS || current_folder[0] == '\0')
+        return false;
+    rememberCurrentVideoFolder();
+    char leaving_folder[STR_MAX];
+    snprintf(leaving_folder, sizeof(leaving_folder), "%s", current_folder);
+    char *slash = strrchr(current_folder, '/');
+    if (slash == NULL)
+        current_folder[0] = '\0';
+    else {
+        *slash = '\0';
+        if (strcmp(current_folder, VIDEOS_DIR) == 0)
+            current_folder[0] = '\0';
+    }
+    video_selection = 0;
+    snprintf(video_select_path, sizeof(video_select_path), "%s",
+             leaving_folder);
+    loadCurrentFloor();
+    rememberSelection();
+    writeFloorState();
+    writeSelectionState();
+    writeFolderState();
+    dirty = true;
+    return true;
 }
 
 static void writeFloorState(void)
@@ -1521,10 +1690,7 @@ static void renderTimeChip(int remaining)
 
 static void renderFloorIndicator(void)
 {
-    // A media folder is a child navigation level, not another floor. The
-    // user must return to the media root before GAMES becomes reachable.
-    if (!floor_locked &&
-        !(current_floor == FLOOR_VIDEOS && current_folder[0])) {
+    if (!floor_locked) {
         if (!vertical_arrows_checked) {
             SDL_Surface *right = resource_getSurface(RIGHT_ARROW);
             if (right != NULL) {
@@ -2062,9 +2228,8 @@ static bool switchFloor(ContentFloor target, int remaining)
 {
     if (target == current_floor)
         return games_count > 0;
-    if (current_floor == FLOOR_VIDEOS && current_folder[0] &&
-        target == FLOOR_GAMES)
-        return games_count > 0;
+    if (current_floor == FLOOR_VIDEOS)
+        rememberCurrentVideoFolder();
     rememberSelection();
     int direction = target == FLOOR_VIDEOS ? 1 : -1;
 
@@ -2290,10 +2455,14 @@ int main(int argc, char *argv[])
             strncpy(pin_title, "Play timer", STR_MAX - 1);
     }
     else {
+        loadPersistedFolderSelections();
         if (select_rompath[0] != '\0')
             snprintf(current_floor == FLOOR_GAMES ? game_select_path
                                                   : video_select_path,
                      STR_MAX, "%s", select_rompath);
+        if (current_floor == FLOOR_VIDEOS && video_select_path[0] != '\0')
+            rememberFolderInMemory(folderBrowsePath(), video_select_path,
+                                   false);
         loadCurrentFloor();
         fprintf(stderr, "kidui: loaded %d entries on %s floor\n",
                 games_count,
@@ -2352,8 +2521,7 @@ int main(int argc, char *argv[])
                                             : SCREEN_EMPTY;
                     break;
                 case SW_BTN_DOWN:
-                    if (!floor_locked && current_floor == FLOOR_VIDEOS &&
-                        !current_folder[0])
+                    if (!floor_locked && current_floor == FLOOR_VIDEOS)
                         active_screen = switchFloor(FLOOR_GAMES, remaining)
                                             ? SCREEN_CAROUSEL
                                             : SCREEN_EMPTY;
@@ -2362,12 +2530,13 @@ int main(int argc, char *argv[])
                     if (current_floor == FLOOR_GAMES)
                         writeResult("LAUNCH", games[current].item.launch,
                                     games[current].item.rompath);
+                    else if (games[current].is_folder) {
+                        enterCurrentVideoFolder();
+                        break;
+                    }
                     else
-                        writeResult(games[current].is_folder ? "FOLDER" : "PLAY",
-                                    games[current].item.rompath,
-                                    games[current].is_folder
-                                        ? NULL
-                                        : games[current].item.imgpath);
+                        writeResult("PLAY", games[current].item.rompath,
+                                    games[current].item.imgpath);
                     exit_code = 0;
                     quit = true;
                     break;
@@ -2378,11 +2547,8 @@ int main(int argc, char *argv[])
                     }
                     break;
                 case SW_BTN_B:
-                    if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
-                        writeResult("BACK", current_folder, NULL);
-                        exit_code = 0;
-                        quit = true;
-                    }
+                    if (current_floor == FLOOR_VIDEOS && current_folder[0])
+                        leaveCurrentVideoFolder();
                     break;
                 case SW_BTN_MENU:
                     // Carousel: MENU is intentionally ignored. Parent exit
@@ -2396,9 +2562,7 @@ int main(int argc, char *argv[])
             else if (active_screen == SCREEN_EMPTY) {
                 if (changed_key == SW_BTN_B && current_floor == FLOOR_VIDEOS &&
                     current_folder[0]) {
-                    writeResult("BACK", current_folder, NULL);
-                    exit_code = 0;
-                    quit = true;
+                    leaveCurrentVideoFolder();
                 }
                 else if (!floor_locked && changed_key == SW_BTN_UP &&
                     current_floor == FLOOR_GAMES)
@@ -2406,7 +2570,7 @@ int main(int argc, char *argv[])
                                         ? SCREEN_CAROUSEL
                                         : SCREEN_EMPTY;
                 else if (!floor_locked && changed_key == SW_BTN_DOWN &&
-                         current_floor == FLOOR_VIDEOS && !current_folder[0])
+                         current_floor == FLOOR_VIDEOS)
                     active_screen = switchFloor(FLOOR_GAMES, remaining)
                                         ? SCREEN_CAROUSEL
                                         : SCREEN_EMPTY;

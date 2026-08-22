@@ -18,6 +18,8 @@ sections use the active Onion theme and slide smoothly between each other.
 
 - One protected app for favorite games, children's videos and audio.
 - Games are taken directly from Onion's Favorites list.
+- After the Favorites list changes, Kids Mode runs Onion's Favorites repair
+  once and sorts the resulting carousel automatically from A to Z.
 - Videos, audio files and nested folders for movies, series, music or stories
   are supported.
 - Automatic resume follows the real shutdown state:
@@ -211,13 +213,13 @@ normal in-game save data.
 
 | Button | Action |
 | --- | --- |
-| A | Resume playback, or wake the screen during audio playback |
+| A | Resume playback; while already playing, show progress for 2 seconds |
 | B | Pause playback |
 | MENU + LEFT | Rewind progressively |
 | MENU + RIGHT | Fast-forward progressively |
 | MENU + DOWN | Rewind 10 minutes |
 | MENU + UP | Fast-forward 10 minutes |
-| MENU + L2 + R2 while paused | Capture the current frame for the carousel |
+| MENU + X + Y while paused | Capture the current frame for the carousel |
 | MENU alone | Save the position and return to the carousel |
 | Other buttons | Ignored by the player |
 
@@ -230,17 +232,19 @@ Audio playback shows the selected file's artwork, or the nearest inherited
 folder artwork, with a thin progress line and elapsed/remaining time. After
 10 seconds without input the display changes to minimum brightness; five
 seconds later the backlight turns off while playback and the timer continue.
-Press A, B or MENU to restore the display. That first press only wakes it and
-does not pause, resume, seek or leave the player.
+Press A, B, X, Y, a direction, START, SELECT, MENU or POWER to restore the
+display. That first press is consumed: it only wakes the screen and cannot
+pause, resume, seek, leave the player, open the parent menu or put the console
+into standby.
 
-During video playback, the same progress line appears while paused and while
-seeking. It disappears after seeking resumes and immediately when A resumes a
-paused video.
+During video playback, the same progress line appears while paused, while
+seeking and for two seconds after seeking or resuming. Pressing A while the
+video is already playing also shows it for two seconds.
 
 Volume and brightness shortcuts remain usable. Releasing MENU after using a
 combination does not accidentally leave the video.
 
-To create a carousel image from a video, pause with B and press MENU + L2 + R2.
+To create a carousel image from a video, pause with B and press MENU + X + Y.
 Kids Mode saves `Imgs/Video name.bmp` beside that video. A later capture
 replaces the BMP. Captured BMP files take priority over supplied PNG/JPG
 posters; deleting the BMP restores the former poster or inherited folder

@@ -6,6 +6,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef PLATFORM_MIYOOMINI
+#include <fcntl.h>
+#include <linux/input.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 
 typedef int (*poll_fn)(SDL_Event *);
 typedef int (*wait_fn)(SDL_Event *);
@@ -24,13 +30,15 @@ static set_mode_fn real_set_mode;
 static update_fn real_update;
 static updates_fn real_updates;
 static SDL_Overlay *last_overlay;
+static SDL_Rect last_overlay_rect;
+static bool last_overlay_rect_ready;
 static bool inside_event_call;
 static bool paused;
 static bool menu_down;
 static bool menu_used;
 static bool screenshot_down;
-static bool l2_down;
-static bool r2_down;
+static bool x_down;
+static bool y_down;
 static Uint32 menu_pressed_at;
 static SDLKey seek_input = SDLK_UNKNOWN;
 static Uint32 seek_started_at;
@@ -73,10 +81,22 @@ static char last_elapsed_text[24];
 static char last_remaining_text[24];
 static int last_progress_knob = -1;
 static bool seek_notice_drawn;
+static int seek_notice_draw_x;
+static int seek_notice_draw_y;
+static int seek_notice_draw_w;
+static int seek_notice_draw_h;
+static Uint32 last_clock_update;
+#ifdef PLATFORM_MIYOOMINI
+static int wake_input_fd = -1;
+static bool wake_input_grabbed;
+static unsigned short wake_input_code;
+#endif
 
 #define AUDIO_DIM_DELAY 10000
 #define AUDIO_OFF_DELAY 15000
 #define AUDIO_DIM_RAW 3
+#define MIYOO_SCANCODE_VOLUMEDOWN 114
+#define MIYOO_SCANCODE_VOLUMEUP 115
 
 static void update_screen(SDL_Surface *surface, Sint32 x, Sint32 y,
                           Uint32 width, Uint32 height)
@@ -91,6 +111,68 @@ static void update_clock(void);
 static void draw_player_overlay(void);
 static void draw_audio_progress_only(void);
 static void draw_seek_notice(void);
+
+#ifdef PLATFORM_MIYOOMINI
+static bool is_wake_hardware_key(unsigned short code)
+{
+    return code == KEY_SPACE || code == KEY_LEFTCTRL ||
+           code == KEY_LEFTSHIFT || code == KEY_LEFTALT ||
+           code == KEY_RIGHTCTRL || code == KEY_ENTER ||
+           code == KEY_LEFT || code == KEY_RIGHT || code == KEY_UP ||
+           code == KEY_DOWN || code == KEY_ESC || code == KEY_POWER;
+}
+
+static bool grab_wake_input(void)
+{
+    if (wake_input_grabbed)
+        return true;
+    wake_input_fd = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
+    if (wake_input_fd < 0)
+        return false;
+    if (ioctl(wake_input_fd, EVIOCGRAB, 1) < 0) {
+        close(wake_input_fd);
+        wake_input_fd = -1;
+        return false;
+    }
+    wake_input_grabbed = true;
+    wake_input_code = 0;
+    return true;
+}
+
+static void release_wake_input(void)
+{
+    if (wake_input_fd >= 0) {
+        if (wake_input_grabbed)
+            ioctl(wake_input_fd, EVIOCGRAB, 0);
+        close(wake_input_fd);
+    }
+    wake_input_fd = -1;
+    wake_input_grabbed = false;
+    wake_input_code = 0;
+}
+#else
+static bool grab_wake_input(void) { return false; }
+static void release_wake_input(void) {}
+#endif
+
+static void clear_audio_seek_notice(void)
+{
+    if (!audio_mode || !seek_notice_drawn || seek_notice_draw_w <= 0 ||
+        seek_notice_draw_h <= 0)
+        return;
+    SDL_Surface *surface = hardware_surface != NULL
+                               ? hardware_surface
+                               : SDL_GetVideoSurface();
+    if (surface == NULL)
+        return;
+    SDL_Rect old_notice = {seek_notice_draw_x, seek_notice_draw_y,
+                           seek_notice_draw_w, seek_notice_draw_h};
+    SDL_FillRect(surface, &old_notice,
+                 SDL_MapRGB(surface->format, 0, 0, 0));
+    seek_notice_drawn = false;
+    seek_notice_draw_w = 0;
+    seek_notice_draw_h = 0;
+}
 
 static Uint8 clamp_color(int value)
 {
@@ -237,6 +319,38 @@ static void restore_backlight(void)
 __attribute__((destructor)) static void vcinput_unloaded(void)
 {
     restore_backlight();
+    release_wake_input();
+}
+
+static void poll_wake_input(Uint32 now)
+{
+#ifdef PLATFORM_MIYOOMINI
+    if (!wake_input_grabbed || wake_input_fd < 0)
+        return;
+    struct input_event ev;
+    while (read(wake_input_fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
+        if (ev.type != EV_KEY || !is_wake_hardware_key(ev.code))
+            continue;
+        if (wake_input_code == 0 && ev.value == 1) {
+            // Wake on the press for immediate feedback, but retain EVIOCGRAB
+            // through its release so neither keymon nor FFplay can act on
+            // any part of the gesture (especially POWER).
+            wake_input_code = ev.code;
+            restore_backlight();
+            last_activity = now;
+            if (audio_mode)
+                draw_audio_progress_only();
+            else
+                draw_player_overlay();
+        }
+        else if (wake_input_code == ev.code && ev.value == 0) {
+            release_wake_input();
+            break;
+        }
+    }
+#else
+    (void)now;
+#endif
 }
 
 static void load_player_config(Uint32 now)
@@ -283,29 +397,35 @@ static void update_backlight(Uint32 now)
             backlight_stage = 1;
     }
     if (backlight_stage == 1 && idle >= AUDIO_OFF_DELAY &&
-        write_backlight(0))
-        backlight_stage = 2;
+        grab_wake_input()) {
+        if (write_backlight(0))
+            backlight_stage = 2;
+        else
+            release_wake_input();
+    }
 }
 
-static void write_position(const char *path)
+static void write_position_value(const char *path, long value)
 {
     if (!path || !*path)
         return;
     FILE *fp = fopen(path, "w");
     if (fp) {
-        fprintf(fp, "%ld\n", position_seconds < 0 ? 0 : position_seconds);
+        fprintf(fp, "%ld\n", value < 0 ? 0 : value);
         fclose(fp);
     }
 }
 
 static void save_position(void)
 {
-    write_position(position_file);
+    write_position_value(position_file, position_seconds);
 }
 
 static void save_checkpoint(void)
 {
-    write_position(checkpoint_file);
+    // Keep a small safety rewind for both MENU exits and power-loss resumes,
+    // so playback never skips content around the point where viewing stopped.
+    write_position_value(checkpoint_file, position_seconds - 2);
 }
 
 static void mark_menu_exit(void)
@@ -320,9 +440,17 @@ static void mark_menu_exit(void)
 static void update_clock(void)
 {
     Uint32 now = SDL_GetTicks();
+    // FFplay can enter several interposed SDL functions for every decoded
+    // frame. The clock, backlight and save bookkeeping do not need to run at
+    // video-frame frequency. Capping this work also keeps the carousel/player
+    // responsive on the Miyoo's small CPU.
+    if (clock_ready && now - last_clock_update < 50)
+        return;
+    last_clock_update = now;
     long previous_second = position_seconds;
     load_player_config(now);
     update_duration(now);
+    poll_wake_input(now);
     update_backlight(now);
     if (!clock_ready) {
         const char *start = getenv("VC_START_SECONDS");
@@ -350,6 +478,21 @@ static void update_clock(void)
             draw_player_overlay();
         else
             draw_audio_progress_only();
+    }
+    // A paused audio file has no advancing second to trigger the normal
+    // incremental redraw. Still remove an expired seek message on time.
+    if (audio_mode && !inside_present && seek_notice_drawn &&
+        now >= seek_notice_until)
+        draw_seek_notice();
+    // A paused video has no next decoded frame to erase an expired seek
+    // message. Re-present the already paused frame once, then paint only the
+    // still-valid progress controls over it.
+    if (!audio_mode && paused && seek_notice[0] != '\0' &&
+        now >= seek_notice_until && last_overlay != NULL &&
+        last_overlay_rect_ready && real_overlay != NULL) {
+        seek_notice[0] = '\0';
+        real_overlay(last_overlay, &last_overlay_rect);
+        draw_player_overlay();
     }
 }
 
@@ -875,12 +1018,7 @@ static void draw_seek_notice(void)
     int x = seek_notice_forward ? 18 : surface->w - width - 18;
     int y = 70;
     if (!seek_notice[0] || SDL_GetTicks() >= seek_notice_until) {
-        if (audio_mode && seek_notice_drawn && width > 0) {
-            SDL_Rect old_notice = {x - 1, y - 1, width + 2,
-                                   7 * scale + 2};
-            SDL_FillRect(surface, &old_notice, black);
-        }
-        seek_notice_drawn = false;
+        clear_audio_seek_notice();
         seek_notice[0] = '\0';
         return;
     }
@@ -895,16 +1033,30 @@ static void draw_seek_notice(void)
                    x + i * 6 * scale, y, scale,
                    black, white);
     seek_notice_drawn = true;
+    if (audio_mode) {
+        seek_notice_draw_x = x - 1;
+        seek_notice_draw_y = y - 1;
+        seek_notice_draw_w = width + 2;
+        seek_notice_draw_h = 7 * scale + 2;
+    }
 }
 
 static void set_seek_notice(bool forward, long step)
 {
     Uint32 now = SDL_GetTicks();
-    snprintf(seek_notice, sizeof(seek_notice), "%c%ld%s",
+    char next_notice[sizeof(seek_notice)];
+    snprintf(next_notice, sizeof(next_notice), "%c%ld%s",
              forward ? '+' : '-', step >= 60 ? step / 60 : step,
              step >= 60 ? "m" : "s");
+    bool same_audio_notice = audio_mode && seek_notice_drawn &&
+                             seek_notice_forward == forward &&
+                             strcmp(seek_notice, next_notice) == 0;
+    if (audio_mode && seek_notice_drawn && !same_audio_notice)
+        clear_audio_seek_notice();
+    snprintf(seek_notice, sizeof(seek_notice), "%s", next_notice);
     seek_notice_forward = forward;
-    seek_notice_drawn = false;
+    if (!same_audio_notice)
+        seek_notice_drawn = false;
     seek_notice_until = now + 2000;
     progress_until = now + 2000;
     // A seek can take long enough to consume the display timeout before a
@@ -950,7 +1102,13 @@ static void draw_player_overlay(void)
     bool was_inside_present = inside_present;
     inside_present = true;
     paint_player_overlay(surface);
-    update_screen(surface, 0, 0, surface->w, surface->h);
+    // Audio needs one real presentation when its complete static screen is
+    // first composed. Video does not: SDL_DisplayYUVOverlay has just written
+    // the decoded frame into the framebuffer, so the controls can be painted
+    // directly into those pixels. Requesting an SDL refresh here caused a
+    // second page flip for every video frame, visible as flicker and lag.
+    if (audio_mode)
+        update_screen(surface, 0, 0, surface->w, surface->h);
     inside_present = was_inside_present;
     last_presented_second = position_seconds;
     overlay_force_redraw = false;
@@ -1021,8 +1179,20 @@ static bool map_event(SDL_Event *event)
         return false;
     Uint8 state = event->key.state;
     SDLKey in = event->key.keysym.sym;
+    Uint8 scancode = event->key.keysym.scancode;
     Uint32 now = SDL_GetTicks();
     load_player_config(now);
+
+    // The Miyoo SDL driver can expose the two physical volume buttons with a
+    // directional SDL symbol. Identify them by their Linux hardware scan code
+    // before handling D-pad seeks, so volume/brightness gestures can never
+    // jump to another point in the media. keymon still handles the system OSD.
+    if (scancode == MIYOO_SCANCODE_VOLUMEDOWN ||
+        scancode == MIYOO_SCANCODE_VOLUMEUP) {
+        if (menu_down && state == SDL_PRESSED)
+            menu_used = true;
+        return true;
+    }
 
     // Swallow repeats and the release belonging to a wake press. Otherwise
     // holding B or MENU for a fraction too long could pause or leave playback
@@ -1038,8 +1208,9 @@ static bool map_event(SDL_Event *event)
         // video. Consume the whole gesture so waking cannot also seek,
         // resume, pause, capture or leave.
         if ((in == SDLK_SPACE || in == SDLK_LCTRL || in == SDLK_ESCAPE ||
-             in == SDLK_LSHIFT || in == SDLK_LALT || in == SDLK_LEFT ||
-             in == SDLK_RIGHT || in == SDLK_UP || in == SDLK_DOWN) &&
+             in == SDLK_LSHIFT || in == SDLK_LALT || in == SDLK_RCTRL ||
+             in == SDLK_RETURN || in == SDLK_LEFT || in == SDLK_RIGHT ||
+             in == SDLK_UP || in == SDLK_DOWN) &&
             state == SDL_PRESSED) {
             wake_key = in;
             restore_backlight();
@@ -1054,10 +1225,10 @@ static bool map_event(SDL_Event *event)
     if (state == SDL_PRESSED)
         last_activity = now;
 
-    if (in == SDLK_TAB)
-        l2_down = state != SDL_RELEASED;
-    if (in == SDLK_BACKSPACE)
-        r2_down = state != SDL_RELEASED;
+    if (in == SDLK_LSHIFT)
+        x_down = state != SDL_RELEASED;
+    if (in == SDLK_LALT)
+        y_down = state != SDL_RELEASED;
 
     if (in == SDLK_ESCAPE) {
         if (state == SDL_PRESSED) {
@@ -1105,14 +1276,14 @@ static bool map_event(SDL_Event *event)
         return true;
     }
 
-    if (menu_down && (in == SDLK_TAB || in == SDLK_BACKSPACE)) {
+    if (menu_down && (in == SDLK_LSHIFT || in == SDLK_LALT)) {
         menu_used = true;
-        if (l2_down && r2_down && !screenshot_down) {
+        if (x_down && y_down && !screenshot_down) {
             screenshot_down = true;
             if (paused)
                 save_paused_frame();
         }
-        if (!l2_down || !r2_down)
+        if (!x_down || !y_down)
             screenshot_down = false;
         return true;
     }
@@ -1123,7 +1294,7 @@ static bool map_event(SDL_Event *event)
         menu_used = true;
     }
 
-    if (in == SDLK_SPACE) { /* Miyoo A: resume only */
+    if (in == SDLK_SPACE) { /* Miyoo A: resume/show progress */
         if (state == SDL_PRESSED && paused) {
             restore_backlight();
             last_activity = now;
@@ -1136,6 +1307,18 @@ static bool map_event(SDL_Event *event)
                 draw_audio_progress_only();
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
+        }
+        if (state == SDL_PRESSED && !paused) {
+            // A during normal playback is deliberately not forwarded to
+            // FFplay. It only reveals the progress information for two
+            // seconds, without altering playback.
+            progress_until = now + 2000;
+            progress_waiting_for_video = !audio_mode;
+            overlay_force_redraw = !audio_mode;
+            if (audio_mode)
+                draw_audio_progress_only();
+            else
+                draw_player_overlay();
         }
         return true;
     }
@@ -1278,6 +1461,10 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
     if (!real_overlay)
         return -1;
     last_overlay = overlay;
+    if (dstrect != NULL) {
+        last_overlay_rect = *dstrect;
+        last_overlay_rect_ready = true;
+    }
     int result = real_overlay(overlay, dstrect);
     update_clock();
     if (progress_waiting_for_video) {
@@ -1287,10 +1474,8 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
             seek_notice_until = now + 2000;
         progress_waiting_for_video = false;
     }
-    // The Miyoo YUV plane is refreshed for every decoded frame and can cover
-    // the RGB controls plane. Reapply the already-composed controls after
-    // each video frame for their full lifetime. Every native video refresh
-    // still passes straight through to FFplay, including while paused.
+    // The decoded frame replaces the previous control pixels. Repaint only
+    // those pixels after it, without asking SDL for another page refresh.
     if (player_overlay_visible())
         draw_player_overlay();
     return result;
