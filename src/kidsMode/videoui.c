@@ -124,6 +124,7 @@ typedef enum { SCREEN_CAROUSEL,
 #define FOLDER_SELECTIONS_INDEX \
     "/mnt/SDCARD/Saves/KidsMode/series_selections/selections.tsv"
 #define VIDEO_THUMBNAIL_CACHE_DIR "/mnt/SDCARD/Saves/KidsMode/artwork_cache"
+#define VIDEO_THUMBNAIL_RENDER_VERSION 1
 #define TIMER_STEP 5
 #define TIMER_MAX 120
 
@@ -1804,27 +1805,58 @@ static unsigned long artworkPathHash(const char *path)
     return hash;
 }
 
-static bool videoThumbnailCachePath(const char *source, int width, int height,
-                                    char *out, size_t out_size)
+static void ensureVideoThumbnailCacheDir(void)
 {
-    struct stat st;
-    if (stat(source, &st) != 0)
-        return false;
-    snprintf(out, out_size, "%s/v2-%08lx-%lld-%lld-%dx%d.bmp",
-             VIDEO_THUMBNAIL_CACHE_DIR, artworkPathHash(source),
-             (long long)st.st_size, (long long)st.st_mtime, width, height);
-    return true;
+    if (thumbnail_cache_dir_ready)
+        return;
+    mkdir("/mnt/SDCARD/Saves/KidsMode", 0777);
+    mkdir(VIDEO_THUMBNAIL_CACHE_DIR, 0777);
+    thumbnail_cache_dir_ready = true;
 }
 
-static void saveVideoThumbnail(SDL_Surface *surface, const char *path)
+static bool videoThumbnailCachePaths(const char *source, int width, int height,
+                                     char *bitmap, size_t bitmap_size,
+                                     char *metadata, size_t metadata_size)
 {
-    if (surface == NULL || path == NULL || path[0] == '\0')
+    int written = snprintf(bitmap, bitmap_size, "%s/cover-%08lx-%dx%d.bmp",
+                           VIDEO_THUMBNAIL_CACHE_DIR,
+                           artworkPathHash(source), width, height);
+    if (written < 0 || written >= (int)bitmap_size)
+        return false;
+    written = snprintf(metadata, metadata_size, "%s.meta", bitmap);
+    return written >= 0 && written < (int)metadata_size;
+}
+
+static bool videoThumbnailIsCurrent(const char *source, const char *bitmap,
+                                    const char *metadata)
+{
+    if (access(bitmap, R_OK) != 0)
+        return false;
+    struct stat source_state;
+    if (stat(source, &source_state) != 0)
+        return false;
+    FILE *fp = fopen(metadata, "r");
+    if (fp == NULL)
+        return false;
+    int render_version = 0;
+    long long source_size = -1;
+    long long source_mtime = -1;
+    int fields = fscanf(fp, "%d %lld %lld", &render_version, &source_size,
+                        &source_mtime);
+    fclose(fp);
+    return fields == 3 &&
+           render_version == VIDEO_THUMBNAIL_RENDER_VERSION &&
+           source_size == (long long)source_state.st_size &&
+           source_mtime == (long long)source_state.st_mtime;
+}
+
+static void saveVideoThumbnail(SDL_Surface *surface, const char *path,
+                               const char *metadata, const char *source)
+{
+    if (surface == NULL || path == NULL || path[0] == '\0' ||
+        metadata == NULL || metadata[0] == '\0')
         return;
-    if (!thumbnail_cache_dir_ready) {
-        mkdir("/mnt/SDCARD/Saves/KidsMode", 0777);
-        mkdir(VIDEO_THUMBNAIL_CACHE_DIR, 0777);
-        thumbnail_cache_dir_ready = true;
-    }
+    ensureVideoThumbnailCacheDir();
     char temporary[STR_MAX];
     if (snprintf(temporary, sizeof(temporary), "%s.tmp", path) >=
         (int)sizeof(temporary))
@@ -1832,8 +1864,27 @@ static void saveVideoThumbnail(SDL_Surface *surface, const char *path)
     remove(temporary);
     if (SDL_SaveBMP(surface, temporary) == 0) {
         remove(path);
-        if (rename(temporary, path) != 0)
+        if (rename(temporary, path) != 0) {
             remove(temporary);
+            return;
+        }
+        struct stat source_state;
+        if (stat(source, &source_state) != 0)
+            return;
+        char metadata_temporary[STR_MAX];
+        if (snprintf(metadata_temporary, sizeof(metadata_temporary),
+                     "%s.tmp", metadata) >= (int)sizeof(metadata_temporary))
+            return;
+        FILE *fp = fopen(metadata_temporary, "w");
+        if (fp != NULL) {
+            fprintf(fp, "%d %lld %lld\n", VIDEO_THUMBNAIL_RENDER_VERSION,
+                    (long long)source_state.st_size,
+                    (long long)source_state.st_mtime);
+            fclose(fp);
+            remove(metadata);
+            if (rename(metadata_temporary, metadata) != 0)
+                remove(metadata_temporary);
+        }
     }
 }
 
@@ -1870,14 +1921,19 @@ static void loadArtwork(void)
     int target_h = (int)(g_display.height * 0.58);
     int target_w = target_h;
     char thumbnail_path[STR_MAX] = "";
+    char thumbnail_metadata[STR_MAX] = "";
+    if (current_floor == FLOOR_VIDEOS)
+        ensureVideoThumbnailCacheDir();
     bool thumbnail_ready = current_floor == FLOOR_VIDEOS &&
-        videoThumbnailCachePath(imgpath, target_w, target_h, thumbnail_path,
-                                sizeof(thumbnail_path)) &&
-        access(thumbnail_path, R_OK) == 0;
+        videoThumbnailCachePaths(imgpath, target_w, target_h, thumbnail_path,
+                                 sizeof(thumbnail_path), thumbnail_metadata,
+                                 sizeof(thumbnail_metadata)) &&
+        videoThumbnailIsCurrent(imgpath, thumbnail_path, thumbnail_metadata);
     SDL_Surface *raw = IMG_Load(thumbnail_ready ? thumbnail_path : imgpath);
     if (raw == NULL && thumbnail_ready) {
         // A partially written/corrupt cache must never hide the real poster.
         remove(thumbnail_path);
+        remove(thumbnail_metadata);
         thumbnail_ready = false;
         raw = IMG_Load(imgpath);
     }
@@ -1953,16 +2009,20 @@ static void loadArtwork(void)
                           (target_h - scaled->h) / 2, 0, 0};
     SDL_BlitSurface(scaled, NULL, framed, &image_pos);
     SDL_FreeSurface(scaled);
-#ifdef PLATFORM_MIYOOMINI
-    rotate180InPlace(framed);
-#endif
     // Bake the CRT reflection into the prepared tile once. Previously the
     // launcher blended roughly 77k pixels again on every carousel redraw.
+    // Blend before the Miyoo image correction so artwork and reflection are
+    // rotated together; blending afterwards displayed only the reflection
+    // upside down on the physical panel.
     SDL_Surface *reflection = loadScreenReflection(target_w);
     if (reflection != NULL)
         blendReflection(framed, reflection, 0, 0);
+#ifdef PLATFORM_MIYOOMINI
+    rotate180InPlace(framed);
+#endif
     if (thumbnail_path[0] != '\0')
-        saveVideoThumbnail(framed, thumbnail_path);
+        saveVideoThumbnail(framed, thumbnail_path, thumbnail_metadata,
+                           imgpath);
     artwork = SDL_DisplayFormatAlpha(framed);
     if (artwork == NULL)
         artwork = framed;

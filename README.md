@@ -182,7 +182,9 @@ balanced lines before reducing the font size.
 The first time a new or modified poster is displayed, Kids Mode creates a
 device-sized thumbnail under `Saves/KidsMode/artwork_cache`. Later navigation
 loads that prepared thumbnail instead of decoding and resizing the original
-again. Replacing the source image automatically creates a fresh cached version.
+again. Replacing the source image overwrites the same cached thumbnail instead
+of accumulating versions. When updating from an older test build, its former
+`v1-`, `v2-` or `v3-` files can be deleted once manually from that cache folder.
 
 Press A to descend into a folder and B to return exactly one level. Every
 folder remembers its own last selected video or subfolder, including after a

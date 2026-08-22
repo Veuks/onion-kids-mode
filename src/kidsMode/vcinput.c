@@ -666,17 +666,25 @@ static void yuv_glyph(SDL_Overlay *overlay, char c, int x, int y, int scale,
     const unsigned char *rows = glyph_rows(c);
     if (rows == NULL)
         return;
-    for (int row = 0; row < 7; row++)
-        for (int col = 0; col < 5; col++) {
-            if (!(rows[6 - row] & (1 << col)))
-                continue;
-            if (outline)
-                yuv_rect(overlay, x + col * scale - 1,
-                         y + row * scale - 1, scale + 2, scale + 2,
-                         16, 128, 128);
-            yuv_rect(overlay, x + col * scale, y + row * scale,
-                     scale, scale, 235, 128, 128);
-        }
+    // Draw the complete outline first, then all foreground pixels. Painting
+    // black+white one glyph pixel at a time lets the next pixel's outline
+    // overwrite its neighbour, which produced the dotted/hatched playback
+    // font visible in screenshots. The paused framebuffer path already uses
+    // these same two passes and therefore remains solid.
+    int first_pass = outline ? 0 : 1;
+    for (int pass = first_pass; pass < 2; pass++)
+        for (int row = 0; row < 7; row++)
+            for (int col = 0; col < 5; col++) {
+                if (!(rows[6 - row] & (1 << col)))
+                    continue;
+                if (pass == 0)
+                    yuv_rect(overlay, x + col * scale - 1,
+                             y + row * scale - 1, scale + 2, scale + 2,
+                             16, 128, 128);
+                else
+                    yuv_rect(overlay, x + col * scale, y + row * scale,
+                             scale, scale, 235, 128, 128);
+            }
 }
 
 static void yuv_rotated_text(SDL_Overlay *overlay, const char *text,
@@ -754,8 +762,12 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
         int logical_x = seek_notice_forward
                             ? overlay->w - width - 9 * scale
                             : 9 * scale;
+        // Match the framebuffer path used while paused. Its physical offset
+        // is 35 base-scale pixels from the panel edge; account for the glyph
+        // height when expressing that same point in logical coordinates.
+        int logical_y = overlay->h - 35 * scale - 7 * notice_scale;
         yuv_rotated_text(overlay, seek_notice, logical_x,
-                         overlay->h - 35 * scale, notice_scale);
+                         logical_y, notice_scale);
     }
 }
 
@@ -1230,11 +1242,14 @@ static void draw_seek_notice(void)
     if (!surface)
         return;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
-    int scale = surface->w >= 600 ? 3 : 2;
+    int base_scale = surface->w / 320;
+    if (base_scale < 1)
+        base_scale = 1;
+    int scale = base_scale + (base_scale > 1 ? base_scale / 2 : 1);
     int length = (int)strlen(seek_notice);
     int width = length > 0 ? length * 6 * scale - scale : 0;
     int x = seek_notice_forward ? 18 : surface->w - width - 18;
-    int y = 70;
+    int y = 35 * base_scale;
     if (!seek_notice[0] || SDL_GetTicks() >= seek_notice_until) {
         clear_audio_seek_notice();
         seek_notice[0] = '\0';
