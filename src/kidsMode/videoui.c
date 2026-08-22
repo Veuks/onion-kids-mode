@@ -266,7 +266,6 @@ static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
 static TTF_Font *font_episode_sizes[GAME_LABEL_FONT_SIZE + 1] = {NULL};
 static TTF_Font *font_bigvalue = NULL;  // theme title font, large
 static TTF_Font *font_restart_title = NULL; // restart dialog, medium-large
-static TTF_Font *font_restart_label = NULL; // selected item, italic
 static TTF_Font *font_info = NULL;      // theme list font, sentence-sized
 
 // Fonts are loaded lazily (on first actual use) rather than all three
@@ -316,17 +315,6 @@ static TTF_Font *getFontRestartTitle(void)
             theme_loadFont(theme()->path, theme()->title.font,
                            theme()->title.size + RESTART_TITLE_FONT_OFFSET);
     return font_restart_title;
-}
-
-static TTF_Font *getFontRestartLabel(void)
-{
-    if (font_restart_label == NULL) {
-        font_restart_label = theme_loadFont(
-            theme()->path, theme()->title.font, theme()->title.size);
-        if (font_restart_label != NULL)
-            TTF_SetFontStyle(font_restart_label, TTF_STYLE_ITALIC);
-    }
-    return font_restart_label;
 }
 
 static TTF_Font *getFontInfo(void)
@@ -1495,6 +1483,68 @@ static void drawText(const char *text, int center_x, int center_y,
                   TEXT_CENTER);
 }
 
+// SDL_ttf's synthetic TTF_STYLE_ITALIC is ignored by the older SDL build on
+// some Miyoo installations. Slant the rendered pixels directly so the item
+// title is visibly italic on every theme and firmware version.
+static void drawSlantedText(const char *text, int center_x, int center_y,
+                            TTF_Font *font, SDL_Color color, int max_width)
+{
+    if (font == NULL || text == NULL || text[0] == '\0')
+        return;
+
+    char buf[STR_MAX];
+    snprintf(buf, sizeof(buf), "%s", text);
+    int estimated_shear = (TTF_FontHeight(font) + 3) / 4;
+    if (max_width > 0) {
+        int w = 0, h = 0;
+        TTF_SizeUTF8(font, buf, &w, &h);
+        while (w + estimated_shear > max_width && strlen(buf) > 4) {
+            buf[strlen(buf) - 4] = '\0';
+            strcat(buf, "...");
+            TTF_SizeUTF8(font, buf, &w, &h);
+        }
+    }
+
+    SDL_Surface *plain = TTF_RenderUTF8_Blended(font, buf, color);
+    if (plain == NULL)
+        return;
+    int shear = (plain->h + 3) / 4;
+    SDL_Surface *slanted = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, plain->w + shear, plain->h, 32,
+        plain->format->Rmask, plain->format->Gmask, plain->format->Bmask,
+        plain->format->Amask);
+    if (slanted == NULL) {
+        SDL_FreeSurface(plain);
+        drawText(buf, center_x, center_y, font, color, max_width);
+        return;
+    }
+    SDL_FillRect(slanted, NULL,
+                 SDL_MapRGBA(slanted->format, 0, 0, 0, 0));
+    if (SDL_LockSurface(plain) == 0) {
+        if (SDL_LockSurface(slanted) == 0) {
+            for (int y = 0; y < plain->h; y++) {
+                int shift = plain->h > 1
+                                ? ((plain->h - 1 - y) * shear) /
+                                      (plain->h - 1)
+                                : 0;
+                uint8_t *source_row = (uint8_t *)plain->pixels +
+                                      y * plain->pitch;
+                uint8_t *target_row = (uint8_t *)slanted->pixels +
+                                      y * slanted->pitch + shift * 4;
+                memcpy(target_row, source_row, (size_t)plain->w * 4);
+            }
+            SDL_UnlockSurface(slanted);
+        }
+        SDL_UnlockSurface(plain);
+    }
+    SDL_SetAlpha(slanted, SDL_SRCALPHA, 255);
+    SDL_Rect pos = {center_x - slanted->w / 2,
+                    center_y - slanted->h / 2};
+    SDL_BlitSurface(slanted, NULL, screen, &pos);
+    SDL_FreeSurface(slanted);
+    SDL_FreeSurface(plain);
+}
+
 static void drawGlowingText(const char *text, int center_x, int center_y,
                             TTF_Font *font, SDL_Color color, int max_width)
 {
@@ -2464,12 +2514,12 @@ static void renderConfirmRestart(const char *label, int remaining)
     int first_label_y = (g_display.height - pop_bg->h) / 2 +
                         (int)(160.0 * g_scale) - textbox_height / 2 +
                         line_height / 2;
-    drawText(label_line1, g_display.width / 2, first_label_y,
-             getFontRestartLabel(), theme()->grid.color, dialog_w);
+    drawSlantedText(label_line1, g_display.width / 2, first_label_y,
+                    title_font, theme()->grid.color, dialog_w);
     if (label_two_lines)
-        drawText(label_line2, g_display.width / 2,
-                 first_label_y + line_height, getFontRestartLabel(),
-                 theme()->grid.color, dialog_w);
+        drawSlantedText(label_line2, g_display.width / 2,
+                        first_label_y + line_height, title_font,
+                        theme()->grid.color, dialog_w);
 }
 
 static void renderTimesUp(void)
@@ -3466,8 +3516,6 @@ int main(int argc, char *argv[])
         TTF_CloseFont(font_bigvalue);
     if (font_restart_title != NULL)
         TTF_CloseFont(font_restart_title);
-    if (font_restart_label != NULL)
-        TTF_CloseFont(font_restart_label);
     if (font_info != NULL)
         TTF_CloseFont(font_info);
     list_free(&menu_list);
