@@ -2409,7 +2409,16 @@ static void renderConfirmRestart(const char *label, int remaining)
     snprintf(message, sizeof(message),
              "%s\n\nStart from the beginning?\nSaved progress will be reset.",
              wrapped_label);
-    theme_renderDialog(screen, "Start over?", message, true);
+    // Let the native dialog draw its panel, message and button hints, then
+    // render this short confirmation title with the larger display face.
+    // The normal Onion dialog title is deliberately compact and made this
+    // important destructive action too easy to overlook.
+    theme_renderDialog(screen, " ", message, true);
+    SDL_Surface *pop_bg = resource_getSurface(POP_BG);
+    int title_y = (g_display.height - pop_bg->h) / 2 +
+                  (int)(25.0 * g_scale);
+    drawText("Start over?", g_display.width / 2, title_y,
+             getFontBigValue(), theme()->total.color, dialog_w);
 }
 
 static void renderTimesUp(void)
