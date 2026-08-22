@@ -241,10 +241,10 @@ Audio playback shows the selected file's artwork, or the nearest inherited
 folder artwork, with a thin progress line and elapsed/remaining time. After
 10 seconds without input the display changes to minimum brightness; five
 seconds later the backlight turns off while playback and the timer continue.
-Press A, B, X, Y, a direction, START, SELECT, MENU or POWER to restore the
-display. That first press is consumed: it only wakes the screen and cannot
-pause, resume, seek, leave the player, open the parent menu or put the console
-into standby.
+Press A, B, X, Y, a direction, START, SELECT, MENU, POWER or either volume
+button to restore the display. That first press is consumed: it only wakes the
+screen and cannot pause, resume, seek, change the volume, leave the player,
+open the parent menu or put the console into standby.
 
 During video playback, the same progress line appears while paused, while
 seeking and for two seconds after seeking or resuming. Pressing A while the

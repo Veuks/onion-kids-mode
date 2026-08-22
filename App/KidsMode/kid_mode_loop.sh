@@ -1490,6 +1490,11 @@ play_video() {
     ensure_audio_server
     touch /tmp/stay_awake
     cd "$sysdir" || return 1
+    # A true restart must not ask FFplay to seek, even to zero. Apart from
+    # avoiding unnecessary decoder preroll, this keeps 0:00 distinct from a
+    # normal resume position.
+    seek_args=""
+    [ "$start" -gt 0 ] && seek_args="-ss $start"
     if [ "$media_kind" = audio ]; then
         # An MP3 can contain an attached cover exposed by FFplay as a video
         # stream. Never send that stream to the Miyoo hardware overlay: the
@@ -1502,7 +1507,7 @@ play_video() {
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -vn -autoexit -i "$video" -ss "$start" \
+            "$ffplay" -vn -autoexit -i "$video" $seek_args \
                 2> "$duration_log" &
     else
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
@@ -1512,7 +1517,7 @@ play_video() {
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" -ss "$start" \
+            "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" $seek_args \
             2> "$duration_log" &
     fi
     pid=$!

@@ -21,6 +21,7 @@ typedef int (*flip_fn)(SDL_Surface *);
 typedef SDL_Surface *(*set_mode_fn)(int, int, int, Uint32);
 typedef void (*update_fn)(SDL_Surface *, Sint32, Sint32, Uint32, Uint32);
 typedef void (*updates_fn)(SDL_Surface *, int, SDL_Rect *);
+typedef void (*pause_audio_fn)(int);
 static poll_fn real_poll;
 static wait_fn real_wait;
 static peep_fn real_peep;
@@ -29,6 +30,7 @@ static flip_fn real_flip;
 static set_mode_fn real_set_mode;
 static update_fn real_update;
 static updates_fn real_updates;
+static pause_audio_fn real_pause_audio;
 static SDL_Overlay *last_overlay;
 static SDL_Rect last_overlay_rect;
 static bool last_overlay_rect_ready;
@@ -47,6 +49,8 @@ static Uint32 seek_last_step;
 static int pending_seek_events;
 static SDLKey pending_seek_key = SDLK_UNKNOWN;
 static bool clock_ready;
+static bool playback_started;
+static Uint32 playback_started_at;
 static Uint32 clock_tick;
 static Uint32 last_save;
 static long position_seconds;
@@ -119,6 +123,18 @@ static void format_time(long seconds, bool remaining, char *out,
                         size_t out_size);
 static bool player_overlay_visible(void);
 
+static void mark_playback_started(void)
+{
+    if (playback_started)
+        return;
+    playback_started = true;
+    playback_started_at = SDL_GetTicks();
+    if (clock_ready) {
+        clock_tick = playback_started_at;
+        last_save = playback_started_at;
+    }
+}
+
 #ifdef PLATFORM_MIYOOMINI
 static bool is_wake_hardware_key(unsigned short code)
 {
@@ -126,7 +142,8 @@ static bool is_wake_hardware_key(unsigned short code)
            code == KEY_LEFTSHIFT || code == KEY_LEFTALT ||
            code == KEY_RIGHTCTRL || code == KEY_ENTER ||
            code == KEY_LEFT || code == KEY_RIGHT || code == KEY_UP ||
-           code == KEY_DOWN || code == KEY_ESC || code == KEY_POWER;
+           code == KEY_DOWN || code == KEY_ESC || code == KEY_POWER ||
+           code == KEY_VOLUMEDOWN || code == KEY_VOLUMEUP;
 }
 
 static bool grab_wake_input(void)
@@ -423,8 +440,13 @@ static void update_backlight(Uint32 now)
         long current = read_number_file(brightness_file);
         if (current > 0)
             saved_brightness_raw = current;
-        if (write_backlight(AUDIO_DIM_RAW))
+        if (write_backlight(AUDIO_DIM_RAW)) {
             backlight_stage = 1;
+            // From the beginning of the dimmed transition, reserve the first
+            // complete button gesture for waking. This also prevents keymon
+            // from changing volume before the child can see the screen.
+            grab_wake_input();
+        }
     }
     if (backlight_stage == 1 && idle >= AUDIO_OFF_DELAY &&
         grab_wake_input()) {
@@ -487,8 +509,15 @@ static void update_clock(void)
         position_seconds = start ? strtol(start, NULL, 10) : 0;
         position_file = getenv("VC_POSITION_FILE");
         checkpoint_file = getenv("VC_CHECKPOINT_FILE");
-        clock_tick = last_save = now;
+        clock_tick = last_save = playback_started ? playback_started_at : now;
         clock_ready = true;
+    }
+    // Do not count FFplay's input probing and decoder setup as watched time.
+    // A restart must remain at 0:00 until audio really starts or the first
+    // video frame is presented.
+    if (!playback_started) {
+        clock_tick = now;
+        return;
     }
     if (!paused && now - clock_tick >= 1000) {
         position_seconds += (now - clock_tick) / 1000;
@@ -1416,17 +1445,6 @@ static bool map_event(SDL_Event *event)
     Uint32 now = SDL_GetTicks();
     load_player_config(now);
 
-    // The Miyoo SDL driver can expose the two physical volume buttons with a
-    // directional SDL symbol. Identify them by their Linux hardware scan code
-    // before handling D-pad seeks, so volume/brightness gestures can never
-    // jump to another point in the media. keymon still handles the system OSD.
-    if (scancode == MIYOO_SCANCODE_VOLUMEDOWN ||
-        scancode == MIYOO_SCANCODE_VOLUMEUP) {
-        if (menu_down && state == SDL_PRESSED)
-            menu_used = true;
-        return true;
-    }
-
     // Swallow repeats and the release belonging to a wake press. Otherwise
     // holding B or MENU for a fraction too long could pause or leave playback
     // immediately after the backlight comes back on.
@@ -1453,6 +1471,16 @@ static bool map_event(SDL_Event *event)
             else
                 draw_player_overlay();
         }
+        return true;
+    }
+
+    // Once awake, discard physical volume keys from FFplay so they can never
+    // become directional seeks; Onion's keymon performs the real adjustment.
+    // While dimmed or off, the wake block above consumes the first gesture.
+    if (scancode == MIYOO_SCANCODE_VOLUMEDOWN ||
+        scancode == MIYOO_SCANCODE_VOLUMEUP) {
+        if (menu_down && state == SDL_PRESSED)
+            menu_used = true;
         return true;
     }
     if (state == SDL_PRESSED)
@@ -1703,6 +1731,7 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
         real_overlay = (overlay_fn)dlsym(RTLD_NEXT, "SDL_DisplayYUVOverlay");
     if (!real_overlay)
         return -1;
+    mark_playback_started();
     last_overlay = overlay;
     if (dstrect != NULL) {
         last_overlay_rect = *dstrect;
@@ -1727,6 +1756,19 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
     // The pristine backup is retained for screenshots and paused redraws.
     last_overlay_painted = painted;
     return result;
+}
+
+void SDL_PauseAudio(int pause_on)
+{
+    if (!real_pause_audio)
+        real_pause_audio = (pause_audio_fn)dlsym(RTLD_NEXT, "SDL_PauseAudio");
+    load_player_config(SDL_GetTicks());
+    // Audio-only playback has no YUV frame to establish its true start.
+    // SDL unpauses the device exactly when samples may begin playing.
+    if (!pause_on && audio_mode)
+        mark_playback_started();
+    if (real_pause_audio)
+        real_pause_audio(pause_on);
 }
 
 void SDL_UpdateRect(SDL_Surface *surface, Sint32 x, Sint32 y, Uint32 width,
