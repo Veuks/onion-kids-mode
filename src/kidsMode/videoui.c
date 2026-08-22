@@ -86,7 +86,7 @@
 #define TIMESUP_OFF_MS (5 * 60 * 1000)
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
 #define RESULT_FILE "/tmp/kidsmode_ui_result"
-#define VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode"
+#define DEFAULT_VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode/Main"
 #define FAVORITES_PATH "/mnt/SDCARD/Roms/favourite.json"
 #define ICON_X_PATH "/mnt/SDCARD/App/KidsMode/icon-X-54.png"
 #define SCREEN_REFLECTION_PATH \
@@ -120,10 +120,10 @@ typedef enum { SCREEN_CAROUSEL,
 #define VIDEO_SELECTION_STATE_FILE "/tmp/kidsmode_video_selection"
 #define FOLDER_STATE_FILE "/tmp/kidsmode_folder"
 #define FOLDER_HISTORY_FILE "/tmp/kidsmode_folder_history"
-#define FOLDER_SELECTIONS_DIR "/mnt/SDCARD/Saves/KidsMode/series_selections"
-#define FOLDER_SELECTIONS_INDEX \
-    "/mnt/SDCARD/Saves/KidsMode/series_selections/selections.tsv"
-#define VIDEO_THUMBNAIL_CACHE_DIR "/mnt/SDCARD/Saves/KidsMode/artwork_cache"
+#define DEFAULT_FOLDER_SELECTIONS_DIR \
+    "/mnt/SDCARD/Saves/KidsMode/Main/series_selections"
+#define DEFAULT_VIDEO_THUMBNAIL_CACHE_DIR \
+    "/mnt/SDCARD/Saves/KidsMode/Main/artwork_cache"
 #define VIDEO_THUMBNAIL_RENDER_VERSION 1
 #define TIMER_STEP 5
 #define TIMER_MAX 120
@@ -161,6 +161,11 @@ typedef enum { FLOOR_GAMES = 0, FLOOR_VIDEOS = 1 } ContentFloor;
 static ContentFloor current_floor = FLOOR_GAMES;
 static int game_selection = 0;
 static int video_selection = 0;
+static char videos_dir[STR_MAX] = DEFAULT_VIDEOS_DIR;
+static char folder_selections_dir[STR_MAX] = DEFAULT_FOLDER_SELECTIONS_DIR;
+static char folder_selections_index[STR_MAX] = "";
+static char video_thumbnail_cache_dir[STR_MAX] =
+    DEFAULT_VIDEO_THUMBNAIL_CACHE_DIR;
 static char game_select_path[STR_MAX] = "";
 static char video_select_path[STR_MAX] = "";
 static int content_offset_y = 0;
@@ -802,9 +807,26 @@ static const char *visibleFolderName(const char *name)
     return name;
 }
 
+static void loadRuntimePaths(void)
+{
+    const char *value = getenv("KIDSMODE_MEDIA_DIR");
+    if (value != NULL && value[0] != '\0')
+        snprintf(videos_dir, sizeof(videos_dir), "%s", value);
+    value = getenv("KIDSMODE_FOLDER_SELECTIONS_DIR");
+    if (value != NULL && value[0] != '\0')
+        snprintf(folder_selections_dir, sizeof(folder_selections_dir), "%s",
+                 value);
+    value = getenv("KIDSMODE_ARTWORK_CACHE_DIR");
+    if (value != NULL && value[0] != '\0')
+        snprintf(video_thumbnail_cache_dir,
+                 sizeof(video_thumbnail_cache_dir), "%s", value);
+    snprintf(folder_selections_index, sizeof(folder_selections_index),
+             "%s/selections.tsv", folder_selections_dir);
+}
+
 static const char *folderBrowsePath(void)
 {
-    return current_folder[0] ? current_folder : VIDEOS_DIR;
+    return current_folder[0] ? current_folder : videos_dir;
 }
 
 static void rememberFolderInMemory(const char *folder, const char *selection,
@@ -853,7 +875,7 @@ static const char *rememberedFolderSelection(const char *folder)
 
 static void loadPersistedFolderSelections(void)
 {
-    FILE *index = fopen(FOLDER_SELECTIONS_INDEX, "r");
+    FILE *index = fopen(folder_selections_index, "r");
     if (index != NULL) {
         char line[STR_MAX * 2 + 2];
         while (fgets(line, sizeof(line), index) != NULL) {
@@ -869,7 +891,7 @@ static void loadPersistedFolderSelections(void)
     }
 
     // One-time migration from the older one-file-per-folder layout.
-    DIR *dir = opendir(FOLDER_SELECTIONS_DIR);
+    DIR *dir = opendir(folder_selections_dir);
     if (dir == NULL)
         return;
     struct dirent *de;
@@ -878,7 +900,7 @@ static void loadPersistedFolderSelections(void)
             strcmp(de->d_name, "selections.tsv") == 0)
             continue;
         char path[STR_MAX];
-        snprintf(path, sizeof(path), "%s/%s", FOLDER_SELECTIONS_DIR,
+        snprintf(path, sizeof(path), "%s/%s", folder_selections_dir,
                  de->d_name);
         FILE *fp = fopen(path, "r");
         if (fp == NULL)
@@ -898,14 +920,16 @@ static void loadPersistedFolderSelections(void)
     }
     closedir(dir);
 
-    index = fopen(FOLDER_SELECTIONS_INDEX ".tmp", "w");
+    char tmp_index[STR_MAX];
+    snprintf(tmp_index, sizeof(tmp_index), "%s.tmp", folder_selections_index);
+    index = fopen(tmp_index, "w");
     if (index != NULL) {
         for (int i = 0; i < folder_memory_count; i++)
             fprintf(index, "%s\t%s\n", folder_memory[i].folder,
                     folder_memory[i].selection);
         fclose(index);
-        remove(FOLDER_SELECTIONS_INDEX);
-        rename(FOLDER_SELECTIONS_INDEX ".tmp", FOLDER_SELECTIONS_INDEX);
+        remove(folder_selections_index);
+        rename(tmp_index, folder_selections_index);
     }
 }
 
@@ -1093,7 +1117,7 @@ static bool findNearestFolderArtwork(const char *folder, char *out,
 
     char cursor[STR_MAX];
     snprintf(cursor, sizeof(cursor), "%s", folder);
-    while (strcmp(cursor, VIDEOS_DIR) != 0) {
+    while (strcmp(cursor, videos_dir) != 0) {
         char *slash = strrchr(cursor, '/');
         if (slash == NULL || slash[1] == '\0')
             break;
@@ -1114,7 +1138,7 @@ static bool findNearestFolderArtwork(const char *folder, char *out,
             return true;
 
         *slash = '\0';
-        if (strncmp(cursor, VIDEOS_DIR, strlen(VIDEOS_DIR)) != 0)
+        if (strncmp(cursor, videos_dir, strlen(videos_dir)) != 0)
             break;
     }
     return false;
@@ -1139,8 +1163,8 @@ static void findArtwork(const char *browse_dir, const char *item_path,
 
     // Keep older layouts working while local exact-name artwork takes
     // priority.
-    if (strcmp(browse_dir, VIDEOS_DIR) != 0 &&
-        findArtworkInFolder(VIDEOS_DIR, label, out, out_size))
+    if (strcmp(browse_dir, videos_dir) != 0 &&
+        findArtworkInFolder(videos_dir, label, out, out_size))
         return;
 
     // An item without its own image reuses the nearest available folder
@@ -1198,7 +1222,7 @@ static void storeVideoList(const char *folder)
 
 static void loadVideos(void)
 {
-    const char *browse_dir = current_folder[0] ? current_folder : VIDEOS_DIR;
+    const char *browse_dir = current_folder[0] ? current_folder : videos_dir;
     if (loadCachedVideoList(browse_dir))
         return;
     DIR *dir = opendir(browse_dir);
@@ -1341,7 +1365,7 @@ static bool leaveCurrentVideoFolder(void)
         current_folder[0] = '\0';
     else {
         *slash = '\0';
-        if (strcmp(current_folder, VIDEOS_DIR) == 0)
+        if (strcmp(current_folder, videos_dir) == 0)
             current_folder[0] = '\0';
     }
     video_selection = 0;
@@ -1810,7 +1834,7 @@ static void ensureVideoThumbnailCacheDir(void)
     if (thumbnail_cache_dir_ready)
         return;
     mkdir("/mnt/SDCARD/Saves/KidsMode", 0777);
-    mkdir(VIDEO_THUMBNAIL_CACHE_DIR, 0777);
+    mkdir(video_thumbnail_cache_dir, 0777);
     thumbnail_cache_dir_ready = true;
 }
 
@@ -1819,7 +1843,7 @@ static bool videoThumbnailCachePaths(const char *source, int width, int height,
                                      char *metadata, size_t metadata_size)
 {
     int written = snprintf(bitmap, bitmap_size, "%s/cover-%08lx-%dx%d.bmp",
-                           VIDEO_THUMBNAIL_CACHE_DIR,
+                           video_thumbnail_cache_dir,
                            artworkPathHash(source), width, height);
     if (written < 0 || written >= (int)bitmap_size)
         return false;
@@ -2736,6 +2760,7 @@ static bool switchFloor(ContentFloor target, int remaining)
 
 int main(int argc, char *argv[])
 {
+    loadRuntimePaths();
     bool set_pin_mode = false;
     bool menu_mode = false;
     bool pick_timer_mode = false;

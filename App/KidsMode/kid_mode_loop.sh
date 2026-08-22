@@ -31,7 +31,34 @@ favfile=/mnt/SDCARD/Roms/favourite.json
 # Backups and state live OUTSIDE the app folder so that replacing
 # App/KidsMode during an update can never delete them.
 backupdir=/mnt/SDCARD/Saves/KidsMode
-favorites_signature_file="$backupdir/favorites_repaired.cksum"
+source_profile_file="$backupdir/source_profile.txt"
+
+# Main and Guest each get an entirely separate kid environment. When Kids
+# Mode is already armed (including after a reboot), the persisted origin is
+# authoritative because Onion's profile folders are temporarily parked.
+detect_source_profile() {
+    if [ -f "$flagfile" ] && [ -f "$source_profile_file" ]; then
+        persisted_profile="$(sed -n 1p "$source_profile_file" 2> /dev/null)"
+        case "$persisted_profile" in
+            Main | Guest)
+                printf '%s\n' "$persisted_profile"
+                return 0
+                ;;
+        esac
+    fi
+    # Onion parks MainProfile while Guest is active, and GuestProfile while
+    # Main is active. A device that never enabled Guest Mode is Main.
+    if [ -d /mnt/SDCARD/Saves/MainProfile ]; then
+        printf 'Guest\n'
+    else
+        printf 'Main\n'
+    fi
+}
+
+source_profile="$(detect_source_profile)"
+profile_state_dir="$backupdir/$source_profile"
+profile_preferences_file="$profile_state_dir/preferences.json"
+favorites_signature_file="$profile_state_dir/favorites_repaired.cksum"
 
 racfg=/mnt/SDCARD/RetroArch/.retroarch/retroarch.cfg
 rabackup="$backupdir/retroarch.cfg.backup"
@@ -41,12 +68,12 @@ keymapnone="$backupdir/keymap-was-absent"
 blfscript=/mnt/SDCARD/.tmp_update/script/blue_light.sh
 blfbackup="$backupdir/blue_light.sh.backup"
 current_profile=/mnt/SDCARD/Saves/CurrentProfile
-kids_profile=/mnt/SDCARD/Saves/KidsProfile
+kids_profile="/mnt/SDCARD/Saves/KidsProfile/$source_profile"
 isolated_subdirs="saves states romScreens"
 profile_isolation_marker="$backupdir/profile_isolation_active"
 game_environment_marker="$backupdir/game_environment_ready"
 game_prepare_pid_file=/tmp/kidsmode_game_prepare.pid
-last_game_file="$backupdir/last_game.txt"
+last_game_file="$profile_state_dir/last_game.txt"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidsmode.log
 
 timer_state="$backupdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
@@ -68,28 +95,33 @@ uilog=/tmp/kidmode_ui_log
 # Unified video state. Game state continues to use Onion's native
 # cmd_to_run.sh and last_game.txt; this file remembers the active floor,
 # folder, selected video and whether playback was running at shutdown.
-videosdir=/mnt/SDCARD/Media/KidsMode
-statefile="$backupdir/state.json"
-positions="$backupdir/video_positions"
+videosdir="/mnt/SDCARD/Media/KidsMode/$source_profile"
+statefile="$profile_state_dir/state.json"
+positions="$profile_state_dir/video_positions"
 ffplay=/mnt/SDCARD/.tmp_update/bin/ffplay
 player_pid=/tmp/kidsmode_player.pid
 menu_exit_marker=/tmp/kidsmode_video_menu_exit
 libvcinput="$appdir/bin/libvcinput.so"
 brightness_pwm=/sys/devices/soc0/soc/1f003400.pwm/pwm/pwmchip0/pwm0/duty_cycle
-game_selection_file="$backupdir/game_selection.txt"
-video_selection_file="$backupdir/video_selection.txt"
-last_artwork_file="$backupdir/last_artwork.txt"
+game_selection_file="$profile_state_dir/game_selection.txt"
+video_selection_file="$profile_state_dir/video_selection.txt"
+last_artwork_file="$profile_state_dir/last_artwork.txt"
 # Keep the established on-card directory name so this update does not create
 # a duplicate beside existing per-series selections. It now stores the last
 # selected item for every media folder, not only series.
-folder_selections_dir="$backupdir/series_selections"
+folder_selections_dir="$profile_state_dir/series_selections"
 folder_selections_index="$folder_selections_dir/selections.tsv"
 folder_history_file=/tmp/kidsmode_folder_history
+artwork_cache_dir="$profile_state_dir/artwork_cache"
 
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
 export PATH="$sysdir/bin:$PATH"
+export KIDSMODE_MEDIA_DIR="$videosdir"
+export KIDSMODE_FOLDER_SELECTIONS_DIR="$folder_selections_dir"
+export KIDSMODE_ARTWORK_CACHE_DIR="$artwork_cache_dir"
 
-mkdir -p "$backupdir" "$positions" "$folder_selections_dir" "$videosdir/Imgs"
+mkdir -p "$backupdir" "$profile_state_dir" "$positions" \
+    "$folder_selections_dir" "$artwork_cache_dir" "$videosdir/Imgs"
 [ -x "$ffplay" ] || ffplay="$(command -v ffplay)"
 timer_state_date="$(date +%Y-%m-%d)"
 
@@ -160,6 +192,25 @@ EOF
     case "$cfg_timer_minutes" in
         '' | *[!0-9]*) cfg_timer_minutes=0 ;;
     esac
+    if [ -f "$profile_preferences_file" ] &&
+        jq -e . "$profile_preferences_file" > /dev/null 2>&1; then
+        profile_dump="$(jq -r '
+            ((.lock_current_floor // false) | tostring),
+            ((if has("show_stories") then .show_stories else true end) | tostring),
+            ((if has("show_movies") then .show_movies else true end) | tostring),
+            ((if has("show_series") then .show_series else true end) | tostring),
+            ((if has("show_music") then .show_music else true end) | tostring)
+        ' "$profile_preferences_file" 2> /dev/null)"
+        {
+            IFS= read -r cfg_lock_current_floor
+            IFS= read -r cfg_show_stories
+            IFS= read -r cfg_show_movies
+            IFS= read -r cfg_show_series
+            IFS= read -r cfg_show_music
+        } <<EOF
+$profile_dump
+EOF
+    fi
     printf '%s\n' "$cfg_timer_minutes" > "$timer_minutes_file"
 }
 
@@ -231,6 +282,32 @@ config_merge() {
     if jq "$@" "$configfile" > "$tmpcfg" && mv -f "$tmpcfg" "$configfile"; then
         load_config_cache
     fi
+}
+
+profile_config_merge() {
+    # Parent-menu display choices belong to the originating Onion profile.
+    tmpprefs=/tmp/kidsmode_preferences.$$
+    if [ -f "$profile_preferences_file" ] &&
+        jq -e . "$profile_preferences_file" > /dev/null 2>&1; then
+        prefs_source="$profile_preferences_file"
+    else
+        prefs_source=/tmp/kidsmode_empty_preferences.$$
+        jq -n --argjson lock "$cfg_lock_current_floor" \
+            --argjson stories "$cfg_show_stories" \
+            --argjson movies "$cfg_show_movies" \
+            --argjson series "$cfg_show_series" \
+            --argjson music "$cfg_show_music" \
+            '{lock_current_floor: $lock, show_stories: $stories,
+              show_movies: $movies, show_series: $series,
+              show_music: $music}' > "$prefs_source"
+    fi
+    if jq "$@" "$prefs_source" > "$tmpprefs" &&
+        mv -f "$tmpprefs" "$profile_preferences_file"; then
+        load_config_cache
+    else
+        rm -f "$tmpprefs"
+    fi
+    [ "$prefs_source" = "$profile_preferences_file" ] || rm -f "$prefs_source"
 }
 
 store_pin() {
@@ -1188,11 +1265,11 @@ parent_menu() {
             rm -f "$lockfloor_result"
             case "$new_lock_val" in
                 1)
-                    config_merge '.lock_current_floor = true'
+                    profile_config_merge '.lock_current_floor = true'
                     log "Current floor lock turned ON."
                     ;;
                 0)
-                    config_merge '.lock_current_floor = false'
+                    profile_config_merge '.lock_current_floor = false'
                     log "Current floor lock turned OFF."
                     ;;
             esac
@@ -1216,7 +1293,7 @@ parent_menu() {
                 esac
             done < "$categories_result"
             rm -f "$categories_result"
-            config_merge --argjson stories "$new_stories" \
+            profile_config_merge --argjson stories "$new_stories" \
                 --argjson movies "$new_movies" --argjson series "$new_series" \
                 --argjson music "$new_music" \
                 '.show_stories = ($stories == 1) |
@@ -1898,6 +1975,9 @@ cmd_arm() {
 
     apply_blf_lock
     ensure_fav_shortcut
+    # Save the Onion profile of origin before the armed flag is created.
+    # The boot hook uses this value to restore the same isolated environment.
+    printf '%s\n' "$source_profile" > "$source_profile_file"
     touch "$flagfile"
     # Flush writes after launch without holding the timer screen on display.
     (sleep 2; sync) &

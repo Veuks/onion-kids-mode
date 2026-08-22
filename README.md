@@ -35,8 +35,9 @@ sections use the active Onion theme and slide smoothly between each other.
 - Onion-style artwork, controls, colors and menus.
 - ScreenScraper Mix V1-inspired reflection on video artwork for visual
   consistency with game thumbnails.
-- Separate child save profile for games; the parent's saves and states are
-  restored when leaving the mode.
+- Fully separate Main and Guest kid environments. Each has its own game saves,
+  media library, playback positions, carousel selections and artwork cache.
+- The same parent PIN and session timer are shared by both environments.
 
 ## Requirements
 
@@ -73,8 +74,9 @@ V4 display sizes are supported in the code, but feedback is welcome.
 Kids Mode remains active after a reboot until it is exited through the
 parent menu.
 
-PIN, timer state, selections and playback positions are stored under
-`Saves/KidsMode`.
+The environment is chosen automatically from the Onion profile used to launch
+Kids Mode. PIN and timer state are shared under `Saves/KidsMode`; profile-bound
+state is stored under `Saves/KidsMode/Main` or `Saves/KidsMode/Guest`.
 
 ### Clean installation and manual file move
 
@@ -86,30 +88,39 @@ place would reuse the former PIN, timer and state instead of starting clean.
 
 Do **not** remove `Saves/KidsProfile`, `Saves/CurrentProfile`,
 `Saves/MainProfile` or `Saves/GuestProfile`. `KidsProfile` contains the
-child's game saves and remains separate from the app settings.
+children's game saves. New sessions use `Saves/KidsProfile/Main` or
+`Saves/KidsProfile/Guest`, depending on the Onion profile of origin. Existing
+saves can be moved there manually; this release does not copy or merge them.
 
 Copy the new `App/KidsMode` folder and launch it once. Kids Mode creates a
-fresh `Saves/KidsMode` folder, PIN, timer state and playback history. Move
-the videos, series folders and `Imgs` folder manually from whichever former
-media folder exists:
+fresh `Saves/KidsMode` folder, PIN, timer state and profile-specific playback
+history. Move the videos, series folders and `Imgs` folder manually from
+whichever former media folder exists into either `Main` or `Guest`:
 
 ```text
-Media/VideoKidsMode        → Media/KidsMode
-Media/SuperKidsMode        → Media/KidsMode
+Media/VideoKidsMode        → Media/KidsMode/Main
+Media/SuperKidsMode        → Media/KidsMode/Main
 ```
 
-Move the **contents**, not the former media folder itself, to avoid creating
-`Media/KidsMode/VideoKidsMode` or `Media/KidsMode/SuperKidsMode`. The old
+Move the **contents**, not the former media folder itself. Nothing is migrated
+automatically. Copy other media to `Media/KidsMode/Guest` only if it should be
+available when Kids Mode is launched from Onion Guest. The old
 `Saves/VideoCarousel` folder is not used and may be removed after testing.
 The historical `v1.0.0` GitHub release itself is not changed.
 
 ## Media folders and local artwork
 
-All media belongs under:
+Each Onion profile has its own media root:
 
 ```text
-/mnt/SDCARD/Media/KidsMode/
+/mnt/SDCARD/Media/KidsMode/Main/
+/mnt/SDCARD/Media/KidsMode/Guest/
 ```
+
+Launching Kids Mode from Onion Main displays only `Main`; launching it from
+Onion Guest displays only `Guest`. The supplied category structure and generic
+artwork are included in both. Files placed directly in the older common
+`Media/KidsMode` root are intentionally ignored.
 
 Supported video formats are MP4, MKV, AVI, MOV, M4V and WebM. Supported audio
 formats are MP3, M4A, AAC, FLAC, OGG, OPUS, WAV and WMA. Media can be organised
@@ -123,7 +134,7 @@ package includes four ready-to-use category folders and their 256 × 256
 artwork. This organisation is recommended:
 
 ```text
-Media/KidsMode/
+Media/KidsMode/Main/
 ├── Imgs/
 │   ├── Movies.png
 │   ├── Music.png
@@ -165,14 +176,15 @@ cover, Kids Mode searches its parent folders up to the category at the media
 root. For example, content under `Series/Ulysses 31` can fall back to
 `Series/Imgs/Series.png` when `Ulysses 31/Imgs/Ulysses 31.png` does not exist.
 At every level, a folder cover may also be stored in its parent's `Imgs`
-directory, such as `Media/KidsMode/Imgs/Series.png`; both layouts are inherited.
+directory, such as `Media/KidsMode/Main/Imgs/Series.png`; both layouts are
+inherited.
 
 The same rule can give category folders their own artwork:
 `Movies/Imgs/Movies.png`, `Series/Imgs/Series.png` or `Music/Imgs/Music.png`.
 Without one, Kids Mode creates an automatic black folder card. The older
-shared `Media/KidsMode/Imgs` layout remains accepted as a fallback, but local
-`Imgs` folders take priority and prevent identical filenames in different
-categories from sharing the wrong image.
+shared `Media/KidsMode/Main/Imgs` layout remains accepted as a fallback, but
+local `Imgs` folders take priority and prevent identical filenames in different
+categories from sharing the wrong image. The Guest tree follows the same rule.
 
 Artwork is fitted inside a square without stretching, with black side bars
 when necessary. Portrait cinema posters are recommended for movies. If no
@@ -180,7 +192,9 @@ image exists, the app creates a black card and wraps its title over up to six
 balanced lines before reducing the font size.
 
 The first time a new or modified poster is displayed, Kids Mode creates a
-device-sized thumbnail under `Saves/KidsMode/artwork_cache`. Later navigation
+device-sized thumbnail under the active profile's
+`Saves/KidsMode/Main/artwork_cache` or `Saves/KidsMode/Guest/artwork_cache`.
+Later navigation
 loads that prepared thumbnail instead of decoding and resizing the original
 again. Replacing the source image overwrites the same cached thumbnail instead
 of accumulating versions. When updating from an older test build, its former
