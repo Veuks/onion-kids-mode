@@ -82,6 +82,7 @@
 #define UNLOCK_BAR_SHOW_MS 800
 #define PIN_IDLE_TIMEOUT_MS 30000
 #define REMAINING_POLL_MS 2000
+#define SELECTION_WRITE_DELAY_MS 300
 #define TIMESUP_OFF_MS (5 * 60 * 1000)
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
 #define RESULT_FILE "/tmp/kidsmode_ui_result"
@@ -120,6 +121,8 @@ typedef enum { SCREEN_CAROUSEL,
 #define FOLDER_STATE_FILE "/tmp/kidsmode_folder"
 #define FOLDER_HISTORY_FILE "/tmp/kidsmode_folder_history"
 #define FOLDER_SELECTIONS_DIR "/mnt/SDCARD/Saves/KidsMode/series_selections"
+#define FOLDER_SELECTIONS_INDEX \
+    "/mnt/SDCARD/Saves/KidsMode/series_selections/selections.tsv"
 #define VIDEO_THUMBNAIL_CACHE_DIR "/mnt/SDCARD/Saves/KidsMode/artwork_cache"
 #define TIMER_STEP 5
 #define TIMER_MAX 120
@@ -165,11 +168,14 @@ static bool show_stories = true;
 static bool show_movies = true;
 static bool show_series = true;
 static bool show_music = true;
+static bool selection_state_dirty;
+static uint32_t selection_changed_at;
 
 #define MAX_FOLDER_MEMORY 128
 #define MAX_VIDEO_DIR_CACHE 512
 #define MAX_ARTWORK_DIR_CACHE 64
 #define VIDEO_ARTWORK_CACHE_SIZE 12
+#define VIDEO_LIST_CACHE_SIZE 6
 typedef struct {
     char folder[STR_MAX];
     char selection[STR_MAX];
@@ -189,12 +195,20 @@ typedef struct {
     int count;
     int capacity;
 } ArtworkDirIndex;
+typedef struct {
+    char folder[STR_MAX];
+    VideoEntry *entries;
+    int count;
+    unsigned long age;
+} VideoListCacheEntry;
 static FolderSelectionMemory folder_memory[MAX_FOLDER_MEMORY];
 static int folder_memory_count;
 static VideoDirCacheEntry video_dir_cache[MAX_VIDEO_DIR_CACHE];
 static int video_dir_cache_count;
 static ArtworkDirIndex artwork_dir_cache[MAX_ARTWORK_DIR_CACHE];
 static int artwork_dir_cache_count;
+static VideoListCacheEntry video_list_cache[VIDEO_LIST_CACHE_SIZE];
+static unsigned long video_list_cache_age;
 
 static SDL_Surface *artwork = NULL;
 // Keep the last decoded image for each floor. Switching floors normally
@@ -209,6 +223,7 @@ typedef struct {
 } VideoArtworkCacheEntry;
 static VideoArtworkCacheEntry video_artwork_cache[VIDEO_ARTWORK_CACHE_SIZE];
 static unsigned long video_artwork_cache_age;
+static bool thumbnail_cache_dir_ready;
 static SDL_Surface *crt_fallback = NULL;
 static SDL_Surface *screen_reflection = NULL;
 static bool screen_reflection_checked = false;
@@ -368,40 +383,81 @@ static SDL_Surface *scaleSurface(SDL_Surface *src, int dst_w, int dst_h)
     int sw = src32->w, sh = src32->h;
     int spitch = src32->pitch / 4, dpitch = dst->pitch / 4;
 
+    // Precompute horizontal sampling once. The former implementation used
+    // floating-point divisions and sixteen floating multiplies per output
+    // pixel, which made the first display of a large poster noticeably slow
+    // on the Cortex-A7. Fixed-point bilinear interpolation produces the same
+    // smooth result with integer arithmetic.
+    int *sample_x = malloc((size_t)dst_w * 3 * sizeof(*sample_x));
+    if (sample_x == NULL) {
+        SDL_FreeSurface(src32);
+        SDL_FreeSurface(dst);
+        return NULL;
+    }
+    int *x0_map = sample_x;
+    int *x1_map = sample_x + dst_w;
+    int *wx_map = sample_x + dst_w * 2;
+    for (int x = 0; x < dst_w; x++) {
+        long long position =
+            ((long long)(2 * x + 1) * sw * 256) / (2 * dst_w) - 128;
+        if (position <= 0) {
+            x0_map[x] = x1_map[x] = 0;
+            wx_map[x] = 0;
+        }
+        else {
+            int x0 = (int)(position / 256);
+            if (x0 >= sw - 1) {
+                x0_map[x] = x1_map[x] = sw - 1;
+                wx_map[x] = 0;
+            }
+            else {
+                x0_map[x] = x0;
+                x1_map[x] = x0 + 1;
+                wx_map[x] = (int)(position - (long long)x0 * 256);
+            }
+        }
+    }
+
     for (int y = 0; y < dst_h; y++) {
-        double fy = ((double)y + 0.5) * sh / dst_h - 0.5;
-        int y0 = (int)fy;
-        if (y0 < 0)
-            y0 = 0;
-        int y1 = y0 + 1 < sh ? y0 + 1 : sh - 1;
-        double wy = fy - y0;
-        if (wy < 0)
+        long long position =
+            ((long long)(2 * y + 1) * sh * 256) / (2 * dst_h) - 128;
+        int y0, y1, wy;
+        if (position <= 0) {
+            y0 = y1 = 0;
             wy = 0;
-
+        }
+        else {
+            y0 = (int)(position / 256);
+            if (y0 >= sh - 1) {
+                y0 = y1 = sh - 1;
+                wy = 0;
+            }
+            else {
+                y1 = y0 + 1;
+                wy = (int)(position - (long long)y0 * 256);
+            }
+        }
+        int inv_y = 256 - wy;
         for (int x = 0; x < dst_w; x++) {
-            double fx = ((double)x + 0.5) * sw / dst_w - 0.5;
-            int x0 = (int)fx;
-            if (x0 < 0)
-                x0 = 0;
-            int x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
-            double wx = fx - x0;
-            if (wx < 0)
-                wx = 0;
-
-            uint32_t p00 = sp[y0 * spitch + x0], p01 = sp[y0 * spitch + x1];
-            uint32_t p10 = sp[y1 * spitch + x0], p11 = sp[y1 * spitch + x1];
-
+            int x0 = x0_map[x], x1 = x1_map[x], wx = wx_map[x];
+            int inv_x = 256 - wx;
+            uint32_t p00 = sp[y0 * spitch + x0];
+            uint32_t p01 = sp[y0 * spitch + x1];
+            uint32_t p10 = sp[y1 * spitch + x0];
+            uint32_t p11 = sp[y1 * spitch + x1];
             uint32_t result = 0;
             for (int shift = 0; shift <= 24; shift += 8) {
-                double c = ((p00 >> shift) & 0xFF) * (1 - wx) * (1 - wy) +
-                           ((p01 >> shift) & 0xFF) * wx * (1 - wy) +
-                           ((p10 >> shift) & 0xFF) * (1 - wx) * wy +
-                           ((p11 >> shift) & 0xFF) * wx * wy;
-                result |= ((uint32_t)(c + 0.5) & 0xFF) << shift;
+                unsigned top = ((p00 >> shift) & 0xFF) * inv_x +
+                               ((p01 >> shift) & 0xFF) * wx;
+                unsigned bottom = ((p10 >> shift) & 0xFF) * inv_x +
+                                  ((p11 >> shift) & 0xFF) * wx;
+                unsigned value = (top * inv_y + bottom * wy + 32768) >> 16;
+                result |= (value & 0xFF) << shift;
             }
             dp[y * dpitch + x] = result;
         }
     }
+    free(sample_x);
 
     SDL_FreeSurface(src32);
     return dst;
@@ -599,38 +655,40 @@ static SDL_Surface *loadScreenReflection(int size)
 // Blend the white reflection into the already-rendered screen ourselves.
 // This deliberately bypasses SDL_BlitSurface: on-device it can ignore the
 // mask's per-pixel alpha and turn the whole square white.
-static void blendScreenReflection(SDL_Surface *reflection, int dst_x,
-                                  int dst_y)
+static void blendReflection(SDL_Surface *destination,
+                            SDL_Surface *reflection, int dst_x, int dst_y)
 {
-    if (reflection == NULL || reflection->format->BytesPerPixel != 4)
+    if (destination == NULL || reflection == NULL ||
+        reflection->format->BytesPerPixel != 4)
         return;
-    bool screen_locked = SDL_MUSTLOCK(screen);
+    bool destination_locked = SDL_MUSTLOCK(destination);
     bool reflection_locked = SDL_MUSTLOCK(reflection);
-    if (screen_locked && SDL_LockSurface(screen) != 0)
+    if (destination_locked && SDL_LockSurface(destination) != 0)
         return;
     if (reflection_locked && SDL_LockSurface(reflection) != 0) {
-        if (screen_locked)
-            SDL_UnlockSurface(screen);
+        if (destination_locked)
+            SDL_UnlockSurface(destination);
         return;
     }
 
     uint32_t *mask = (uint32_t *)reflection->pixels;
     int mask_pitch = reflection->pitch / 4;
     for (int y = 0; y < reflection->h; y++) {
-        int screen_y = dst_y + y;
-        if (screen_y < 0 || screen_y >= screen->h)
+        int destination_y = dst_y + y;
+        if (destination_y < 0 || destination_y >= destination->h)
             continue;
         for (int x = 0; x < reflection->w; x++) {
-            int screen_x = dst_x + x;
-            if (screen_x < 0 || screen_x >= screen->w)
+            int destination_x = dst_x + x;
+            if (destination_x < 0 || destination_x >= destination->w)
                 continue;
             uint32_t alpha = (mask[y * mask_pitch + x] >> 24) & 0xFF;
             if (alpha == 0)
                 continue;
 
             uint8_t red, green, blue;
-            SDL_GetRGB(readSurfacePixel(screen, screen_x, screen_y),
-                       screen->format, &red, &green, &blue);
+            SDL_GetRGB(readSurfacePixel(destination, destination_x,
+                                        destination_y),
+                       destination->format, &red, &green, &blue);
             // The reference samples use a neutral white reflection. The
             // apparent tint in some covers comes from the artwork below it.
             // Screen-blend towards white so the exact matte remains visible
@@ -638,15 +696,16 @@ static void blendScreenReflection(SDL_Surface *reflection, int dst_x,
             red += ((255 - red) * 255 * alpha + 32512) / 65025;
             green += ((255 - green) * 255 * alpha + 32512) / 65025;
             blue += ((255 - blue) * 255 * alpha + 32512) / 65025;
-            writeSurfacePixel(screen, screen_x, screen_y,
-                              SDL_MapRGB(screen->format, red, green, blue));
+            writeSurfacePixel(destination, destination_x, destination_y,
+                              SDL_MapRGB(destination->format, red, green,
+                                         blue));
         }
     }
 
     if (reflection_locked)
         SDL_UnlockSurface(reflection);
-    if (screen_locked)
-        SDL_UnlockSurface(screen);
+    if (destination_locked)
+        SDL_UnlockSurface(destination);
 }
 
 // Results go through a file: stdout is unreliable on-device (SDL/driver
@@ -793,12 +852,29 @@ static const char *rememberedFolderSelection(const char *folder)
 
 static void loadPersistedFolderSelections(void)
 {
+    FILE *index = fopen(FOLDER_SELECTIONS_INDEX, "r");
+    if (index != NULL) {
+        char line[STR_MAX * 2 + 2];
+        while (fgets(line, sizeof(line), index) != NULL) {
+            line[strcspn(line, "\r\n")] = '\0';
+            char *tab = strchr(line, '\t');
+            if (tab == NULL)
+                continue;
+            *tab = '\0';
+            rememberFolderInMemory(line, tab + 1, false);
+        }
+        fclose(index);
+        return;
+    }
+
+    // One-time migration from the older one-file-per-folder layout.
     DIR *dir = opendir(FOLDER_SELECTIONS_DIR);
     if (dir == NULL)
         return;
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.')
+        if (de->d_name[0] == '.' ||
+            strcmp(de->d_name, "selections.tsv") == 0)
             continue;
         char path[STR_MAX];
         snprintf(path, sizeof(path), "%s/%s", FOLDER_SELECTIONS_DIR,
@@ -820,6 +896,41 @@ static void loadPersistedFolderSelections(void)
         fclose(fp);
     }
     closedir(dir);
+
+    index = fopen(FOLDER_SELECTIONS_INDEX ".tmp", "w");
+    if (index != NULL) {
+        for (int i = 0; i < folder_memory_count; i++)
+            fprintf(index, "%s\t%s\n", folder_memory[i].folder,
+                    folder_memory[i].selection);
+        fclose(index);
+        remove(FOLDER_SELECTIONS_INDEX);
+        rename(FOLDER_SELECTIONS_INDEX ".tmp", FOLDER_SELECTIONS_INDEX);
+    }
+}
+
+static bool entryType(const char *path, const struct dirent *entry,
+                      bool *is_regular, bool *is_directory)
+{
+    *is_regular = false;
+    *is_directory = false;
+#ifdef DT_REG
+    if (entry->d_type == DT_REG) {
+        *is_regular = true;
+        return true;
+    }
+    if (entry->d_type == DT_DIR) {
+        *is_directory = true;
+        return true;
+    }
+    if (entry->d_type != DT_UNKNOWN)
+        return true;
+#endif
+    struct stat st;
+    if (lstat(path, &st) != 0)
+        return false;
+    *is_regular = S_ISREG(st.st_mode);
+    *is_directory = S_ISDIR(st.st_mode);
+    return true;
 }
 
 static bool directoryHasVideos(const char *path, int depth)
@@ -839,17 +950,17 @@ static bool directoryHasVideos(const char *path, int depth)
             continue;
         char child[STR_MAX];
         snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
-        struct stat st;
-        if (lstat(child, &st) != 0)
+        bool is_regular, is_directory;
+        if (!entryType(child, de, &is_regular, &is_directory))
             continue;
         if (de->d_name[0] == '.')
             continue;
-        if (S_ISREG(st.st_mode) && hasMediaExtension(de->d_name) &&
+        if (is_regular && hasMediaExtension(de->d_name) &&
             strcasecmp(de->d_name, "FFplay controls.mp4") != 0) {
             found = true;
             break;
         }
-        if (S_ISDIR(st.st_mode) && strcasecmp(de->d_name, "Imgs") != 0 &&
+        if (is_directory && strcasecmp(de->d_name, "Imgs") != 0 &&
             directoryHasVideos(child, depth + 1)) {
             found = true;
             break;
@@ -1039,9 +1150,56 @@ static void findArtwork(const char *browse_dir, const char *item_path,
         return;
 }
 
+static bool loadCachedVideoList(const char *folder)
+{
+    for (int i = 0; i < VIDEO_LIST_CACHE_SIZE; i++) {
+        if (video_list_cache[i].entries != NULL &&
+            strcmp(video_list_cache[i].folder, folder) == 0) {
+            games_count = video_list_cache[i].count;
+            memcpy(games, video_list_cache[i].entries,
+                   (size_t)games_count * sizeof(games[0]));
+            video_list_cache[i].age = ++video_list_cache_age;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void storeVideoList(const char *folder)
+{
+    if (games_count <= 0)
+        return;
+    int slot = -1;
+    unsigned long oldest = 0;
+    for (int i = 0; i < VIDEO_LIST_CACHE_SIZE; i++) {
+        if (video_list_cache[i].entries == NULL) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 || video_list_cache[i].age < oldest) {
+            slot = i;
+            oldest = video_list_cache[i].age;
+        }
+    }
+    if (slot < 0)
+        return;
+    VideoEntry *copy = malloc((size_t)games_count * sizeof(*copy));
+    if (copy == NULL)
+        return;
+    memcpy(copy, games, (size_t)games_count * sizeof(*copy));
+    free(video_list_cache[slot].entries);
+    snprintf(video_list_cache[slot].folder,
+             sizeof(video_list_cache[slot].folder), "%s", folder);
+    video_list_cache[slot].entries = copy;
+    video_list_cache[slot].count = games_count;
+    video_list_cache[slot].age = ++video_list_cache_age;
+}
+
 static void loadVideos(void)
 {
     const char *browse_dir = current_folder[0] ? current_folder : VIDEOS_DIR;
+    if (loadCachedVideoList(browse_dir))
+        return;
     DIR *dir = opendir(browse_dir);
     if (dir == NULL)
         return;
@@ -1051,20 +1209,20 @@ static void loadVideos(void)
             continue;
         char fullpath[STR_MAX];
         snprintf(fullpath, sizeof(fullpath), "%s/%s", browse_dir, de->d_name);
-        struct stat st;
-        if (lstat(fullpath, &st) != 0)
+        bool is_regular, is_directory;
+        if (!entryType(fullpath, de, &is_regular, &is_directory))
             continue;
-        if (!current_folder[0] && S_ISDIR(st.st_mode) &&
+        if (!current_folder[0] && is_directory &&
             !rootCategoryVisible(de->d_name))
             continue;
         bool captionless_folder =
-            S_ISDIR(st.st_mode) && de->d_name[0] == '_' &&
+            is_directory && de->d_name[0] == '_' &&
             de->d_name[1] != '\0';
         if (de->d_name[0] == '.')
             continue;
-        bool is_media = S_ISREG(st.st_mode) && hasMediaExtension(de->d_name);
+        bool is_media = is_regular && hasMediaExtension(de->d_name);
         bool is_folder = false;
-        if (S_ISDIR(st.st_mode) && strcasecmp(de->d_name, "Imgs") != 0)
+        if (is_directory && strcasecmp(de->d_name, "Imgs") != 0)
             is_folder = directoryHasVideos(fullpath, 1);
         if (!is_media && !is_folder)
             continue;
@@ -1089,6 +1247,7 @@ static void loadVideos(void)
     }
     closedir(dir);
     qsort(games, games_count, sizeof(games[0]), compareVideos);
+    storeVideoList(browse_dir);
 }
 
 static void loadCurrentFloor(void)
@@ -1130,6 +1289,8 @@ static void rememberSelection(void)
                                               : video_select_path,
                  STR_MAX, "%s", games[current].item.rompath);
     }
+    selection_state_dirty = true;
+    selection_changed_at = SDL_GetTicks();
 }
 
 static void writeFloorState(void);
@@ -1228,6 +1389,7 @@ static void writeSelectionState(void)
         fprintf(fp, "%s\n", video_select_path);
         fclose(fp);
     }
+    selection_state_dirty = false;
 }
 
 static void writeFolderState(void)
@@ -1648,7 +1810,7 @@ static bool videoThumbnailCachePath(const char *source, int width, int height,
     struct stat st;
     if (stat(source, &st) != 0)
         return false;
-    snprintf(out, out_size, "%s/%08lx-%lld-%lld-%dx%d.bmp",
+    snprintf(out, out_size, "%s/v2-%08lx-%lld-%lld-%dx%d.bmp",
              VIDEO_THUMBNAIL_CACHE_DIR, artworkPathHash(source),
              (long long)st.st_size, (long long)st.st_mtime, width, height);
     return true;
@@ -1658,8 +1820,11 @@ static void saveVideoThumbnail(SDL_Surface *surface, const char *path)
 {
     if (surface == NULL || path == NULL || path[0] == '\0')
         return;
-    mkdir("/mnt/SDCARD/Saves/KidsMode", 0777);
-    mkdir(VIDEO_THUMBNAIL_CACHE_DIR, 0777);
+    if (!thumbnail_cache_dir_ready) {
+        mkdir("/mnt/SDCARD/Saves/KidsMode", 0777);
+        mkdir(VIDEO_THUMBNAIL_CACHE_DIR, 0777);
+        thumbnail_cache_dir_ready = true;
+    }
     char temporary[STR_MAX];
     if (snprintf(temporary, sizeof(temporary), "%s.tmp", path) >=
         (int)sizeof(temporary))
@@ -1700,7 +1865,7 @@ static void loadArtwork(void)
         }
         artwork_cache_path[cache_slot][0] = '\0';
     }
-    if (strlen(imgpath) == 0 || access(imgpath, F_OK) != 0)
+    if (imgpath[0] == '\0')
         return;
     int target_h = (int)(g_display.height * 0.58);
     int target_w = target_h;
@@ -1791,6 +1956,11 @@ static void loadArtwork(void)
 #ifdef PLATFORM_MIYOOMINI
     rotate180InPlace(framed);
 #endif
+    // Bake the CRT reflection into the prepared tile once. Previously the
+    // launcher blended roughly 77k pixels again on every carousel redraw.
+    SDL_Surface *reflection = loadScreenReflection(target_w);
+    if (reflection != NULL)
+        blendReflection(framed, reflection, 0, 0);
     if (thumbnail_path[0] != '\0')
         saveVideoThumbnail(framed, thumbnail_path);
     artwork = SDL_DisplayFormatAlpha(framed);
@@ -1972,12 +2142,12 @@ static void renderCarousel(int remaining)
 
     // Games already contain this highlight in their ScreenScraper artwork.
     // Add it only to video/folder squares (including the no-image fallback).
-    if (current_floor == FLOOR_VIDEOS) {
+    if (current_floor == FLOOR_VIDEOS && artwork == NULL) {
         int reflection_size = (int)(g_display.height * 0.58);
         SDL_Surface *reflection = loadScreenReflection(reflection_size);
         if (reflection != NULL) {
-            blendScreenReflection(reflection, cx - reflection->w / 2,
-                                  art_cy - reflection->h / 2);
+            blendReflection(screen, reflection, cx - reflection->w / 2,
+                            art_cy - reflection->h / 2);
         }
         // Supplied artwork, including an inherited folder cover, stays
         // untouched. The selected file or folder name is shown below it.
@@ -2698,6 +2868,8 @@ int main(int argc, char *argv[])
         uint32_t ticks = SDL_GetTicks();
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
+        if (key_changed && changed_key == SW_BTN_Y)
+            dirty = true;
         if (key_changed && keystate[changed_key] == PRESSED) {
             pin_last_input = ticks;
 
@@ -2706,13 +2878,11 @@ int main(int argc, char *argv[])
                 case SW_BTN_RIGHT:
                     current = (current + 1) % games_count;
                     rememberSelection();
-                    writeSelectionState();
                     dirty = true;
                     break;
                 case SW_BTN_LEFT:
                     current = (current + games_count - 1) % games_count;
                     rememberSelection();
-                    writeSelectionState();
                     dirty = true;
                     break;
                 case SW_BTN_UP:
@@ -3076,6 +3246,10 @@ int main(int argc, char *argv[])
             timesup_since = 0;
         }
 
+        if (selection_state_dirty &&
+            ticks - selection_changed_at >= SELECTION_WRITE_DELAY_MS)
+            writeSelectionState();
+
         if (quit)
             break;
 
@@ -3111,18 +3285,11 @@ int main(int argc, char *argv[])
             flip();
             dirty = false;
         }
-        // dirty=false above would otherwise cancel the battery chip's
-        // need to keep checking whether Y is still held — re-arm it
-        // here, after that reset, so the next loop tick redraws and the
-        // display swaps back the instant the combo is released.
-        if (keystate[SW_BTN_Y] != RELEASED &&
-            (active_screen == SCREEN_CAROUSEL ||
-             active_screen == SCREEN_CONFIRM_RESTART))
-            dirty = true;
-
         msleep(10);
     }
 
+    if (selection_state_dirty)
+        writeSelectionState();
     artwork = NULL;
     for (int i = 0; i < 2; i++) {
         if (artwork_cache[i] != NULL)
@@ -3133,6 +3300,8 @@ int main(int argc, char *argv[])
             SDL_FreeSurface(video_artwork_cache[i].surface);
     for (int i = 0; i < artwork_dir_cache_count; i++)
         free(artwork_dir_cache[i].entries);
+    for (int i = 0; i < VIDEO_LIST_CACHE_SIZE; i++)
+        free(video_list_cache[i].entries);
     if (crt_fallback != NULL)
         SDL_FreeSurface(crt_fallback);
     if (screen_reflection != NULL)

@@ -55,6 +55,7 @@ timer_state="$backupdir/timer_state.txt" # 3 lines: day / used seconds / bonus s
 # a lockout (see restore_pin_backup).
 pin_backup="$backupdir/pin_backup.json"
 remaining_file=/tmp/kidsmode_remaining
+timer_minutes_file=/tmp/kidsmode_timer_minutes
 ticker_pid_file=/tmp/kidmode_ticker.pid
 
 # kidui reports results via this file, NOT stdout — the device's SDL/driver
@@ -82,6 +83,7 @@ last_artwork_file="$backupdir/last_artwork.txt"
 # a duplicate beside existing per-series selections. It now stores the last
 # selected item for every media folder, not only series.
 folder_selections_dir="$backupdir/series_selections"
+folder_selections_index="$folder_selections_dir/selections.tsv"
 folder_history_file=/tmp/kidsmode_folder_history
 
 export LD_LIBRARY_PATH="/lib:/config/lib:$miyoodir/lib:$sysdir/lib:$sysdir/lib/parasyte"
@@ -89,6 +91,18 @@ export PATH="$sysdir/bin:$PATH"
 
 mkdir -p "$backupdir" "$positions" "$folder_selections_dir" "$videosdir/Imgs"
 [ -x "$ffplay" ] || ffplay="$(command -v ffplay)"
+timer_state_date="$(date +%Y-%m-%d)"
+
+cfg_pin_hash=""
+cfg_pin_salt=""
+cfg_pin_plain=""
+cfg_timer_minutes=0
+cfg_lock_current_floor=false
+cfg_show_stories=true
+cfg_show_movies=true
+cfg_show_series=true
+cfg_show_music=true
+cfg_fav_shortcut=false
 
 log() {
     mkdir -p "$(dirname "$logfile")"
@@ -115,18 +129,59 @@ make_salt() {
     fi
 }
 
-config_get() {
+load_config_cache() {
     [ -f "$configfile" ] || return 1
-    # NB: not `.[$k] // empty` — that would swallow boolean false
-    jq -r --arg k "$1" \
-        'if has($k) and .[$k] != null then (.[$k] | tostring) else empty end' \
-        "$configfile" 2> /dev/null
+    config_dump="$(jq -r '
+        (.pin_hash // ""),
+        (.pin_salt // ""),
+        (.pin_plain // ""),
+        ((.timer_minutes // 0) | tostring),
+        ((.lock_current_floor // false) | tostring),
+        ((if has("show_stories") then .show_stories else true end) | tostring),
+        ((if has("show_movies") then .show_movies else true end) | tostring),
+        ((if has("show_series") then .show_series else true end) | tostring),
+        ((if has("show_music") then .show_music else true end) | tostring),
+        ((.fav_shortcut // false) | tostring)
+    ' "$configfile" 2> /dev/null)" || return 1
+    {
+        IFS= read -r cfg_pin_hash
+        IFS= read -r cfg_pin_salt
+        IFS= read -r cfg_pin_plain
+        IFS= read -r cfg_timer_minutes
+        IFS= read -r cfg_lock_current_floor
+        IFS= read -r cfg_show_stories
+        IFS= read -r cfg_show_movies
+        IFS= read -r cfg_show_series
+        IFS= read -r cfg_show_music
+        IFS= read -r cfg_fav_shortcut
+    } <<EOF
+$config_dump
+EOF
+    case "$cfg_timer_minutes" in
+        '' | *[!0-9]*) cfg_timer_minutes=0 ;;
+    esac
+    printf '%s\n' "$cfg_timer_minutes" > "$timer_minutes_file"
 }
 
-category_value() {
-    # Missing keys belong to configurations created before this option and
-    # therefore default to visible.
-    [ "$(config_get "show_$1")" = "false" ] && printf '0\n' || printf '1\n'
+category_enabled() {
+    case "$1" in
+        stories) [ "$cfg_show_stories" != false ] ;;
+        movies) [ "$cfg_show_movies" != false ] ;;
+        series) [ "$cfg_show_series" != false ] ;;
+        music) [ "$cfg_show_music" != false ] ;;
+        *) return 1 ;;
+    esac
+}
+
+refresh_category_values() {
+    show_stories_value=0
+    show_movies_value=0
+    show_series_value=0
+    show_music_value=0
+    category_enabled stories && show_stories_value=1
+    category_enabled movies && show_movies_value=1
+    category_enabled series && show_series_value=1
+    category_enabled music && show_music_value=1
 }
 
 normalize_active_media_folder() {
@@ -134,12 +189,15 @@ normalize_active_media_folder() {
         "$videosdir"/*)
             relative_folder="${active_folder#"$videosdir"/}"
             root_folder="${relative_folder%%/*}"
-            root_folder="$(printf '%s' "$root_folder" | tr '[:upper:]' '[:lower:]')"
             case "$root_folder" in
-                stories) [ "$(category_value stories)" = 1 ] || active_folder="" ;;
-                movies) [ "$(category_value movies)" = 1 ] || active_folder="" ;;
-                series) [ "$(category_value series)" = 1 ] || active_folder="" ;;
-                music) [ "$(category_value music)" = 1 ] || active_folder="" ;;
+                [Ss][Tt][Oo][Rr][Ii][Ee][Ss])
+                    category_enabled stories || active_folder="" ;;
+                [Mm][Oo][Vv][Ii][Ee][Ss])
+                    category_enabled movies || active_folder="" ;;
+                [Ss][Ee][Rr][Ii][Ee][Ss])
+                    category_enabled series || active_folder="" ;;
+                [Mm][Uu][Ss][Ii][Cc])
+                    category_enabled music || active_folder="" ;;
             esac
             ;;
     esac
@@ -170,7 +228,9 @@ config_merge() {
     # Atomic rename is enough here. A global SD-card sync can take more than
     # 20 seconds and used to freeze the final timer screen before the
     # carousel appeared. Critical PIN data is separately backed up below.
-    jq "$@" "$configfile" > "$tmpcfg" && mv -f "$tmpcfg" "$configfile"
+    if jq "$@" "$configfile" > "$tmpcfg" && mv -f "$tmpcfg" "$configfile"; then
+        load_config_cache
+    fi
 }
 
 store_pin() {
@@ -223,13 +283,13 @@ restore_pin_backup() {
 }
 
 has_pin() {
-    [ -n "$(config_get pin_hash)" ] && return 0
-    is_4_digits "$(config_get pin_plain)"
+    [ -n "$cfg_pin_hash" ] && return 0
+    is_4_digits "$cfg_pin_plain"
 }
 
 # If the parent wrote a plaintext PIN into kidmode.json, hash it in place.
 hash_plain_pin() {
-    plain="$(config_get pin_plain)"
+    plain="$cfg_pin_plain"
     if is_4_digits "$plain"; then
         store_pin "$plain"
     fi
@@ -239,13 +299,13 @@ verify_pin() {
     entered="$1"
     is_4_digits "$entered" || return 1
 
-    stored_plain="$(config_get pin_plain)"
+    stored_plain="$cfg_pin_plain"
     if is_4_digits "$stored_plain" && [ "$entered" = "$stored_plain" ]; then
         return 0
     fi
 
-    stored_hash="$(config_get pin_hash)"
-    stored_salt="$(config_get pin_salt)"
+    stored_hash="$cfg_pin_hash"
+    stored_salt="$cfg_pin_salt"
     if [ -n "$stored_hash" ]; then
         entered_hash="$(hash_string "${stored_salt}${entered}" 2> /dev/null || true)"
         [ -n "$entered_hash" ] && [ "$entered_hash" = "$stored_hash" ] && return 0
@@ -559,7 +619,9 @@ restore_keymap_override() {
 # auto-save — the game resumes exactly there next launch.
 
 get_timer_minutes() {
-    tm="$(config_get timer_minutes)"
+    tm=""
+    [ -f "$timer_minutes_file" ] && IFS= read -r tm < "$timer_minutes_file"
+    [ -n "$tm" ] || tm="$cfg_timer_minutes"
     case "$tm" in
         '' | *[!0-9]*) echo 0 ;;
         *) echo "$tm" ;;
@@ -567,17 +629,30 @@ get_timer_minutes() {
 }
 
 state_used() {
-    v="$(sed -n 2p "$timer_state" 2> /dev/null)"
+    v=""
+    if [ -f "$timer_state" ]; then
+        {
+            IFS= read -r _timer_day
+            IFS= read -r v
+        } < "$timer_state"
+    fi
     case "$v" in '' | *[!0-9]*) echo 0 ;; *) echo "$v" ;; esac
 }
 state_bonus() {
-    v="$(sed -n 3p "$timer_state" 2> /dev/null)"
+    v=""
+    if [ -f "$timer_state" ]; then
+        {
+            IFS= read -r _timer_day
+            IFS= read -r _timer_used
+            IFS= read -r v
+        } < "$timer_state"
+    fi
     case "$v" in '' | *[!0-9]*) echo 0 ;; *) echo "$v" ;; esac
 }
 
 state_write() { # $1 used, $2 bonus
     mkdir -p "$backupdir"
-    printf '%s\n%s\n%s\n' "$(date +%Y-%m-%d)" "$1" "$2" > "$timer_state.tmp"
+    printf '%s\n%s\n%s\n' "$timer_state_date" "$1" "$2" > "$timer_state.tmp"
     mv -f "$timer_state.tmp" "$timer_state"
 }
 
@@ -600,7 +675,9 @@ update_remaining_now() {
 timer_remaining() {
     update_remaining_now
     if [ -f "$remaining_file" ]; then
-        cat "$remaining_file"
+        remaining_value=0
+        IFS= read -r remaining_value < "$remaining_file"
+        echo "$remaining_value"
     else
         echo -1 # timer off
     fi
@@ -1039,7 +1116,7 @@ ensure_fav_shortcut() {
 
     # Default OFF: the entry confused MainUI's search results on some
     # setups. Opt in with "fav_shortcut": true in kidmode.json.
-    if [ "$(config_get fav_shortcut)" != "true" ]; then
+    if [ "$cfg_fav_shortcut" != "true" ]; then
         if grep -qF "/App/KidsMode/launch.sh" "$favfile" 2> /dev/null; then
             awk 'index($0, "/App/KidsMode/launch.sh") == 0 { print }' \
                 "$favfile" > "$favfile.tmp" && mv -f "$favfile.tmp" "$favfile"
@@ -1093,15 +1170,17 @@ parent_menu() {
     while :; do
         rm -f "$uiresult" "$lockfloor_result" "$categories_result"
         lock_val=0
-        [ "$(config_get lock_current_floor)" = "true" ] && lock_val=1
+        [ "$cfg_lock_current_floor" = "true" ] && lock_val=1
+        refresh_category_values
+        [ "$active_floor" = videos ] && menu_floor=VIDEOS || menu_floor=GAMES
         "$kidui_bin" --parent-menu \
             --remaining "$(timer_remaining)" \
-            --floor "$(printf '%s' "$active_floor" | tr '[:lower:]' '[:upper:]')" \
+            --floor "$menu_floor" \
             --lock-floor "$lock_val" \
-            --show-stories "$(category_value stories)" \
-            --show-movies "$(category_value movies)" \
-            --show-series "$(category_value series)" \
-            --show-music "$(category_value music)" > "$uilog" 2>&1
+            --show-stories "$show_stories_value" \
+            --show-movies "$show_movies_value" \
+            --show-series "$show_series_value" \
+            --show-music "$show_music_value" > "$uilog" 2>&1
         menu_rc=$?
 
         if [ -f "$lockfloor_result" ]; then
@@ -1120,19 +1199,30 @@ parent_menu() {
         fi
 
         if [ -f "$categories_result" ]; then
+            new_stories="$show_stories_value"
+            new_movies="$show_movies_value"
+            new_series="$show_series_value"
+            new_music="$show_music_value"
             while IFS='=' read -r category new_value; do
                 case "$category:$new_value" in
-                    stories:1) config_merge '.show_stories = true' ;;
-                    stories:0) config_merge '.show_stories = false' ;;
-                    movies:1) config_merge '.show_movies = true' ;;
-                    movies:0) config_merge '.show_movies = false' ;;
-                    series:1) config_merge '.show_series = true' ;;
-                    series:0) config_merge '.show_series = false' ;;
-                    music:1) config_merge '.show_music = true' ;;
-                    music:0) config_merge '.show_music = false' ;;
+                    stories:1) new_stories=1 ;;
+                    stories:0) new_stories=0 ;;
+                    movies:1) new_movies=1 ;;
+                    movies:0) new_movies=0 ;;
+                    series:1) new_series=1 ;;
+                    series:0) new_series=0 ;;
+                    music:1) new_music=1 ;;
+                    music:0) new_music=0 ;;
                 esac
             done < "$categories_result"
             rm -f "$categories_result"
+            config_merge --argjson stories "$new_stories" \
+                --argjson movies "$new_movies" --argjson series "$new_series" \
+                --argjson music "$new_music" \
+                '.show_stories = ($stories == 1) |
+                 .show_movies = ($movies == 1) |
+                 .show_series = ($series == 1) |
+                 .show_music = ($music == 1)'
             log "Visible media folders updated from the parent menu."
             normalize_active_media_folder
         fi
@@ -1214,8 +1304,21 @@ disarm() {
 
 # ------------------------------ main loop ----------------------------------
 
-state_get() {
-    jq -r "$1 // empty" "$statefile" 2> /dev/null
+load_state_cache() {
+    state_dump="$(jq -r '
+        (.active_floor // ""),
+        (.active_mode // ""),
+        (.last_video // ""),
+        (.active_folder // "")
+    ' "$statefile" 2> /dev/null)" || state_dump=""
+    {
+        IFS= read -r active_floor
+        IFS= read -r initial_mode
+        IFS= read -r last_video
+        IFS= read -r active_folder
+    } <<EOF
+$state_dump
+EOF
 }
 
 state_save() {
@@ -1258,6 +1361,20 @@ remember_folder_selection() {
     folder_state_file="$(folder_selection_file "$browse_folder")" || return 0
     printf '%s\n' "$selected_item" > "$folder_state_file.tmp" &&
         mv -f "$folder_state_file.tmp" "$folder_state_file"
+
+    # Keep one consolidated index for kidui. Reading this single file is much
+    # faster than opening every hashed selection file after each video exits.
+    tab_char="$(printf '\t')"
+    index_tmp="$folder_selections_index.tmp"
+    : > "$index_tmp"
+    if [ -f "$folder_selections_index" ]; then
+        while IFS="$tab_char" read -r indexed_folder indexed_selection; do
+            [ "$indexed_folder" = "$browse_folder" ] ||
+                printf '%s\t%s\n' "$indexed_folder" "$indexed_selection" >> "$index_tmp"
+        done < "$folder_selections_index"
+    fi
+    printf '%s\t%s\n' "$browse_folder" "$selected_item" >> "$index_tmp"
+    mv -f "$index_tmp" "$folder_selections_index"
 }
 
 last_folder_selection() {
@@ -1311,14 +1428,17 @@ watch_media_duration() {
     duration_log="$1" duration_output="$2" watched_pid="$3"
     tries=0
     while [ "$tries" -lt 100 ] && [ -d "/proc/$watched_pid" ]; do
-        stamp="$(sed -n \
-            's/.*Duration: \([0-9][0-9]*:[0-9][0-9]*:[0-9][0-9]*\).*/\1/p' \
-            "$duration_log" 2> /dev/null | sed -n '1p')"
-        if [ -n "$stamp" ]; then
-            awk -F: '{print ($1 + 0) * 3600 + ($2 + 0) * 60 + ($3 + 0)}' \
-                <<EOF > "$duration_output"
-$stamp
-EOF
+        media_seconds="$(awk '
+            match($0, /Duration: [0-9]+:[0-9]+:[0-9]+/) {
+                stamp = substr($0, RSTART + 10, RLENGTH - 10)
+                split(stamp, value, ":")
+                print (value[1] + 0) * 3600 + (value[2] + 0) * 60 +
+                      (value[3] + 0)
+                exit
+            }
+        ' "$duration_log" 2> /dev/null)"
+        if [ -n "$media_seconds" ]; then
+            printf '%s\n' "$media_seconds" > "$duration_output"
             return 0
         fi
         tries=$((tries + 1))
@@ -1457,17 +1577,15 @@ cmd_run() {
     startup_ready_at="$(date +%s)"
     log "Startup: blocking work completed in $((startup_ready_at - startup_started_at))s."
 
-    active_floor="$(state_get '.active_floor')"
+    load_state_cache
     [ "$active_floor" = videos ] || active_floor=games
-    active_folder="$(state_get '.active_folder')"
-    last_video="$(state_get '.last_video')"
     case "$active_folder" in "$videosdir"/*) ;; *) active_folder="" ;; esac
     case "$last_video" in "$videosdir"/*) ;; *) last_video="" ;; esac
     [ -d "$active_folder" ] || active_folder=""
 
     # Resume only what was genuinely running when power was cut. Returning
     # to the carousel before shutdown records carousel and does not relaunch.
-    if [ "$(state_get '.active_mode')" = running ] && [ -f "$last_video" ] &&
+    if [ "$initial_mode" = running ] && [ -f "$last_video" ] &&
         [ "$(timer_remaining)" != 0 ]; then
         active_floor=videos
         resume_artwork="$(sed -n 1p "$last_artwork_file" 2> /dev/null)"
@@ -1485,7 +1603,7 @@ cmd_run() {
             run_game_cmd
             state_save games carousel "$last_video" "$active_folder"
         fi
-    elif [ "$(state_get '.active_mode')" = running ] &&
+    elif [ "$initial_mode" = running ] &&
         [ "$active_floor" = games ] && [ -f "$last_game_file" ] &&
         [ "$(timer_remaining)" != 0 ]; then
         # Some shutdown paths let the emulator wrapper return and remove
@@ -1528,18 +1646,20 @@ cmd_run() {
         [ -f "$video_selection_file" ] &&
             video_select_path="$(sed -n 1p "$video_selection_file")"
         [ -n "$video_select_path" ] || video_select_path="$last_video"
-        set -- --floor "$(printf '%s' "$active_floor" | tr '[:lower:]' '[:upper:]')"
+        [ "$active_floor" = videos ] && ui_floor_arg=VIDEOS || ui_floor_arg=GAMES
+        set -- --floor "$ui_floor_arg"
         [ -n "$game_select_path" ] &&
             set -- "$@" --game-select "$game_select_path"
         [ -n "$video_select_path" ] &&
             set -- "$@" --video-select "$video_select_path"
         [ -n "$active_folder" ] && set -- "$@" --folder "$active_folder"
-        [ "$(config_get lock_current_floor)" = true ] && set -- "$@" --floor-locked
+        [ "$cfg_lock_current_floor" = true ] && set -- "$@" --floor-locked
+        refresh_category_values
         set -- "$@" \
-            --show-stories "$(category_value stories)" \
-            --show-movies "$(category_value movies)" \
-            --show-series "$(category_value series)" \
-            --show-music "$(category_value music)"
+            --show-stories "$show_stories_value" \
+            --show-movies "$show_movies_value" \
+            --show-series "$show_series_value" \
+            --show-music "$show_music_value"
         if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
             "$kidui_bin" "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         elif [ "$no_pin_recovery" = "1" ]; then
@@ -1780,6 +1900,9 @@ cmd_arm() {
 
     cmd_run
 }
+
+ensure_config
+load_config_cache || exit 1
 
 case "${1:-run}" in
     arm)

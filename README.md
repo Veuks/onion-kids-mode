@@ -224,8 +224,8 @@ normal in-game save data.
 | B | Pause playback |
 | MENU + LEFT | Rewind progressively |
 | MENU + RIGHT | Fast-forward progressively |
-| MENU + DOWN | Rewind 10 minutes |
-| MENU + UP | Fast-forward 10 minutes |
+| MENU + DOWN | Rewind progressively: 5, then 10 minutes |
+| MENU + UP | Fast-forward progressively: 5, then 10 minutes |
 | MENU + X + Y while paused | Capture the current frame for the carousel |
 | MENU alone | Save the position and return to the carousel |
 | Other buttons | Ignored by the player |

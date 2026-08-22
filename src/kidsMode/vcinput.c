@@ -32,6 +32,7 @@ static updates_fn real_updates;
 static SDL_Overlay *last_overlay;
 static SDL_Rect last_overlay_rect;
 static bool last_overlay_rect_ready;
+static bool last_overlay_painted;
 static bool inside_event_call;
 static bool paused;
 static bool menu_down;
@@ -74,7 +75,6 @@ static SDL_Surface *hardware_surface;
 static bool audio_artwork_loaded;
 static bool inside_present;
 static SDLKey wake_key = SDLK_UNKNOWN;
-static long last_presented_second = -1;
 static bool overlay_force_redraw = true;
 static bool audio_progress_ready;
 static char last_elapsed_text[24];
@@ -113,6 +113,7 @@ static void update_clock(void);
 static void draw_player_overlay(void);
 static void draw_audio_progress_only(void);
 static void draw_seek_notice(void);
+static void restore_video_overlay(SDL_Overlay *overlay);
 static int text_width(const char *text, int scale);
 static void format_time(long seconds, bool remaining, char *out,
                         size_t out_size);
@@ -197,8 +198,20 @@ static bool save_paused_frame(void)
     if (last_overlay->format != SDL_YV12_OVERLAY &&
         last_overlay->format != SDL_IYUV_OVERLAY)
         return false;
-    if (SDL_LockYUVOverlay(last_overlay) != 0)
-        return false;
+    size_t plane_sizes[3] = {
+        (size_t)last_overlay->pitches[0] * last_overlay->h,
+        (size_t)last_overlay->pitches[1] * ((last_overlay->h + 1) / 2),
+        (size_t)last_overlay->pitches[2] * ((last_overlay->h + 1) / 2)};
+    bool use_clean_backup = last_overlay_painted;
+    for (int i = 0; i < 3 && use_clean_backup; i++)
+        if (yuv_backup[i] == NULL || yuv_backup_capacity[i] < plane_sizes[i])
+            use_clean_backup = false;
+    bool overlay_locked = false;
+    if (!use_clean_backup) {
+        if (SDL_LockYUVOverlay(last_overlay) != 0)
+            return false;
+        overlay_locked = true;
+    }
 
     int source_w = last_overlay->w;
     int source_h = last_overlay->h;
@@ -221,17 +234,22 @@ static bool save_paused_frame(void)
         SDL_SWSURFACE, output_w, output_h, 32, 0x00ff0000, 0x0000ff00,
         0x000000ff, 0xff000000);
     if (shot == NULL) {
-        SDL_UnlockYUVOverlay(last_overlay);
+        if (overlay_locked)
+            SDL_UnlockYUVOverlay(last_overlay);
         return false;
     }
 
-    Uint8 *y_plane = last_overlay->pixels[0];
+    Uint8 *planes[3] = {
+        use_clean_backup ? yuv_backup[0] : last_overlay->pixels[0],
+        use_clean_backup ? yuv_backup[1] : last_overlay->pixels[1],
+        use_clean_backup ? yuv_backup[2] : last_overlay->pixels[2]};
+    Uint8 *y_plane = planes[0];
     Uint8 *u_plane = last_overlay->format == SDL_YV12_OVERLAY
-                         ? last_overlay->pixels[2]
-                         : last_overlay->pixels[1];
+                         ? planes[2]
+                         : planes[1];
     Uint8 *v_plane = last_overlay->format == SDL_YV12_OVERLAY
-                         ? last_overlay->pixels[1]
-                         : last_overlay->pixels[2];
+                         ? planes[1]
+                         : planes[2];
     int y_pitch = last_overlay->pitches[0];
     int u_pitch = last_overlay->format == SDL_YV12_OVERLAY
                       ? last_overlay->pitches[2]
@@ -264,7 +282,8 @@ static bool save_paused_frame(void)
     }
     if (SDL_MUSTLOCK(shot))
         SDL_UnlockSurface(shot);
-    SDL_UnlockYUVOverlay(last_overlay);
+    if (overlay_locked)
+        SDL_UnlockYUVOverlay(last_overlay);
 
     char temporary[2048];
     snprintf(temporary, sizeof(temporary), "%s.tmp", target);
@@ -502,6 +521,10 @@ static void update_clock(void)
         now >= seek_notice_until && last_overlay != NULL &&
         last_overlay_rect_ready && real_overlay != NULL) {
         seek_notice[0] = '\0';
+        if (last_overlay_painted) {
+            restore_video_overlay(last_overlay);
+            last_overlay_painted = false;
+        }
         real_overlay(last_overlay, &last_overlay_rect);
         draw_player_overlay();
     }
@@ -1197,7 +1220,6 @@ static void draw_audio_progress_only(void)
     // Direct framebuffer writes are deliberately not followed by an SDL
     // refresh: the Miyoo driver can turn even a tiny update into a full-page
     // flip, which was the remaining source of random whole-screen flashes.
-    last_presented_second = position_seconds;
 }
 
 static void draw_seek_notice(void)
@@ -1307,7 +1329,6 @@ static void draw_player_overlay(void)
     if (audio_mode)
         update_screen(surface, 0, 0, surface->w, surface->h);
     inside_present = was_inside_present;
-    last_presented_second = position_seconds;
     overlay_force_redraw = false;
 }
 
@@ -1526,8 +1547,18 @@ static bool map_event(SDL_Event *event)
             overlay_force_redraw = !audio_mode;
             if (audio_mode)
                 draw_audio_progress_only();
-            else
+            else {
+                // The playing OSD is baked into the last YUV frame. Replace
+                // it with the pristine copy before painting the static pause
+                // OSD, otherwise seek text appears twice at two layers.
+                if (last_overlay_painted && last_overlay != NULL &&
+                    last_overlay_rect_ready && real_overlay != NULL) {
+                    restore_video_overlay(last_overlay);
+                    last_overlay_painted = false;
+                    real_overlay(last_overlay, &last_overlay_rect);
+                }
                 draw_player_overlay();
+            }
             key(event, SDLK_SPACE, SDL_PRESSED);
             return false;
         }
@@ -1676,10 +1707,10 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
     bool painted = player_overlay_visible() &&
                    backup_and_paint_video_overlay(overlay);
     int result = real_overlay(overlay, dstrect);
-    // FFplay may keep this frame for pause/capture. Restore its original
-    // pixels after SDL has copied it to the display.
-    if (painted)
-        restore_video_overlay(overlay);
+    // Do not restore immediately: the Miyoo overlay is scanned out
+    // asynchronously, so changing its pixels here produces striped text.
+    // The pristine backup is retained for screenshots and paused redraws.
+    last_overlay_painted = painted;
     return result;
 }
 
