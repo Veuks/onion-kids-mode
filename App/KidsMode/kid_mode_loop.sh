@@ -1546,7 +1546,8 @@ play_video() {
     runtime_pos="/tmp/kidsmode_position.$$"
     duration_file="/tmp/kidsmode_duration.$$"
     duration_log="/tmp/kidsmode_ffplay.$$"
-    rm -f "$duration_file" "$duration_log"
+    brightness_state="/tmp/kidsmode_brightness.$$"
+    rm -f "$duration_file" "$duration_log" "$brightness_state"
     brightness_restore=""
     if [ -r "$brightness_pwm" ]; then
         brightness_restore="$(cat "$brightness_pwm" 2> /dev/null)"
@@ -1554,6 +1555,8 @@ play_video() {
             '' | *[!0-9]*) brightness_restore="" ;;
         esac
     fi
+    [ -n "$brightness_restore" ] &&
+        printf '%s\n' "$brightness_restore" > "$brightness_state"
     start=0
     if [ "$fresh" != yes ] && [ -f "$posfile" ]; then
         start="$(cat "$posfile" 2> /dev/null)"
@@ -1583,6 +1586,7 @@ play_video() {
             VC_DURATION_FILE="$duration_file" \
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
+            VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
             "$ffplay" -vn -autoexit -i "$video" $seek_args \
                 2> "$duration_log" &
@@ -1593,6 +1597,7 @@ play_video() {
             VC_DURATION_FILE="$duration_file" \
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
+            VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
             "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" $seek_args \
             2> "$duration_log" &
@@ -1606,8 +1611,15 @@ play_video() {
     kill "$duration_watcher" 2> /dev/null
     wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
-    if [ -n "$brightness_restore" ] && [ -w "$brightness_pwm" ]; then
-        printf '%s\n' "$brightness_restore" > "$brightness_pwm"
+    # Restore the latest brightness selected during playback, not the value
+    # captured when FFplay started. This also recovers cleanly if playback
+    # ended while Kids Mode's own dim/off state was active.
+    if [ -r "$brightness_state" ] && [ -w "$brightness_pwm" ]; then
+        brightness_restore="$(cat "$brightness_state" 2> /dev/null)"
+        case "$brightness_restore" in
+            '' | *[!0-9]*) ;;
+            *) printf '%s\n' "$brightness_restore" > "$brightness_pwm" ;;
+        esac
     fi
     # Keep libvcinput's two-second safety checkpoint after MENU and during
     # shutdown. FFplay may continue decoding briefly after POWER; its later
@@ -1617,7 +1629,8 @@ play_video() {
         [ -f "$runtime_pos" ]; then
         cp -f "$runtime_pos" "$posfile"
     fi
-    rm -f "$runtime_pos" "$duration_file" "$duration_log" "$player_pid" \
+    rm -f "$runtime_pos" "$duration_file" "$duration_log" \
+        "$brightness_state" "$player_pid" \
         /tmp/stay_awake
     rm -f /mnt/SDCARD/App/FFplay/pos.cfg "$sysdir/pos.cfg"
     restore_ffplay_state

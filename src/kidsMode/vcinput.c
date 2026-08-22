@@ -43,6 +43,7 @@ static bool screenshot_down;
 static bool x_down;
 static bool y_down;
 static Uint32 menu_pressed_at;
+static long menu_brightness_at_press = -1;
 static SDLKey seek_input = SDLK_UNKNOWN;
 static Uint32 seek_started_at;
 static Uint32 seek_last_step;
@@ -66,6 +67,7 @@ static const char *artwork_file;
 static const char *media_title;
 static const char *duration_file;
 static const char *brightness_file;
+static const char *brightness_state_file;
 static long duration_seconds;
 static Uint32 last_duration_check;
 static Uint32 progress_until;
@@ -351,6 +353,20 @@ static bool write_backlight(long value)
     return written;
 }
 
+static void save_brightness_choice(long value)
+{
+    if (value <= 0)
+        return;
+    saved_brightness_raw = value;
+    if (brightness_state_file == NULL || brightness_state_file[0] == '\0')
+        return;
+    FILE *fp = fopen(brightness_state_file, "w");
+    if (fp != NULL) {
+        fprintf(fp, "%ld\n", value);
+        fclose(fp);
+    }
+}
+
 static void restore_backlight(void)
 {
     if (backlight_stage != 0 && saved_brightness_raw > 0)
@@ -410,10 +426,12 @@ static void load_player_config(Uint32 now)
     media_title = getenv("VC_MEDIA_TITLE");
     duration_file = getenv("VC_DURATION_FILE");
     brightness_file = getenv("VC_BRIGHTNESS_FILE");
+    brightness_state_file = getenv("VC_BRIGHTNESS_STATE_FILE");
     const char *brightness = getenv("VC_BRIGHTNESS_RESTORE");
     saved_brightness_raw = brightness ? strtol(brightness, NULL, 10) : -1;
     if (saved_brightness_raw <= 0)
         saved_brightness_raw = read_number_file(brightness_file);
+    save_brightness_choice(saved_brightness_raw);
     last_activity = now;
     player_config_ready = true;
 }
@@ -439,7 +457,7 @@ static void update_backlight(Uint32 now)
     if (backlight_stage == 0 && idle >= AUDIO_DIM_DELAY) {
         long current = read_number_file(brightness_file);
         if (current > 0)
-            saved_brightness_raw = current;
+            save_brightness_choice(current);
         if (write_backlight(AUDIO_DIM_RAW)) {
             backlight_stage = 1;
             // From the beginning of the dimmed transition, reserve the first
@@ -1499,11 +1517,23 @@ static bool map_event(SDL_Event *event)
                 menu_down = true;
                 menu_used = false;
                 menu_pressed_at = SDL_GetTicks();
+                menu_brightness_at_press =
+                    read_number_file(brightness_file);
             }
             return true;
         }
         menu_down = false;
         seek_input = SDLK_UNKNOWN;
+        // Onion's keymon may consume the volume-key event before SDL sees it.
+        // Detect the resulting PWM change so MENU+VOL is still recognised as
+        // a brightness gesture and MENU release cannot leave or seek media.
+        long current_brightness = read_number_file(brightness_file);
+        if (current_brightness > 0 && menu_brightness_at_press >= 0 &&
+            current_brightness != menu_brightness_at_press) {
+            menu_used = true;
+            save_brightness_choice(current_brightness);
+        }
+        menu_brightness_at_press = -1;
         Uint32 held_ms = SDL_GetTicks() - menu_pressed_at;
         if (!menu_used && held_ms < 500)
         {
