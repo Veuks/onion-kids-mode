@@ -1,5 +1,5 @@
 #!/bin/sh
-# Kid Mode arm app — one tap in Onion's Apps tab arms Kid Mode and drops
+# Kids Mode arm app — one tap in Onion's Apps tab arms it and drops
 # straight into the kid launcher. Unlock from inside the kid UI by holding
 # SELECT+START for 3 seconds and entering the PIN.
 

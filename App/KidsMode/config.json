@@ -3,5 +3,5 @@
     "icon": "../../Icons/Default/app/guest_on.png",
     "iconsel": "",
     "launch": "launch.sh",
-    "description": "Curate Games, Simple UI, Timer..."
+    "description": "Games and videos in one protected mode"
 }
