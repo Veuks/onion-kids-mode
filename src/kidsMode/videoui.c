@@ -135,7 +135,7 @@ typedef enum { SCREEN_CAROUSEL,
 #define EPISODE_MAX_LINES 6
 #define EPISODE_MAX_WORDS 128
 #define BIG_VALUE_FONT_SIZE 48
-#define RESTART_TITLE_FONT_SIZE 26
+#define RESTART_TITLE_FONT_OFFSET 4
 // Longer helper sentences use the theme's LIST font (the readable upright
 // face Onion pairs with its display font in the Apps menu) at a controlled
 // size — theme hint fonts are display faces sized for short labels
@@ -313,7 +313,7 @@ static TTF_Font *getFontRestartTitle(void)
     if (font_restart_title == NULL)
         font_restart_title =
             theme_loadFont(theme()->path, theme()->title.font,
-                           RESTART_TITLE_FONT_SIZE);
+                           theme()->title.size + RESTART_TITLE_FONT_OFFSET);
     return font_restart_title;
 }
 
@@ -3066,8 +3066,6 @@ int main(int argc, char *argv[])
                     quit = true;
                     break;
                 case SW_BTN_B:
-                case SW_BTN_X:
-                case SW_BTN_MENU:
                     active_screen = SCREEN_CAROUSEL;
                     dirty = true;
                     break;
