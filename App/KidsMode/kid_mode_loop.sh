@@ -31,7 +31,7 @@ favfile=/mnt/SDCARD/Roms/favourite.json
 # Backups and state live OUTSIDE the app folder so that replacing
 # App/KidsMode during an update can never delete them.
 backupdir=/mnt/SDCARD/Saves/KidsMode
-favorites_repair_stamp="$backupdir/favorites_repaired.stamp"
+favorites_signature_file="$backupdir/favorites_repaired.cksum"
 
 racfg=/mnt/SDCARD/RetroArch/.retroarch/retroarch.cfg
 rabackup="$backupdir/retroarch.cfg.backup"
@@ -45,6 +45,7 @@ kids_profile=/mnt/SDCARD/Saves/KidsProfile
 isolated_subdirs="saves states romScreens"
 profile_isolation_marker="$backupdir/profile_isolation_active"
 game_environment_marker="$backupdir/game_environment_ready"
+game_prepare_pid_file=/tmp/kidsmode_game_prepare.pid
 last_game_file="$backupdir/last_game.txt"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidsmode.log
 
@@ -869,8 +870,42 @@ prepare_game_environment() {
     touch "$game_environment_marker"
 }
 
+prepare_game_environment_async() {
+    if [ -f "$game_environment_marker" ]; then
+        rm -f "$game_prepare_pid_file"
+        return 0
+    fi
+    if [ -f "$game_prepare_pid_file" ] &&
+        kill -0 "$(cat "$game_prepare_pid_file" 2> /dev/null)" 2> /dev/null; then
+        return 0
+    fi
+    (
+        started_at="$(date +%s)"
+        prepare_game_environment
+        finished_at="$(date +%s)"
+        log "Startup: game preparation completed in $((finished_at - started_at))s."
+    ) &
+    echo $! > "$game_prepare_pid_file"
+}
+
+wait_for_game_environment() {
+    if [ -f "$game_prepare_pid_file" ]; then
+        prepare_pid="$(cat "$game_prepare_pid_file" 2> /dev/null)"
+        case "$prepare_pid" in
+            '' | *[!0-9]*) ;;
+            *) wait "$prepare_pid" 2> /dev/null ;;
+        esac
+        rm -f "$game_prepare_pid_file"
+    fi
+    [ -f "$game_environment_marker" ] || prepare_game_environment
+}
+
 run_game_cmd() {
     [ -f "$sysdir/cmd_to_run.sh" ] || return 1
+
+    # Preparation starts as soon as Kids Mode opens, in parallel with the
+    # carousel. Only an immediate game launch waits for the remaining work.
+    wait_for_game_environment
 
     run_cmd="$(cat "$sysdir/cmd_to_run.sh")"
     run_rompath="$(echo "$run_cmd" | awk '{ st = index($0,"\" \""); if (st) print substr($0,st+3,length($0)-st-3)}')"
@@ -968,11 +1003,18 @@ repair_favourites() {
     fi
 }
 
+favorites_signature() {
+    [ -f "$favfile" ] || return 1
+    cksum "$favfile" 2> /dev/null | awk '{print $1 ":" $2}'
+}
+
 repair_onion_favorites_if_needed() {
     [ -f "$favfile" ] || return 0
     repair_favourites
-    if [ ! -f "$favorites_repair_stamp" ] ||
-        [ "$favfile" -nt "$favorites_repair_stamp" ]; then
+    current_signature="$(favorites_signature)"
+    repaired_signature="$(sed -n 1p "$favorites_signature_file" 2> /dev/null)"
+    if [ -z "$current_signature" ] || [ "$current_signature" != "$repaired_signature" ]; then
+        started_at="$(date +%s)"
         if command -v tools > /dev/null 2>&1; then
             tools favfix > /dev/null 2>&1
         fi
@@ -985,7 +1027,10 @@ repair_onion_favorites_if_needed() {
         fi
         log "Onion favorites repaired and sorted A-Z after a favorites change."
         mkdir -p "$backupdir"
-        touch "$favorites_repair_stamp"
+        favorites_signature > "$favorites_signature_file.tmp" &&
+            mv -f "$favorites_signature_file.tmp" "$favorites_signature_file"
+        finished_at="$(date +%s)"
+        log "Startup: favorites repair completed in $((finished_at - started_at))s."
     fi
 }
 
@@ -1151,6 +1196,7 @@ parent_menu() {
 disarm() {
     rm -f "$flagfile"
     stop_ticker
+    wait_for_game_environment
     restore_ra_lock
     restore_blf_lock
     restore_profile_isolation
@@ -1244,8 +1290,9 @@ ensure_audio_server() {
 }
 
 restore_ffplay_state() {
-    for backup in $(find /mnt/SDCARD/App/FFplay "$sysdir" \
-        -name 'pos.cfg.kidsmode-backup' 2> /dev/null); do
+    for backup in /mnt/SDCARD/App/FFplay/pos.cfg.kidsmode-backup \
+        "$sysdir/pos.cfg.kidsmode-backup"; do
+        [ -f "$backup" ] || continue
         original="${backup%.kidsmode-backup}"
         rm -f "$original"
         mv -f "$backup" "$original"
@@ -1254,8 +1301,8 @@ restore_ffplay_state() {
 
 hide_ffplay_state() {
     restore_ffplay_state
-    for original in $(find /mnt/SDCARD/App/FFplay "$sysdir" \
-        -name pos.cfg 2> /dev/null); do
+    for original in /mnt/SDCARD/App/FFplay/pos.cfg "$sysdir/pos.cfg"; do
+        [ -f "$original" ] || continue
         mv -f "$original" "$original.kidsmode-backup"
     done
 }
@@ -1370,7 +1417,7 @@ play_video() {
     fi
     rm -f "$runtime_pos" "$duration_file" "$duration_log" "$player_pid" \
         /tmp/stay_awake
-    find /mnt/SDCARD/App/FFplay "$sysdir" -name pos.cfg -exec rm -f {} \; 2> /dev/null
+    rm -f /mnt/SDCARD/App/FFplay/pos.cfg "$sysdir/pos.cfg"
     restore_ffplay_state
     check_off_order "End_Save"
     rem="$(timer_remaining)"
@@ -1391,7 +1438,8 @@ cmd_run() {
     fi
     chmod a+x "$kidui_bin" 2> /dev/null
 
-    prepare_game_environment
+    startup_started_at="$(date +%s)"
+    prepare_game_environment_async
     repair_onion_favorites_if_needed
 
     ui_fails=0
@@ -1406,6 +1454,8 @@ cmd_run() {
     fi
 
     start_ticker
+    startup_ready_at="$(date +%s)"
+    log "Startup: blocking work completed in $((startup_ready_at - startup_started_at))s."
 
     active_floor="$(state_get '.active_floor')"
     [ "$active_floor" = videos ] || active_floor=games
@@ -1685,6 +1735,7 @@ cmd_run() {
 
     # Flag removed externally (e.g. deleted from a computer) — clean up
     stop_ticker
+    wait_for_game_environment
     restore_ra_lock
     restore_blf_lock
     restore_profile_isolation

@@ -120,6 +120,7 @@ typedef enum { SCREEN_CAROUSEL,
 #define FOLDER_STATE_FILE "/tmp/kidsmode_folder"
 #define FOLDER_HISTORY_FILE "/tmp/kidsmode_folder_history"
 #define FOLDER_SELECTIONS_DIR "/mnt/SDCARD/Saves/KidsMode/series_selections"
+#define VIDEO_THUMBNAIL_CACHE_DIR "/mnt/SDCARD/Saves/KidsMode/artwork_cache"
 #define TIMER_STEP 5
 #define TIMER_MAX 120
 
@@ -167,6 +168,8 @@ static bool show_music = true;
 
 #define MAX_FOLDER_MEMORY 128
 #define MAX_VIDEO_DIR_CACHE 512
+#define MAX_ARTWORK_DIR_CACHE 64
+#define VIDEO_ARTWORK_CACHE_SIZE 12
 typedef struct {
     char folder[STR_MAX];
     char selection[STR_MAX];
@@ -175,10 +178,23 @@ typedef struct {
     char path[STR_MAX];
     bool has_media;
 } VideoDirCacheEntry;
+typedef struct {
+    char label[STR_MAX];
+    char path[STR_MAX];
+    int priority;
+} ArtworkIndexEntry;
+typedef struct {
+    char folder[STR_MAX];
+    ArtworkIndexEntry *entries;
+    int count;
+    int capacity;
+} ArtworkDirIndex;
 static FolderSelectionMemory folder_memory[MAX_FOLDER_MEMORY];
 static int folder_memory_count;
 static VideoDirCacheEntry video_dir_cache[MAX_VIDEO_DIR_CACHE];
 static int video_dir_cache_count;
+static ArtworkDirIndex artwork_dir_cache[MAX_ARTWORK_DIR_CACHE];
+static int artwork_dir_cache_count;
 
 static SDL_Surface *artwork = NULL;
 // Keep the last decoded image for each floor. Switching floors normally
@@ -186,6 +202,13 @@ static SDL_Surface *artwork = NULL;
 // a visible pause before every swipe.
 static SDL_Surface *artwork_cache[2] = {NULL, NULL};
 static char artwork_cache_path[2][STR_MAX] = {{0}, {0}};
+typedef struct {
+    char path[STR_MAX];
+    SDL_Surface *surface;
+    unsigned long age;
+} VideoArtworkCacheEntry;
+static VideoArtworkCacheEntry video_artwork_cache[VIDEO_ARTWORK_CACHE_SIZE];
+static unsigned long video_artwork_cache_age;
 static SDL_Surface *crt_fallback = NULL;
 static SDL_Surface *screen_reflection = NULL;
 static bool screen_reflection_checked = false;
@@ -843,25 +866,97 @@ static bool directoryHasVideos(const char *path, int depth)
     return found;
 }
 
+static int artworkExtensionPriority(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    if (dot == NULL)
+        return -1;
+    if (strcasecmp(dot, ".bmp") == 0)
+        return 0;
+    if (strcasecmp(dot, ".png") == 0)
+        return 1;
+    if (strcasecmp(dot, ".jpg") == 0)
+        return 2;
+    if (strcasecmp(dot, ".jpeg") == 0)
+        return 3;
+    return -1;
+}
+
+static ArtworkDirIndex *artworkIndexForFolder(const char *folder)
+{
+    for (int i = 0; i < artwork_dir_cache_count; i++)
+        if (strcmp(artwork_dir_cache[i].folder, folder) == 0)
+            return &artwork_dir_cache[i];
+    if (artwork_dir_cache_count >= MAX_ARTWORK_DIR_CACHE)
+        return NULL;
+
+    ArtworkDirIndex *index = &artwork_dir_cache[artwork_dir_cache_count++];
+    memset(index, 0, sizeof(*index));
+    snprintf(index->folder, sizeof(index->folder), "%s", folder);
+
+    char imgs_dir[STR_MAX];
+    snprintf(imgs_dir, sizeof(imgs_dir), "%s/Imgs", folder);
+    DIR *dir = opendir(imgs_dir);
+    if (dir == NULL)
+        return index; // Cache the missing Imgs directory too.
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        int priority = artworkExtensionPriority(de->d_name);
+        if (priority < 0)
+            continue;
+        char label[STR_MAX];
+        snprintf(label, sizeof(label), "%s", de->d_name);
+        char *dot = strrchr(label, '.');
+        if (dot == NULL)
+            continue;
+        *dot = '\0';
+
+        int existing = -1;
+        for (int i = 0; i < index->count; i++)
+            if (strcmp(index->entries[i].label, label) == 0) {
+                existing = i;
+                break;
+            }
+        if (existing >= 0 && index->entries[existing].priority <= priority)
+            continue;
+        if (existing < 0) {
+            if (index->count >= index->capacity) {
+                int capacity = index->capacity == 0 ? 16 : index->capacity * 2;
+                ArtworkIndexEntry *grown = realloc(
+                    index->entries, (size_t)capacity * sizeof(*grown));
+                if (grown == NULL)
+                    break;
+                index->entries = grown;
+                index->capacity = capacity;
+            }
+            existing = index->count++;
+        }
+        snprintf(index->entries[existing].label,
+                 sizeof(index->entries[existing].label), "%s", label);
+        snprintf(index->entries[existing].path,
+                 sizeof(index->entries[existing].path), "%s/%s", imgs_dir,
+                 de->d_name);
+        index->entries[existing].priority = priority;
+    }
+    closedir(dir);
+    return index;
+}
+
 static bool findArtworkInFolder(const char *folder, const char *label,
                                 char *out, size_t out_size)
 {
-    // A frame captured in the player is stored as BMP and deliberately has
-    // priority over a supplied poster. Deleting the BMP restores the poster.
-    const char *art_exts[] = {"bmp", "BMP", "png", "PNG", "jpg", "JPG",
-                              "jpeg", "JPEG"};
     if (folder == NULL || folder[0] == '\0' || label == NULL ||
         label[0] == '\0')
         return false;
-    for (size_t i = 0; i < sizeof(art_exts) / sizeof(art_exts[0]); i++) {
-        char candidate[STR_MAX];
-        snprintf(candidate, sizeof(candidate), "%s/Imgs/%s.%s", folder,
-                 label, art_exts[i]);
-        if (access(candidate, F_OK) == 0) {
-            snprintf(out, out_size, "%s", candidate);
+    ArtworkDirIndex *index = artworkIndexForFolder(folder);
+    if (index == NULL)
+        return false;
+    for (int i = 0; i < index->count; i++)
+        if (strcmp(index->entries[i].label, label) == 0) {
+            snprintf(out, out_size, "%s", index->entries[i].path);
             return true;
         }
-    }
     return false;
 }
 
@@ -1499,6 +1594,84 @@ static SDL_Surface *createCrtSurface(int width, int height)
     return surface;
 }
 
+static SDL_Surface *cachedVideoArtwork(const char *path)
+{
+    for (int i = 0; i < VIDEO_ARTWORK_CACHE_SIZE; i++) {
+        if (video_artwork_cache[i].surface != NULL &&
+            strcmp(video_artwork_cache[i].path, path) == 0) {
+            video_artwork_cache[i].age = ++video_artwork_cache_age;
+            return video_artwork_cache[i].surface;
+        }
+    }
+    return NULL;
+}
+
+static SDL_Surface *storeVideoArtwork(const char *path, SDL_Surface *surface)
+{
+    int slot = -1;
+    unsigned long oldest = 0;
+    for (int i = 0; i < VIDEO_ARTWORK_CACHE_SIZE; i++) {
+        if (video_artwork_cache[i].surface == NULL) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 || video_artwork_cache[i].age < oldest) {
+            slot = i;
+            oldest = video_artwork_cache[i].age;
+        }
+    }
+    if (slot < 0)
+        return surface;
+    if (video_artwork_cache[slot].surface != NULL)
+        SDL_FreeSurface(video_artwork_cache[slot].surface);
+    snprintf(video_artwork_cache[slot].path,
+             sizeof(video_artwork_cache[slot].path), "%s", path);
+    video_artwork_cache[slot].surface = surface;
+    video_artwork_cache[slot].age = ++video_artwork_cache_age;
+    return surface;
+}
+
+static unsigned long artworkPathHash(const char *path)
+{
+    unsigned long hash = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
+        hash ^= *p;
+        hash *= 16777619u;
+        hash &= 0xffffffffu;
+    }
+    return hash;
+}
+
+static bool videoThumbnailCachePath(const char *source, int width, int height,
+                                    char *out, size_t out_size)
+{
+    struct stat st;
+    if (stat(source, &st) != 0)
+        return false;
+    snprintf(out, out_size, "%s/%08lx-%lld-%lld-%dx%d.bmp",
+             VIDEO_THUMBNAIL_CACHE_DIR, artworkPathHash(source),
+             (long long)st.st_size, (long long)st.st_mtime, width, height);
+    return true;
+}
+
+static void saveVideoThumbnail(SDL_Surface *surface, const char *path)
+{
+    if (surface == NULL || path == NULL || path[0] == '\0')
+        return;
+    mkdir("/mnt/SDCARD/Saves/KidsMode", 0777);
+    mkdir(VIDEO_THUMBNAIL_CACHE_DIR, 0777);
+    char temporary[STR_MAX];
+    if (snprintf(temporary, sizeof(temporary), "%s.tmp", path) >=
+        (int)sizeof(temporary))
+        return;
+    remove(temporary);
+    if (SDL_SaveBMP(surface, temporary) == 0) {
+        remove(path);
+        if (rename(temporary, path) != 0)
+            remove(temporary);
+    }
+}
+
 static void loadArtwork(void)
 {
     if (artwork_index == current && artwork != NULL)
@@ -1510,19 +1683,39 @@ static void loadArtwork(void)
 
     int cache_slot = (int)current_floor;
     const char *imgpath = games[current].item.imgpath;
-    if (artwork_cache[cache_slot] != NULL && imgpath[0] != '\0' &&
-        strcmp(artwork_cache_path[cache_slot], imgpath) == 0) {
-        artwork = artwork_cache[cache_slot];
-        return;
+    if (current_floor == FLOOR_VIDEOS && imgpath[0] != '\0') {
+        artwork = cachedVideoArtwork(imgpath);
+        if (artwork != NULL)
+            return;
     }
-    if (artwork_cache[cache_slot] != NULL) {
-        SDL_FreeSurface(artwork_cache[cache_slot]);
-        artwork_cache[cache_slot] = NULL;
+    else {
+        if (artwork_cache[cache_slot] != NULL && imgpath[0] != '\0' &&
+            strcmp(artwork_cache_path[cache_slot], imgpath) == 0) {
+            artwork = artwork_cache[cache_slot];
+            return;
+        }
+        if (artwork_cache[cache_slot] != NULL) {
+            SDL_FreeSurface(artwork_cache[cache_slot]);
+            artwork_cache[cache_slot] = NULL;
+        }
+        artwork_cache_path[cache_slot][0] = '\0';
     }
-    artwork_cache_path[cache_slot][0] = '\0';
     if (strlen(imgpath) == 0 || access(imgpath, F_OK) != 0)
         return;
-    SDL_Surface *raw = IMG_Load(imgpath);
+    int target_h = (int)(g_display.height * 0.58);
+    int target_w = target_h;
+    char thumbnail_path[STR_MAX] = "";
+    bool thumbnail_ready = current_floor == FLOOR_VIDEOS &&
+        videoThumbnailCachePath(imgpath, target_w, target_h, thumbnail_path,
+                                sizeof(thumbnail_path)) &&
+        access(thumbnail_path, R_OK) == 0;
+    SDL_Surface *raw = IMG_Load(thumbnail_ready ? thumbnail_path : imgpath);
+    if (raw == NULL && thumbnail_ready) {
+        // A partially written/corrupt cache must never hide the real poster.
+        remove(thumbnail_path);
+        thumbnail_ready = false;
+        raw = IMG_Load(imgpath);
+    }
     if (raw == NULL)
         return;
 
@@ -1555,12 +1748,20 @@ static void loadArtwork(void)
         return;
     }
 
+    if (thumbnail_ready && raw->w == target_w && raw->h == target_h) {
+        artwork = SDL_DisplayFormatAlpha(raw);
+        if (artwork == NULL)
+            artwork = raw;
+        else
+            SDL_FreeSurface(raw);
+        storeVideoArtwork(imgpath, artwork);
+        return;
+    }
+
     // ScreenScraper Mix V1 artwork is square once fitted to the historical
     // Kids Mode art height. Give videos that same square footprint. Fit the
     // complete image without cropping or stretching, filling the unused area
     // with black (normally pillar-boxing around a portrait poster).
-    int target_h = (int)(g_display.height * 0.58);
-    int target_w = target_h;
     double scale_w = (double)target_w / raw->w;
     double scale_h = (double)target_h / raw->h;
     double scale = scale_w < scale_h ? scale_w : scale_h;
@@ -1590,13 +1791,14 @@ static void loadArtwork(void)
 #ifdef PLATFORM_MIYOOMINI
     rotate180InPlace(framed);
 #endif
+    if (thumbnail_path[0] != '\0')
+        saveVideoThumbnail(framed, thumbnail_path);
     artwork = SDL_DisplayFormatAlpha(framed);
     if (artwork == NULL)
         artwork = framed;
     else
         SDL_FreeSurface(framed);
-    artwork_cache[cache_slot] = artwork;
-    snprintf(artwork_cache_path[cache_slot], STR_MAX, "%s", imgpath);
+    storeVideoArtwork(imgpath, artwork);
 }
 
 static SDL_Surface *loadCrtFallback(int width, int height)
@@ -1655,13 +1857,12 @@ static int readRemaining(void)
 // battery), switching to the accent color for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
-    bool battery_peek = keystate[SW_BTN_Y] != RELEASED &&
-                        keystate[SW_BTN_B] != RELEASED;
+    bool battery_peek = keystate[SW_BTN_Y] != RELEASED;
     if (remaining < 0 && !battery_peek)
         return;
 
     if (battery_peek) {
-        // Y+B held: show the theme's own battery gauge (icon + %), at
+        // Y held: show the theme's own battery gauge (icon + %), at
         // the exact same coordinates Onion's own MainUI header uses
         // (theme_renderHeaderBattery: centered at 596*scale, 30*scale) —
         // not a guessed position — whether or not a timer is running.
@@ -2911,10 +3112,10 @@ int main(int argc, char *argv[])
             dirty = false;
         }
         // dirty=false above would otherwise cancel the battery chip's
-        // need to keep checking whether Y+B is still held — re-arm it
+        // need to keep checking whether Y is still held — re-arm it
         // here, after that reset, so the next loop tick redraws and the
         // display swaps back the instant the combo is released.
-        if (keystate[SW_BTN_Y] != RELEASED && keystate[SW_BTN_B] != RELEASED &&
+        if (keystate[SW_BTN_Y] != RELEASED &&
             (active_screen == SCREEN_CAROUSEL ||
              active_screen == SCREEN_CONFIRM_RESTART))
             dirty = true;
@@ -2927,6 +3128,11 @@ int main(int argc, char *argv[])
         if (artwork_cache[i] != NULL)
             SDL_FreeSurface(artwork_cache[i]);
     }
+    for (int i = 0; i < VIDEO_ARTWORK_CACHE_SIZE; i++)
+        if (video_artwork_cache[i].surface != NULL)
+            SDL_FreeSurface(video_artwork_cache[i].surface);
+    for (int i = 0; i < artwork_dir_cache_count; i++)
+        free(artwork_dir_cache[i].entries);
     if (crt_fallback != NULL)
         SDL_FreeSurface(crt_fallback);
     if (screen_reflection != NULL)

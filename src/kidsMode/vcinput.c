@@ -86,6 +86,8 @@ static int seek_notice_draw_y;
 static int seek_notice_draw_w;
 static int seek_notice_draw_h;
 static Uint32 last_clock_update;
+static Uint8 *yuv_backup[3];
+static size_t yuv_backup_capacity[3];
 #ifdef PLATFORM_MIYOOMINI
 static int wake_input_fd = -1;
 static bool wake_input_grabbed;
@@ -111,6 +113,10 @@ static void update_clock(void);
 static void draw_player_overlay(void);
 static void draw_audio_progress_only(void);
 static void draw_seek_notice(void);
+static int text_width(const char *text, int scale);
+static void format_time(long seconds, bool remaining, char *out,
+                        size_t out_size);
+static bool player_overlay_visible(void);
 
 #ifdef PLATFORM_MIYOOMINI
 static bool is_wake_hardware_key(unsigned short code)
@@ -320,6 +326,11 @@ __attribute__((destructor)) static void vcinput_unloaded(void)
 {
     restore_backlight();
     release_wake_input();
+    for (int i = 0; i < 3; i++) {
+        free(yuv_backup[i]);
+        yuv_backup[i] = NULL;
+        yuv_backup_capacity[i] = 0;
+    }
 }
 
 static void poll_wake_input(Uint32 now)
@@ -576,6 +587,191 @@ static const unsigned char *glyph_rows(char c)
     case '?': return question;
     default: return NULL;
     }
+}
+
+static bool ensure_yuv_backup(int plane, size_t size)
+{
+    if (yuv_backup_capacity[plane] >= size)
+        return true;
+    Uint8 *grown = realloc(yuv_backup[plane], size);
+    if (grown == NULL)
+        return false;
+    yuv_backup[plane] = grown;
+    yuv_backup_capacity[plane] = size;
+    return true;
+}
+
+static void yuv_rect(SDL_Overlay *overlay, int x, int y, int w, int h,
+                     Uint8 yy, Uint8 uu, Uint8 vv)
+{
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > overlay->w) w = overlay->w - x;
+    if (y + h > overlay->h) h = overlay->h - y;
+    if (w <= 0 || h <= 0)
+        return;
+    Uint8 *u_plane = overlay->format == SDL_YV12_OVERLAY
+                         ? overlay->pixels[2]
+                         : overlay->pixels[1];
+    Uint8 *v_plane = overlay->format == SDL_YV12_OVERLAY
+                         ? overlay->pixels[1]
+                         : overlay->pixels[2];
+    int u_pitch = overlay->format == SDL_YV12_OVERLAY
+                      ? overlay->pitches[2]
+                      : overlay->pitches[1];
+    int v_pitch = overlay->format == SDL_YV12_OVERLAY
+                      ? overlay->pitches[1]
+                      : overlay->pitches[2];
+    for (int row = y; row < y + h; row++)
+        memset(overlay->pixels[0] + row * overlay->pitches[0] + x, yy,
+               (size_t)w);
+    int uv_x = x / 2;
+    int uv_right = (x + w + 1) / 2;
+    int uv_y = y / 2;
+    int uv_bottom = (y + h + 1) / 2;
+    for (int row = uv_y; row < uv_bottom; row++) {
+        memset(u_plane + row * u_pitch + uv_x, uu,
+               (size_t)(uv_right - uv_x));
+        memset(v_plane + row * v_pitch + uv_x, vv,
+               (size_t)(uv_right - uv_x));
+    }
+}
+
+static void yuv_glyph(SDL_Overlay *overlay, char c, int x, int y, int scale,
+                      bool outline)
+{
+    const unsigned char *rows = glyph_rows(c);
+    if (rows == NULL)
+        return;
+    for (int row = 0; row < 7; row++)
+        for (int col = 0; col < 5; col++) {
+            if (!(rows[6 - row] & (1 << col)))
+                continue;
+            if (outline)
+                yuv_rect(overlay, x + col * scale - 1,
+                         y + row * scale - 1, scale + 2, scale + 2,
+                         16, 128, 128);
+            yuv_rect(overlay, x + col * scale, y + row * scale,
+                     scale, scale, 235, 128, 128);
+        }
+}
+
+static void yuv_rotated_text(SDL_Overlay *overlay, const char *text,
+                             int logical_x, int logical_y, int scale)
+{
+    int length = (int)strlen(text);
+    int width = text_width(text, scale);
+    int physical_x = overlay->w - logical_x - width;
+    int physical_y = overlay->h - logical_y - 7 * scale;
+    for (int i = 0; i < length; i++)
+        yuv_glyph(overlay, text[length - 1 - i],
+                  physical_x + i * 6 * scale, physical_y, scale, true);
+}
+
+static void yuv_logical_rect(SDL_Overlay *overlay, int x, int y, int w,
+                             int h, Uint8 yy, Uint8 uu, Uint8 vv)
+{
+    yuv_rect(overlay, overlay->w - x - w, overlay->h - y - h, w, h,
+             yy, uu, vv);
+}
+
+static void yuv_progress_knob(SDL_Overlay *overlay, int logical_x,
+                              int logical_y, int radius)
+{
+    int cx = overlay->w - logical_x;
+    int cy = overlay->h - logical_y;
+    for (int dy = -radius; dy <= radius; dy++)
+        for (int dx = -radius; dx <= radius; dx++)
+            if (dx * dx + dy * dy <= radius * radius)
+                yuv_rect(overlay, cx + dx, cy + dy, 1, 1,
+                         122, 193, 160);
+}
+
+static void paint_video_yuv_overlay(SDL_Overlay *overlay)
+{
+    if (duration_seconds <= 0 || !player_overlay_visible())
+        return;
+    int scale = overlay->w / 320;
+    if (scale < 1)
+        scale = 1;
+    long elapsed = position_seconds;
+    if (elapsed < 0) elapsed = 0;
+    if (elapsed > duration_seconds) elapsed = duration_seconds;
+    char elapsed_text[24], remaining_text[24];
+    format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
+    format_time(duration_seconds - elapsed, true, remaining_text,
+                sizeof(remaining_text));
+    int logical_y = overlay->h - 20 * scale;
+    int bar_y = overlay->h - 14 * scale;
+    int margin = 8 * scale;
+    int elapsed_width = text_width(elapsed_text, scale);
+    int remaining_width = text_width(remaining_text, scale);
+    int bar_x = margin + elapsed_width + 8 * scale;
+    int bar_right = overlay->w - margin - remaining_width - 8 * scale;
+    int bar_w = bar_right - bar_x;
+    if (bar_w < overlay->w / 4) {
+        bar_x = overlay->w / 4;
+        bar_w = overlay->w / 2;
+    }
+    yuv_rotated_text(overlay, elapsed_text, margin, logical_y, scale);
+    yuv_rotated_text(overlay, remaining_text,
+                     overlay->w - margin - remaining_width, logical_y,
+                     scale);
+    yuv_logical_rect(overlay, bar_x, bar_y - 1, bar_w, 3,
+                     16, 128, 128);
+    yuv_logical_rect(overlay, bar_x, bar_y, bar_w, 1,
+                     122, 193, 160);
+    int knob_x = bar_x +
+        (int)((long long)bar_w * elapsed / duration_seconds);
+    yuv_progress_knob(overlay, knob_x, bar_y, scale < 3 ? 3 : scale + 1);
+
+    if (seek_notice[0] != '\0' && SDL_GetTicks() < seek_notice_until) {
+        int notice_scale = scale + (scale > 1 ? scale / 2 : 1);
+        int width = text_width(seek_notice, notice_scale);
+        int logical_x = seek_notice_forward
+                            ? overlay->w - width - 9 * scale
+                            : 9 * scale;
+        yuv_rotated_text(overlay, seek_notice, logical_x,
+                         overlay->h - 35 * scale, notice_scale);
+    }
+}
+
+static bool backup_and_paint_video_overlay(SDL_Overlay *overlay)
+{
+    if (overlay == NULL ||
+        (overlay->format != SDL_YV12_OVERLAY &&
+         overlay->format != SDL_IYUV_OVERLAY) ||
+        SDL_LockYUVOverlay(overlay) != 0)
+        return false;
+    size_t sizes[3] = {
+        (size_t)overlay->pitches[0] * overlay->h,
+        (size_t)overlay->pitches[1] * ((overlay->h + 1) / 2),
+        (size_t)overlay->pitches[2] * ((overlay->h + 1) / 2)};
+    bool ready = true;
+    for (int i = 0; i < 3; i++)
+        if (!ensure_yuv_backup(i, sizes[i]))
+            ready = false;
+    if (ready) {
+        for (int i = 0; i < 3; i++)
+            memcpy(yuv_backup[i], overlay->pixels[i], sizes[i]);
+        paint_video_yuv_overlay(overlay);
+    }
+    SDL_UnlockYUVOverlay(overlay);
+    return ready;
+}
+
+static void restore_video_overlay(SDL_Overlay *overlay)
+{
+    if (overlay == NULL || SDL_LockYUVOverlay(overlay) != 0)
+        return;
+    size_t sizes[3] = {
+        (size_t)overlay->pitches[0] * overlay->h,
+        (size_t)overlay->pitches[1] * ((overlay->h + 1) / 2),
+        (size_t)overlay->pitches[2] * ((overlay->h + 1) / 2)};
+    for (int i = 0; i < 3; i++)
+        if (yuv_backup[i] != NULL && yuv_backup_capacity[i] >= sizes[i])
+            memcpy(overlay->pixels[i], yuv_backup[i], sizes[i]);
+    SDL_UnlockYUVOverlay(overlay);
 }
 
 static void draw_glyph(SDL_Surface *surface, char c, int x, int y, int scale,
@@ -1097,7 +1293,8 @@ static void draw_player_overlay(void)
     SDL_Surface *surface = hardware_surface != NULL
                                ? hardware_surface
                                : SDL_GetVideoSurface();
-    if (surface == NULL || !player_overlay_visible())
+    if (surface == NULL || !player_overlay_visible() ||
+        (!audio_mode && !paused))
         return;
     bool was_inside_present = inside_present;
     inside_present = true;
@@ -1465,7 +1662,6 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
         last_overlay_rect = *dstrect;
         last_overlay_rect_ready = true;
     }
-    int result = real_overlay(overlay, dstrect);
     update_clock();
     if (progress_waiting_for_video) {
         Uint32 now = SDL_GetTicks();
@@ -1474,10 +1670,16 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
             seek_notice_until = now + 2000;
         progress_waiting_for_video = false;
     }
-    // The decoded frame replaces the previous control pixels. Repaint only
-    // those pixels after it, without asking SDL for another page refresh.
-    if (player_overlay_visible())
-        draw_player_overlay();
+    // Compose the controls into the same YUV frame that FFplay presents.
+    // This avoids painting the framebuffer after its page flip, which made
+    // the OSD alternate between visible and missing frames on the Miyoo.
+    bool painted = player_overlay_visible() &&
+                   backup_and_paint_video_overlay(overlay);
+    int result = real_overlay(overlay, dstrect);
+    // FFplay may keep this frame for pause/capture. Restore its original
+    // pixels after SDL has copied it to the display.
+    if (painted)
+        restore_video_overlay(overlay);
     return result;
 }
 

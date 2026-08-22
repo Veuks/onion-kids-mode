@@ -179,6 +179,11 @@ when necessary. Portrait cinema posters are recommended for movies. If no
 image exists, the app creates a black card and wraps its title over up to six
 balanced lines before reducing the font size.
 
+The first time a new or modified poster is displayed, Kids Mode creates a
+device-sized thumbnail under `Saves/KidsMode/artwork_cache`. Later navigation
+loads that prepared thumbnail instead of decoding and resizing the original
+again. Replacing the source image automatically creates a fresh cached version.
+
 Press A to descend into a folder and B to return exactly one level. Every
 folder remembers its own last selected video or subfolder, including after a
 reboot. Folder nesting is supported up to sixteen levels, which is effectively
@@ -193,12 +198,14 @@ unlimited for normal use.
 | DOWN | Move from Videos to Games |
 | A | Launch/resume a game, play/resume a video, or open a folder |
 | X | Restart the selected game or video after confirmation |
+| Hold Y | Temporarily show the battery level |
 | B | Return to the previous folder level |
 | Hold SELECT + START for 3 seconds | Open the PIN screen and parent menu |
 | MENU | No action in the carousel |
 
-UP and DOWN are unavailable while a section is locked. DOWN is also disabled
-inside any media folder; press B as needed to return to the media root first.
+UP and DOWN are unavailable while a section is locked. Floor switching remains
+available inside media folders; returning to Videos restores the same folder
+and selection.
 
 ## While playing a game
 
