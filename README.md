@@ -20,8 +20,8 @@ sections use the active Onion theme and slide smoothly between each other.
 - Games are taken directly from Onion's Favorites list.
 - After the Favorites list changes, Kids Mode runs Onion's Favorites repair
   once and sorts the resulting carousel automatically from A to Z.
-- Videos, audio files and nested folders for movies, series, music or stories
-  are supported.
+- Videos, audio files and nested folders for movies, series, cartoons, music
+  or stories are supported.
 - Automatic resume follows the real shutdown state:
   - shut down while playing and that game or video resumes;
   - shut down from a carousel and the same section and selection return;
@@ -130,8 +130,9 @@ alphabetically.
 
 Each directory can have its own `Imgs` folder. An image uses the same base name
 as the media file beside it. PNG, JPG and JPEG are accepted. The complete
-package includes four ready-to-use category folders and their 256 × 256
-artwork. This organisation is recommended:
+package includes five ready-to-use category folders. Generic 256 × 256 artwork
+is supplied for the original four categories; Cartoons accepts an optional
+`Cartoons.png` cover using the same rules. This organisation is recommended:
 
 ```text
 Media/KidsMode/Main/
@@ -139,7 +140,8 @@ Media/KidsMode/Main/
 │   ├── Movies.png
 │   ├── Music.png
 │   ├── Series.png
-│   └── Stories.png
+│   ├── Stories.png
+│   └── Cartoons.png (optional)
 ├── Movies/
 │   ├── The Lion King.mp4
 │   ├── The Visitors.mkv
@@ -158,10 +160,14 @@ Media/KidsMode/Main/
 │   ├── Music video 01.mp4
 │   └── Imgs/
 │       └── Song 01.png
-└── Stories/
-    ├── Story 01.mp3
+├── Stories/
+│   ├── Story 01.mp3
+│   └── Imgs/
+│       └── Story 01.jpg
+└── Cartoons/
+    ├── Cartoon 01.mp4
     └── Imgs/
-        └── Story 01.jpg
+        └── Cartoon 01.jpg
 ```
 
 For a folder cover, place an image named after that folder inside its own
@@ -180,7 +186,8 @@ directory, such as `Media/KidsMode/Main/Imgs/Series.png`; both layouts are
 inherited.
 
 The same rule can give category folders their own artwork:
-`Movies/Imgs/Movies.png`, `Series/Imgs/Series.png` or `Music/Imgs/Music.png`.
+`Movies/Imgs/Movies.png`, `Series/Imgs/Series.png`, `Music/Imgs/Music.png` or
+`Cartoons/Imgs/Cartoons.png`.
 Without one, Kids Mode creates an automatic black folder card. The older
 shared `Media/KidsMode/Main/Imgs` layout remains accepted as a fallback, but
 local `Imgs` folders take priority and prevent identical filenames in different

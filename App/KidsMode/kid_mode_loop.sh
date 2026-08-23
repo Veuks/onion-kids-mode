@@ -134,6 +134,7 @@ cfg_show_stories=true
 cfg_show_movies=true
 cfg_show_series=true
 cfg_show_music=true
+cfg_show_cartoons=true
 cfg_fav_shortcut=false
 
 log() {
@@ -173,6 +174,7 @@ load_config_cache() {
         ((if has("show_movies") then .show_movies else true end) | tostring),
         ((if has("show_series") then .show_series else true end) | tostring),
         ((if has("show_music") then .show_music else true end) | tostring),
+        ((if has("show_cartoons") then .show_cartoons else true end) | tostring),
         ((.fav_shortcut // false) | tostring)
     ' "$configfile" 2> /dev/null)" || return 1
     {
@@ -185,6 +187,7 @@ load_config_cache() {
         IFS= read -r cfg_show_movies
         IFS= read -r cfg_show_series
         IFS= read -r cfg_show_music
+        IFS= read -r cfg_show_cartoons
         IFS= read -r cfg_fav_shortcut
     } <<EOF
 $config_dump
@@ -199,7 +202,8 @@ EOF
             ((if has("show_stories") then .show_stories else true end) | tostring),
             ((if has("show_movies") then .show_movies else true end) | tostring),
             ((if has("show_series") then .show_series else true end) | tostring),
-            ((if has("show_music") then .show_music else true end) | tostring)
+            ((if has("show_music") then .show_music else true end) | tostring),
+            ((if has("show_cartoons") then .show_cartoons else true end) | tostring)
         ' "$profile_preferences_file" 2> /dev/null)"
         {
             IFS= read -r cfg_lock_current_floor
@@ -207,6 +211,7 @@ EOF
             IFS= read -r cfg_show_movies
             IFS= read -r cfg_show_series
             IFS= read -r cfg_show_music
+            IFS= read -r cfg_show_cartoons
         } <<EOF
 $profile_dump
 EOF
@@ -220,6 +225,7 @@ category_enabled() {
         movies) [ "$cfg_show_movies" != false ] ;;
         series) [ "$cfg_show_series" != false ] ;;
         music) [ "$cfg_show_music" != false ] ;;
+        cartoons) [ "$cfg_show_cartoons" != false ] ;;
         *) return 1 ;;
     esac
 }
@@ -229,10 +235,12 @@ refresh_category_values() {
     show_movies_value=0
     show_series_value=0
     show_music_value=0
+    show_cartoons_value=0
     category_enabled stories && show_stories_value=1
     category_enabled movies && show_movies_value=1
     category_enabled series && show_series_value=1
     category_enabled music && show_music_value=1
+    category_enabled cartoons && show_cartoons_value=1
 }
 
 normalize_active_media_folder() {
@@ -249,6 +257,8 @@ normalize_active_media_folder() {
                     category_enabled series || active_folder="" ;;
                 [Mm][Uu][Ss][Ii][Cc])
                     category_enabled music || active_folder="" ;;
+                [Cc][Aa][Rr][Tt][Oo][Oo][Nn][Ss])
+                    category_enabled cartoons || active_folder="" ;;
             esac
             ;;
     esac
@@ -297,9 +307,10 @@ profile_config_merge() {
             --argjson movies "$cfg_show_movies" \
             --argjson series "$cfg_show_series" \
             --argjson music "$cfg_show_music" \
+            --argjson cartoons "$cfg_show_cartoons" \
             '{lock_current_floor: $lock, show_stories: $stories,
               show_movies: $movies, show_series: $series,
-              show_music: $music}' > "$prefs_source"
+              show_music: $music, show_cartoons: $cartoons}' > "$prefs_source"
     fi
     if jq "$@" "$prefs_source" > "$tmpprefs" &&
         mv -f "$tmpprefs" "$profile_preferences_file"; then
@@ -1257,7 +1268,8 @@ parent_menu() {
             --show-stories "$show_stories_value" \
             --show-movies "$show_movies_value" \
             --show-series "$show_series_value" \
-            --show-music "$show_music_value" > "$uilog" 2>&1
+            --show-music "$show_music_value" \
+            --show-cartoons "$show_cartoons_value" > "$uilog" 2>&1
         menu_rc=$?
 
         if [ -f "$lockfloor_result" ]; then
@@ -1280,6 +1292,7 @@ parent_menu() {
             new_movies="$show_movies_value"
             new_series="$show_series_value"
             new_music="$show_music_value"
+            new_cartoons="$show_cartoons_value"
             while IFS='=' read -r category new_value; do
                 case "$category:$new_value" in
                     stories:1) new_stories=1 ;;
@@ -1290,16 +1303,19 @@ parent_menu() {
                     series:0) new_series=0 ;;
                     music:1) new_music=1 ;;
                     music:0) new_music=0 ;;
+                    cartoons:1) new_cartoons=1 ;;
+                    cartoons:0) new_cartoons=0 ;;
                 esac
             done < "$categories_result"
             rm -f "$categories_result"
             profile_config_merge --argjson stories "$new_stories" \
                 --argjson movies "$new_movies" --argjson series "$new_series" \
-                --argjson music "$new_music" \
+                --argjson music "$new_music" --argjson cartoons "$new_cartoons" \
                 '.show_stories = ($stories == 1) |
                  .show_movies = ($movies == 1) |
                  .show_series = ($series == 1) |
-                 .show_music = ($music == 1)'
+                 .show_music = ($music == 1) |
+                 .show_cartoons = ($cartoons == 1)'
             log "Visible media folders updated from the parent menu."
             normalize_active_media_folder
         fi
@@ -1611,6 +1627,10 @@ play_video() {
     kill "$duration_watcher" 2> /dev/null
     wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
+    # The audio UI is drawn in the panel's physical 180-degree orientation.
+    # Clear both framebuffer pages before reopening kidui so no rotated
+    # artwork page can reappear behind carousel thumbnails after an MP3.
+    [ "$media_kind" = audio ] && bootScreen clear 2> /dev/null
     # Restore the latest brightness selected during playback, not the value
     # captured when FFplay started. This also recovers cleanly if playback
     # ended while Kids Mode's own dim/off state was active.
@@ -1754,7 +1774,8 @@ cmd_run() {
             --show-stories "$show_stories_value" \
             --show-movies "$show_movies_value" \
             --show-series "$show_series_value" \
-            --show-music "$show_music_value"
+            --show-music "$show_music_value" \
+            --show-cartoons "$show_cartoons_value"
         if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
             "$kidui_bin" "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         elif [ "$no_pin_recovery" = "1" ]; then

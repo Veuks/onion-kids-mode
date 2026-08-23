@@ -111,7 +111,8 @@ typedef enum { SCREEN_CAROUSEL,
 #define CATEGORY_MOVIES 1
 #define CATEGORY_SERIES 2
 #define CATEGORY_MUSIC 3
-#define CATEGORY_BACK 4
+#define CATEGORY_CARTOONS 4
+#define CATEGORY_BACK 5
 #define LOCKFLOOR_RESULT_FILE "/tmp/kidsmode_lockfloor_result"
 #define CATEGORIES_RESULT_FILE "/tmp/kidsmode_categories_result"
 #define FLOOR_STATE_FILE "/tmp/kidsmode_floor"
@@ -175,6 +176,7 @@ static bool show_stories = true;
 static bool show_movies = true;
 static bool show_series = true;
 static bool show_music = true;
+static bool show_cartoons = true;
 static bool selection_state_dirty;
 static uint32_t selection_changed_at;
 
@@ -1118,6 +1120,8 @@ static bool rootCategoryVisible(const char *name)
         return show_series;
     if (strcasecmp(name, "Music") == 0)
         return show_music;
+    if (strcasecmp(name, "Cartoons") == 0)
+        return show_cartoons;
     return true;
 }
 
@@ -2582,6 +2586,11 @@ static void onMusicToggle(void *self)
     writeCategoryToggle("music", ((ListItem *)self)->value);
 }
 
+static void onCartoonsToggle(void *self)
+{
+    writeCategoryToggle("cartoons", ((ListItem *)self)->value);
+}
+
 // The parent menu is a real Onion list: full-width rows, the theme's list
 // font and selection background, and an Apps-menu-style value selector on
 // the "Add play time" row.
@@ -2910,6 +2919,8 @@ int main(int argc, char *argv[])
             show_series = atoi(argv[++i]) != 0;
         else if (strcmp(argv[i], "--show-music") == 0 && i + 1 < argc)
             show_music = atoi(argv[++i]) != 0;
+        else if (strcmp(argv[i], "--show-cartoons") == 0 && i + 1 < argc)
+            show_cartoons = atoi(argv[++i]) != 0;
         else if (strcmp(argv[i], "--floor-locked") == 0)
             floor_locked = true;
         else if (strcmp(argv[i], "--select") == 0 && i + 1 < argc)
@@ -2984,7 +2995,7 @@ int main(int argc, char *argv[])
     list_addItem(&menu_list,
                  (ListItem){.label = "Back", .item_type = ACTION});
 
-    List category_list = list_create(5, LIST_SMALL);
+    List category_list = list_create(6, LIST_SMALL);
     list_addItem(&category_list,
                  (ListItem){.label = "Stories",
                             .item_type = TOGGLE,
@@ -3005,6 +3016,11 @@ int main(int argc, char *argv[])
                             .item_type = TOGGLE,
                             .value = show_music ? 1 : 0,
                             .action = onMusicToggle});
+    list_addItem(&category_list,
+                 (ListItem){.label = "Cartoons",
+                            .item_type = TOGGLE,
+                            .value = show_cartoons ? 1 : 0,
+                            .action = onCartoonsToggle});
     list_addItem(&category_list,
                  (ListItem){.label = "Back", .item_type = ACTION});
 

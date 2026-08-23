@@ -6,5 +6,6 @@
     "show_stories": true,
     "show_movies": true,
     "show_series": true,
-    "show_music": true
+    "show_music": true,
+    "show_cartoons": true
 }
