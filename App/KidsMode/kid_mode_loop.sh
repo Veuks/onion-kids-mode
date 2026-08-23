@@ -452,12 +452,11 @@ apply_ra_lock() {
         cp "$racfg" "$rabackup"
     fi
 
-    # Every setting below used to go through ra_set (one grep + one sed —
-    # a full read+rewrite of retroarch.cfg — per call). With ~70 settings
-    # that was up to 140 full passes over the file, adding a multi-second
-    # stall between confirming the timer and reaching the carousel. This
-    # applies all of them in a single awk pass instead: one read, one
-    # write, regardless of how many settings there are.
+    # Parse each RetroArch line's key once, then look it up in an awk array.
+    # Do not build a variable regular expression for every key on every line:
+    # BusyBox awk recompiles those expressions and made this small rewrite
+    # surprisingly expensive. Every duplicate occurrence is replaced too,
+    # because RetroArch honours the last value found in the file.
     #
     #   kiosk_mode_enable true — locks down the in-game quick menu
     #   video_font_enable true — timer countdown arrives via RA's OSD
@@ -521,33 +520,39 @@ apply_ra_lock() {
                 quick_menu_show_* | settings_show_*) v=false ;;
                 *) v=nul ;;
             esac
-            printf '  key[%d]="%s"; val[%d]="%s";\n' "$i" "$k" "$i" "$v"
+            printf '  order[%d]="%s"; val["%s"]="%s";\n' \
+                "$i" "$k" "$k" "$v"
         done
         echo "  n=$i"
         echo '}'
         cat << 'AWKEOF'
 {
-    matched = 0
-    for (i = 1; i <= n; i++) {
-        if (!done[i] && $0 ~ ("^[ \t]*" key[i] "[ \t]*=")) {
-            print key[i] " = \"" val[i] "\""
-            done[i] = 1
-            matched = 1
-            break
+    equals = index($0, "=")
+    if (equals > 0) {
+        setting = substr($0, 1, equals - 1)
+        sub(/^[ \t]*/, "", setting)
+        sub(/[ \t]*$/, "", setting)
+        if (setting in val) {
+            print setting " = \"" val[setting] "\""
+            seen[setting] = 1
+            next
         }
     }
-    if (!matched) print $0
+    print $0
 }
 END {
-    for (i = 1; i <= n; i++)
-        if (!done[i]) print key[i] " = \"" val[i] "\""
+    for (i = 1; i <= n; i++) {
+        setting = order[i]
+        if (!(setting in seen))
+            print setting " = \"" val[setting] "\""
+    }
 }
 AWKEOF
     } > "$awkprog"
 
     awk -f "$awkprog" "$racfg" > "$tmpra" && mv -f "$tmpra" "$racfg"
     rm -f "$awkprog"
-    log "RetroArch kiosk lock applied (in-game hotkeys disabled), single pass."
+    log "RetroArch kiosk lock applied (direct-key lookup, duplicates locked)."
 }
 
 restore_ra_lock() {

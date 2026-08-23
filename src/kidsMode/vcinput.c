@@ -1533,10 +1533,10 @@ static bool map_event(SDL_Event *event)
     // While dimmed or off, the wake block above consumes the first gesture.
     if (scancode == MIYOO_SCANCODE_VOLUMEDOWN ||
         scancode == MIYOO_SCANCODE_VOLUMEUP) {
-        // Volume can arrive immediately after a multi-event vertical seek.
-        // Cancel any minute steps not yet delivered so this key can never
-        // alter the media position.
-        cancel_seek_sequence(true);
+        // Stop held-key repetition, but let an already requested five-minute
+        // jump finish. Those queued minute steps belong to the preceding
+        // D-pad command, not to Volume.
+        seek_input = SDLK_UNKNOWN;
         if (menu_down && state == SDL_PRESSED)
             menu_used = true;
         return true;
@@ -1563,7 +1563,9 @@ static bool map_event(SDL_Event *event)
             return true;
         }
         menu_down = false;
-        cancel_seek_sequence(false);
+        // Releasing MENU ends repetition but must not truncate the current
+        // five-minute batch (which previously produced only +/-2 minutes).
+        seek_input = SDLK_UNKNOWN;
         // Onion's keymon may consume the volume-key event before SDL sees it.
         // Detect the resulting PWM change so MENU+VOL is still recognised as
         // a brightness gesture and MENU release cannot leave or seek media.
@@ -1626,7 +1628,7 @@ static bool map_event(SDL_Event *event)
         // Any key used while MENU is held makes this a combination, even
         // when FFplay does not need the key (notably hardware volume keys).
         menu_used = true;
-        cancel_seek_sequence(true);
+        seek_input = SDLK_UNKNOWN;
     }
 
     if (in == SDLK_SPACE) { /* Miyoo A: resume/show progress */
@@ -1692,6 +1694,11 @@ int SDL_PollEvent(SDL_Event *event)
         real_wait = (wait_fn)dlsym(RTLD_NEXT, "SDL_WaitEvent");
     ensure_key_repeat();
     update_clock();
+    // Finish a logical five-minute command before consuming later physical
+    // releases or volume events. This keeps all five native one-minute steps
+    // together and prevents rapid gestures from truncating the command.
+    if (emit_pending_seek(event))
+        return 1;
     while (real_poll) {
         inside_event_call = true;
         int got = real_poll(event);
@@ -1718,6 +1725,8 @@ int SDL_WaitEvent(SDL_Event *event)
         real_wait = (wait_fn)dlsym(RTLD_NEXT, "SDL_WaitEvent");
     while (real_poll) {
         update_clock();
+        if (emit_pending_seek(event))
+            return 1;
         inside_event_call = true;
         int got = real_poll(event);
         inside_event_call = false;
@@ -1742,7 +1751,7 @@ int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
     int count = real_peep(events, numevents, action, mask);
     if (inside_event_call)
         return count;
-    if (action != SDL_GETEVENT || count <= 0)
+    if (action != SDL_GETEVENT || count < 0)
         return count;
     int kept = 0;
     for (int i = 0; i < count; i++) {
@@ -1753,7 +1762,9 @@ int SDL_PeepEvents(SDL_Event *events, int numevents, SDL_eventaction action,
         }
     }
     if (action == SDL_GETEVENT && kept < numevents) {
-        if (emit_pending_seek(&events[kept]) ||
+        while (kept < numevents && emit_pending_seek(&events[kept]))
+            kept++;
+        if (kept < numevents &&
             progressive_seek(&events[kept], SDL_GetTicks()))
             kept++;
     }
