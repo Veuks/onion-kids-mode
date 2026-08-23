@@ -7,5 +7,6 @@
     "show_movies": true,
     "show_series": true,
     "show_music": true,
-    "show_cartoons": true
+    "show_cartoons": true,
+    "pre_rotated_videos": true
 }

@@ -3522,7 +3522,10 @@ int main(int argc, char *argv[])
             flip();
             dirty = false;
         }
-        msleep(10);
+        // The carousel is event-driven and redraws only when dirty. Polling at
+        // 100 Hz while it is completely static wastes CPU and battery; 50 Hz
+        // keeps button latency below one frame while halving idle wake-ups.
+        msleep(20);
     }
 
     if (selection_state_dirty)

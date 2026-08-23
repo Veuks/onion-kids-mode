@@ -136,6 +136,7 @@ cfg_show_series=true
 cfg_show_music=true
 cfg_show_cartoons=true
 cfg_fav_shortcut=false
+cfg_pre_rotated_videos=false
 
 log() {
     mkdir -p "$(dirname "$logfile")"
@@ -162,20 +163,51 @@ make_salt() {
     fi
 }
 
+flat_json_sane() {
+    # Fast path for the small, flat objects written atomically by Kids Mode.
+    # Suspicious or hand-edited files still fall back to jq validation.
+    [ -f "$1" ] || return 1
+    awk -v required="$2" '
+        /{/ { opened=1 }
+        /}/ { closed=1 }
+        index($0, "\"" required "\"") { found=1 }
+        END { exit !(opened && closed && found) }
+    ' "$1" 2> /dev/null
+}
+
 load_config_cache() {
     [ -f "$configfile" ] || return 1
-    config_dump="$(jq -r '
-        (.pin_hash // ""),
-        (.pin_salt // ""),
-        (.pin_plain // ""),
-        ((.timer_minutes // 0) | tostring),
-        ((.lock_current_floor // false) | tostring),
-        ((if has("show_stories") then .show_stories else true end) | tostring),
-        ((if has("show_movies") then .show_movies else true end) | tostring),
-        ((if has("show_series") then .show_series else true end) | tostring),
-        ((if has("show_music") then .show_music else true end) | tostring),
-        ((if has("show_cartoons") then .show_cartoons else true end) | tostring),
-        ((.fav_shortcut // false) | tostring)
+    # The file has already been validated by ensure_config. Read this flat
+    # settings object in one small awk process instead of starting jq for every
+    # launch. jq remains the authoritative writer and validation fallback.
+    config_dump="$(awk '
+        BEGIN {
+            value["pin_hash"]=""; value["pin_salt"]="";
+            value["pin_plain"]=""; value["timer_minutes"]="0";
+            value["lock_current_floor"]="false";
+            value["show_stories"]="true"; value["show_movies"]="true";
+            value["show_series"]="true"; value["show_music"]="true";
+            value["show_cartoons"]="true"; value["fav_shortcut"]="false";
+            value["pre_rotated_videos"]="false";
+        }
+        match($0, /"[A-Za-z0-9_]+"[ \t]*:/) {
+            field=substr($0, RSTART, RLENGTH)
+            gsub(/[" \t:]/, "", field)
+            parsed=substr($0, RSTART+RLENGTH)
+            sub(/^[ \t]*/, "", parsed); sub(/[ \t]*,?[ \t]*$/, "", parsed)
+            if (parsed ~ /^".*"$/) {
+                sub(/^"/, "", parsed); sub(/"$/, "", parsed)
+            }
+            if (field in value) value[field]=parsed
+        }
+        END {
+            print value["pin_hash"]; print value["pin_salt"];
+            print value["pin_plain"]; print value["timer_minutes"];
+            print value["lock_current_floor"]; print value["show_stories"];
+            print value["show_movies"]; print value["show_series"];
+            print value["show_music"]; print value["show_cartoons"];
+            print value["fav_shortcut"]; print value["pre_rotated_videos"];
+        }
     ' "$configfile" 2> /dev/null)" || return 1
     {
         IFS= read -r cfg_pin_hash
@@ -189,6 +221,7 @@ load_config_cache() {
         IFS= read -r cfg_show_music
         IFS= read -r cfg_show_cartoons
         IFS= read -r cfg_fav_shortcut
+        IFS= read -r cfg_pre_rotated_videos
     } <<EOF
 $config_dump
 EOF
@@ -196,14 +229,28 @@ EOF
         '' | *[!0-9]*) cfg_timer_minutes=0 ;;
     esac
     if [ -f "$profile_preferences_file" ] &&
-        jq -e . "$profile_preferences_file" > /dev/null 2>&1; then
-        profile_dump="$(jq -r '
-            ((.lock_current_floor // false) | tostring),
-            ((if has("show_stories") then .show_stories else true end) | tostring),
-            ((if has("show_movies") then .show_movies else true end) | tostring),
-            ((if has("show_series") then .show_series else true end) | tostring),
-            ((if has("show_music") then .show_music else true end) | tostring),
-            ((if has("show_cartoons") then .show_cartoons else true end) | tostring)
+        { flat_json_sane "$profile_preferences_file" lock_current_floor ||
+          jq -e . "$profile_preferences_file" > /dev/null 2>&1; }; then
+        profile_dump="$(awk '
+            BEGIN {
+                value["lock_current_floor"]="false";
+                value["show_stories"]="true"; value["show_movies"]="true";
+                value["show_series"]="true"; value["show_music"]="true";
+                value["show_cartoons"]="true";
+            }
+            match($0, /"[A-Za-z0-9_]+"[ \t]*:/) {
+                field=substr($0, RSTART, RLENGTH)
+                gsub(/[" \t:]/, "", field)
+                parsed=substr($0, RSTART+RLENGTH)
+                sub(/^[ \t]*/, "", parsed); sub(/[ \t]*,?[ \t]*$/, "", parsed)
+                if (field in value) value[field]=parsed
+            }
+            END {
+                print value["lock_current_floor"];
+                print value["show_stories"]; print value["show_movies"];
+                print value["show_series"]; print value["show_music"];
+                print value["show_cartoons"];
+            }
         ' "$profile_preferences_file" 2> /dev/null)"
         {
             IFS= read -r cfg_lock_current_floor
@@ -272,7 +319,9 @@ is_4_digits() {
 }
 
 ensure_config() {
-    if [ ! -f "$configfile" ] || ! jq -e . "$configfile" > /dev/null 2>&1; then
+    if [ ! -f "$configfile" ] ||
+        { ! flat_json_sane "$configfile" pin_hash &&
+          ! jq -e . "$configfile" > /dev/null 2>&1; }; then
         if [ -f "$configfile" ]; then
             mkdir -p "$backupdir"
             cp "$configfile" "$backupdir/kidmode.json.broken" 2> /dev/null
@@ -298,7 +347,8 @@ profile_config_merge() {
     # Parent-menu display choices belong to the originating Onion profile.
     tmpprefs=/tmp/kidsmode_preferences.$$
     if [ -f "$profile_preferences_file" ] &&
-        jq -e . "$profile_preferences_file" > /dev/null 2>&1; then
+        { flat_json_sane "$profile_preferences_file" lock_current_floor ||
+          jq -e . "$profile_preferences_file" > /dev/null 2>&1; }; then
         prefs_source="$profile_preferences_file"
     else
         prefs_source=/tmp/kidsmode_empty_preferences.$$
@@ -1525,7 +1575,7 @@ hide_ffplay_state() {
 watch_media_duration() {
     duration_log="$1" duration_output="$2" watched_pid="$3"
     tries=0
-    while [ "$tries" -lt 100 ] && [ -d "/proc/$watched_pid" ]; do
+    while [ "$tries" -lt 40 ] && [ -d "/proc/$watched_pid" ]; do
         media_seconds="$(awk '
             match($0, /Duration: [0-9]+:[0-9]+:[0-9]+/) {
                 stamp = substr($0, RSTART + 10, RLENGTH - 10)
@@ -1540,7 +1590,9 @@ watch_media_duration() {
             return 0
         fi
         tries=$((tries + 1))
-        sleep 0.1
+        # FFplay writes the duration once during probing. Four checks per
+        # second are ample and avoid spawning up to ten awk readers per second.
+        sleep 0.25
     done
     return 1
 }
@@ -1609,9 +1661,12 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -vn -autoexit -i "$video" $seek_args \
+            "$ffplay" -vn -autoexit -nostats -i "$video" $seek_args \
                 2> "$duration_log" &
     else
+        video_filter_args=""
+        [ "$cfg_pre_rotated_videos" = true ] || \
+            video_filter_args='-vf hflip,vflip'
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" \
             VC_SCREENSHOT_FILE="$screenshot_file" VC_MEDIA_KIND=video \
@@ -1620,7 +1675,9 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" $seek_args \
+            "$ffplay" -autoexit -framedrop -nostats -noautorotate \
+                $video_filter_args \
+                -i "$video" $seek_args \
             2> "$duration_log" &
     fi
     pid=$!

@@ -129,6 +129,34 @@ supported file, either directly or in one of its subfolders. Entries inside a
 folder are sorted alphabetically. The supplied root categories use the fixed
 order Movies, Music, Cartoons, Series and Stories.
 
+### Optimized pre-rotated videos
+
+This performance build expects video files to be physically rotated by **180°**
+during encoding. It can then send decoded frames directly to the Miyoo display
+without applying FFplay's `hflip,vflip` filter to every frame. In HandBrake,
+choose a 180° rotation in the Dimensions settings while doing the normal H.264
+encode. Rotate only video files: posters, folder artwork and other carousel
+images must remain upright.
+
+Kids Mode also disables FFplay's automatic metadata rotation. A file changed
+only through a QuickTime orientation tag will therefore still appear in its
+real stored orientation and cannot silently re-enable a playback-time filter.
+
+For best compatibility use MP4, H.264, AAC, constant frame rate and no more
+than 640 × 480. Rotate from the original source as part of that encode instead
+of re-encoding an already compressed Kids Mode copy. Test one file on the
+console before converting a complete library.
+
+The supplied `kidmode.json` enables this direct path with:
+
+```json
+"pre_rotated_videos": true
+```
+
+Set it to `false` to play conventional upright files. Kids Mode will then
+restore the former real-time 180° FFplay filter. This switch does not rotate
+posters or existing artwork.
+
 Each directory can have its own `Imgs` folder. An image uses the same base name
 as the media file beside it. PNG, JPG and JPEG are accepted. The complete
 package includes five ready-to-use category folders with generic 256 × 256
