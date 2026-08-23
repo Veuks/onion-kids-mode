@@ -1632,9 +1632,9 @@ play_video() {
     kill "$duration_watcher" 2> /dev/null
     wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
-    # libvcinput clears both framebuffer pages while FFplay still owns its
-    # SDL surface. Do not call bootScreen here: it can briefly expose an
-    # Onion window before the Kids Mode carousel is redrawn.
+    # The next kidui instance primes both framebuffer pages with its first
+    # complete frame. Do not call bootScreen or flip FFplay's dying surface
+    # here: either can expose a foreign or inverted page during transition.
     # Restore the latest brightness selected during playback, not the value
     # captured when FFplay started. This also recovers cleanly if playback
     # ended while Kids Mode's own dim/off state was active.

@@ -2771,6 +2771,17 @@ static void flip(void)
 {
     SDL_BlitSurface(screen, NULL, video, NULL);
     SDL_Flip(video);
+    // The Miyoo framebuffer has two pages. A previous FFplay audio screen is
+    // drawn in panel-native orientation and can otherwise resurface inverted
+    // on a later page change. Prime both pages with the first complete kidui
+    // frame instead of flipping FFplay's surface while it is being destroyed.
+    // Two identical kidui frames are safe and visually indistinguishable.
+    static bool framebuffer_primed = false;
+    if (!framebuffer_primed) {
+        SDL_BlitSurface(screen, NULL, video, NULL);
+        SDL_Flip(video);
+        framebuffer_primed = true;
+    }
 #ifdef KIDUI_SCREENSHOT_DIR
     // Dev/preview builds only (never defined on device): dump every
     // rendered frame so screens can be inspected without hardware
