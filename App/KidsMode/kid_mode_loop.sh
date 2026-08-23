@@ -1600,7 +1600,7 @@ play_video() {
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
             "$ffplay" -autoexit \
-                -vf "scale=in_range=tv:out_range=pc,hflip,vflip" \
+                -vf "lutyuv=y='clip((val-16)*255/219,0,255)':u='clip((val-128)*255/224+128,0,255)':v='clip((val-128)*255/224+128,0,255)',hflip,vflip" \
                 -i "$video" $seek_args \
             2> "$duration_log" &
     fi
