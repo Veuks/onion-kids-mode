@@ -51,6 +51,7 @@ static Uint32 seek_started_at;
 static Uint32 seek_last_step;
 static int pending_seek_events;
 static SDLKey pending_seek_key = SDLK_UNKNOWN;
+static long pending_seek_delta;
 static bool clock_ready;
 static bool playback_started;
 static Uint32 playback_started_at;
@@ -516,7 +517,7 @@ static void update_clock(void)
     // frame. The clock, backlight and save bookkeeping do not need to run at
     // video-frame frequency. Capping this work also keeps the carousel/player
     // responsive on the Miyoo's small CPU.
-    if (clock_ready && now - last_clock_update < 50)
+    if (clock_ready && now - last_clock_update < 100)
         return;
     last_clock_update = now;
     long previous_second = position_seconds;
@@ -1408,34 +1409,44 @@ static bool progressive_seek(SDL_Event *event, Uint32 now)
     Uint32 held = now - seek_started_at;
     SDLKey out;
     long step;
+    long applied_step;
     if (vertical && held < 1500) {
         // FFplay has a native one-minute key but no five-minute key. Emit
-        // five native steps; position_seconds is adjusted once for the whole
-        // logical jump so the displayed time remains exact.
+        // five native steps. Update our position only as each event is really
+        // delivered so an immediately following key cannot leave the OSD
+        // five minutes ahead of FFplay.
         out = seek_input == SDLK_DOWN ? SDLK_DOWN : SDLK_UP;
         pending_seek_key = out;
         pending_seek_events = 4;
         step = 300;
+        applied_step = 60;
     }
     else if (vertical) {
         out = seek_input == SDLK_DOWN ? SDLK_LALT : SDLK_LSHIFT;
         step = 600;
+        applied_step = step;
     }
     else if (held < 1500) {
         out = seek_input == SDLK_LEFT ? SDLK_LEFT : SDLK_RIGHT;
         step = 10;
+        applied_step = step;
     }
     else {
         // After the short-seek phase, stay at one-minute steps for as long as
         // the combination is held. A third five-minute tier was too abrupt.
         out = seek_input == SDLK_LEFT ? SDLK_DOWN : SDLK_UP;
         step = 60;
+        applied_step = step;
     }
 
     bool backwards = seek_input == SDLK_LEFT || seek_input == SDLK_DOWN;
-    position_seconds += backwards ? -step : step;
+    long delta = backwards ? -applied_step : applied_step;
+    position_seconds += delta;
     if (position_seconds < 0)
         position_seconds = 0;
+    if (duration_seconds > 0 && position_seconds > duration_seconds)
+        position_seconds = duration_seconds;
+    pending_seek_delta = pending_seek_events > 0 ? delta : 0;
     save_position();
     save_checkpoint();
     set_seek_notice(!backwards, step);
@@ -1448,11 +1459,34 @@ static bool emit_pending_seek(SDL_Event *event)
 {
     if (pending_seek_events <= 0 || pending_seek_key == SDLK_UNKNOWN)
         return false;
+    position_seconds += pending_seek_delta;
+    if (position_seconds < 0)
+        position_seconds = 0;
+    if (duration_seconds > 0 && position_seconds > duration_seconds)
+        position_seconds = duration_seconds;
+    save_position();
+    save_checkpoint();
     key(event, pending_seek_key, SDL_PRESSED);
     pending_seek_events--;
-    if (pending_seek_events == 0)
+    if (pending_seek_events == 0) {
         pending_seek_key = SDLK_UNKNOWN;
+        pending_seek_delta = 0;
+    }
     return true;
+}
+
+static void cancel_seek_sequence(bool clear_notice)
+{
+    seek_input = SDLK_UNKNOWN;
+    pending_seek_events = 0;
+    pending_seek_key = SDLK_UNKNOWN;
+    pending_seek_delta = 0;
+    if (clear_notice) {
+        if (audio_mode)
+            clear_audio_seek_notice();
+        seek_notice[0] = '\0';
+        seek_notice_drawn = false;
+    }
 }
 
 static bool map_event(SDL_Event *event)
@@ -1499,6 +1533,10 @@ static bool map_event(SDL_Event *event)
     // While dimmed or off, the wake block above consumes the first gesture.
     if (scancode == MIYOO_SCANCODE_VOLUMEDOWN ||
         scancode == MIYOO_SCANCODE_VOLUMEUP) {
+        // Volume can arrive immediately after a multi-event vertical seek.
+        // Cancel any minute steps not yet delivered so this key can never
+        // alter the media position.
+        cancel_seek_sequence(true);
         if (menu_down && state == SDL_PRESSED)
             menu_used = true;
         return true;
@@ -1525,7 +1563,7 @@ static bool map_event(SDL_Event *event)
             return true;
         }
         menu_down = false;
-        seek_input = SDLK_UNKNOWN;
+        cancel_seek_sequence(false);
         // Onion's keymon may consume the volume-key event before SDL sees it.
         // Detect the resulting PWM change so MENU+VOL is still recognised as
         // a brightness gesture and MENU release cannot leave or seek media.
@@ -1560,6 +1598,9 @@ static bool map_event(SDL_Event *event)
         }
         Uint32 now = SDL_GetTicks();
         if (seek_input != in) {
+            // A new direction replaces any unfinished multi-event jump from
+            // the previous direction.
+            cancel_seek_sequence(false);
             seek_input = in;
             seek_started_at = now;
             seek_last_step = 0;
@@ -1585,6 +1626,7 @@ static bool map_event(SDL_Event *event)
         // Any key used while MENU is held makes this a combination, even
         // when FFplay does not need the key (notably hardware volume keys).
         menu_used = true;
+        cancel_seek_sequence(true);
     }
 
     if (in == SDLK_SPACE) { /* Miyoo A: resume/show progress */
