@@ -1598,10 +1598,9 @@ play_video() {
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
+            SDL_VIDEO_YUV_HWACCEL=0 \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -autoexit \
-                -vf "lutyuv=y='clip((val-16)*255/219,0,255)':u='clip((val-128)*255/224+128,0,255)':v='clip((val-128)*255/224+128,0,255)',hflip,vflip" \
-                -i "$video" $seek_args \
+            "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" $seek_args \
             2> "$duration_log" &
     fi
     pid=$!
