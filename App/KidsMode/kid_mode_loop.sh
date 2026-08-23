@@ -1575,7 +1575,11 @@ hide_ffplay_state() {
 watch_media_duration() {
     duration_log="$1" duration_output="$2" watched_pid="$3"
     tries=0
-    while [ "$tries" -lt 40 ] && [ -d "/proc/$watched_pid" ]; do
+    # BusyBox versions shipped by older Onion releases do not all handle
+    # fractional sleep values consistently. Give FFplay one second to write
+    # its header, then use a small number of portable one-second retries.
+    sleep 1
+    while [ "$tries" -lt 10 ] && [ -d "/proc/$watched_pid" ]; do
         media_seconds="$(awk '
             match($0, /Duration: [0-9]+:[0-9]+:[0-9]+/) {
                 stamp = substr($0, RSTART + 10, RLENGTH - 10)
@@ -1590,9 +1594,7 @@ watch_media_duration() {
             return 0
         fi
         tries=$((tries + 1))
-        # FFplay writes the duration once during probing. Four checks per
-        # second are ample and avoid spawning up to ten awk readers per second.
-        sleep 0.25
+        sleep 1
     done
     return 1
 }
@@ -1675,8 +1677,7 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -autoexit -framedrop -nostats -noautorotate \
-                $video_filter_args \
+            "$ffplay" -autoexit -framedrop -nostats $video_filter_args \
                 -i "$video" $seek_args \
             2> "$duration_log" &
     fi
