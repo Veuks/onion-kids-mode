@@ -125,29 +125,38 @@ artwork are included in both. Files placed directly in the older common
 Supported video formats are MP4, MKV, AVI, MOV, M4V and WebM. Supported audio
 formats are MP3, M4A, AAC, FLAC, OGG, OPUS, WAV and WMA. Media can be organised
 through multiple folder levels. A folder appears when it contains at least one
-supported file, either directly or in one of its subfolders. Entries are sorted
-alphabetically.
+supported file, either directly or in one of its subfolders. Entries inside a
+folder are sorted alphabetically. The supplied root categories use the fixed
+order Movies, Music, Cartoons, Series and Stories.
 
 Each directory can have its own `Imgs` folder. An image uses the same base name
 as the media file beside it. PNG, JPG and JPEG are accepted. The complete
-package includes five ready-to-use category folders. Generic 256 × 256 artwork
-is supplied for the original four categories; Cartoons accepts an optional
-`Cartoons.png` cover using the same rules. This organisation is recommended:
+package includes five ready-to-use category folders with generic 256 × 256
+artwork. This organisation is recommended:
 
 ```text
 Media/KidsMode/Main/
 ├── Imgs/
 │   ├── Movies.png
 │   ├── Music.png
+│   ├── Cartoons.png
 │   ├── Series.png
-│   ├── Stories.png
-│   └── Cartoons.png (optional)
+│   └── Stories.png
 ├── Movies/
 │   ├── The Lion King.mp4
 │   ├── The Visitors.mkv
 │   └── Imgs/
 │       ├── The Lion King.png
 │       └── The Visitors.jpg
+├── Music/
+│   ├── Song 01.mp3
+│   ├── Music video 01.mp4
+│   └── Imgs/
+│       └── Song 01.png
+├── Cartoons/
+│   ├── Cartoon 01.mp4
+│   └── Imgs/
+│       └── Cartoon 01.jpg
 ├── Series/
 │   └── Ulysses 31/
 │       ├── Episode 01.mp4
@@ -155,19 +164,10 @@ Media/KidsMode/Main/
 │       └── Imgs/
 │           ├── Ulysses 31.png
 │           └── Episode 02.jpg
-├── Music/
-│   ├── Song 01.mp3
-│   ├── Music video 01.mp4
-│   └── Imgs/
-│       └── Song 01.png
-├── Stories/
-│   ├── Story 01.mp3
-│   └── Imgs/
-│       └── Story 01.jpg
-└── Cartoons/
-    ├── Cartoon 01.mp4
+└── Stories/
+    ├── Story 01.mp3
     └── Imgs/
-        └── Cartoon 01.jpg
+        └── Story 01.jpg
 ```
 
 For a folder cover, place an image named after that folder inside its own

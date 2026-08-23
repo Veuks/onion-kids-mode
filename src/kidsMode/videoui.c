@@ -107,11 +107,11 @@ typedef enum { SCREEN_CAROUSEL,
 #define MENU_LOCKFLOOR 3
 #define MENU_CATEGORIES 4
 #define MENU_BACK 5
-#define CATEGORY_STORIES 0
-#define CATEGORY_MOVIES 1
-#define CATEGORY_SERIES 2
-#define CATEGORY_MUSIC 3
-#define CATEGORY_CARTOONS 4
+#define CATEGORY_MOVIES 0
+#define CATEGORY_MUSIC 1
+#define CATEGORY_CARTOONS 2
+#define CATEGORY_SERIES 3
+#define CATEGORY_STORIES 4
 #define CATEGORY_BACK 5
 #define LOCKFLOOR_RESULT_FILE "/tmp/kidsmode_lockfloor_result"
 #define CATEGORIES_RESULT_FILE "/tmp/kidsmode_categories_result"
@@ -811,6 +811,22 @@ static int compareVideos(const void *a, const void *b)
 {
     const VideoEntry *va = (const VideoEntry *)a;
     const VideoEntry *vb = (const VideoEntry *)b;
+    if (!current_folder[0] && va->is_folder && vb->is_folder) {
+        // Keep the five supplied media categories in a deliberate order.
+        // Additional user folders remain alphabetically sorted afterwards.
+        static const char *categories[] = {
+            "Movies", "Music", "Cartoons", "Series", "Stories"};
+        int order_a = 100;
+        int order_b = 100;
+        for (int i = 0; i < 5; i++) {
+            if (strcasecmp(va->item.label, categories[i]) == 0)
+                order_a = i;
+            if (strcasecmp(vb->item.label, categories[i]) == 0)
+                order_b = i;
+        }
+        if (order_a != order_b)
+            return order_a - order_b;
+    }
     return strcasecmp(va->item.label, vb->item.label);
 }
 
@@ -2997,20 +3013,10 @@ int main(int argc, char *argv[])
 
     List category_list = list_create(6, LIST_SMALL);
     list_addItem(&category_list,
-                 (ListItem){.label = "Stories",
-                            .item_type = TOGGLE,
-                            .value = show_stories ? 1 : 0,
-                            .action = onStoriesToggle});
-    list_addItem(&category_list,
                  (ListItem){.label = "Movies",
                             .item_type = TOGGLE,
                             .value = show_movies ? 1 : 0,
                             .action = onMoviesToggle});
-    list_addItem(&category_list,
-                 (ListItem){.label = "Series",
-                            .item_type = TOGGLE,
-                            .value = show_series ? 1 : 0,
-                            .action = onSeriesToggle});
     list_addItem(&category_list,
                  (ListItem){.label = "Music",
                             .item_type = TOGGLE,
@@ -3021,6 +3027,16 @@ int main(int argc, char *argv[])
                             .item_type = TOGGLE,
                             .value = show_cartoons ? 1 : 0,
                             .action = onCartoonsToggle});
+    list_addItem(&category_list,
+                 (ListItem){.label = "Series",
+                            .item_type = TOGGLE,
+                            .value = show_series ? 1 : 0,
+                            .action = onSeriesToggle});
+    list_addItem(&category_list,
+                 (ListItem){.label = "Stories",
+                            .item_type = TOGGLE,
+                            .value = show_stories ? 1 : 0,
+                            .action = onStoriesToggle});
     list_addItem(&category_list,
                  (ListItem){.label = "Back", .item_type = ACTION});
 

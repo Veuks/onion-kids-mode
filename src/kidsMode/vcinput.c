@@ -22,6 +22,7 @@ typedef SDL_Surface *(*set_mode_fn)(int, int, int, Uint32);
 typedef void (*update_fn)(SDL_Surface *, Sint32, Sint32, Uint32, Uint32);
 typedef void (*updates_fn)(SDL_Surface *, int, SDL_Rect *);
 typedef void (*pause_audio_fn)(int);
+typedef void (*quit_fn)(void);
 static poll_fn real_poll;
 static wait_fn real_wait;
 static peep_fn real_peep;
@@ -31,6 +32,7 @@ static set_mode_fn real_set_mode;
 static update_fn real_update;
 static updates_fn real_updates;
 static pause_audio_fn real_pause_audio;
+static quit_fn real_quit;
 static SDL_Overlay *last_overlay;
 static SDL_Rect last_overlay_rect;
 static bool last_overlay_rect_ready;
@@ -1867,4 +1869,33 @@ int SDL_Flip(SDL_Surface *surface)
     // never present it. update_clock performs any tiny direct framebuffer
     // changes needed for the duration digits and progress knob.
     return 0;
+}
+
+void SDL_Quit(void)
+{
+    if (!real_quit)
+        real_quit = (quit_fn)dlsym(RTLD_NEXT, "SDL_Quit");
+
+    load_player_config(SDL_GetTicks());
+    if (audio_mode && hardware_surface != NULL) {
+        // Erase both framebuffer pages while FFplay still owns its SDL video
+        // surface. Doing this here avoids the external bootScreen utility,
+        // whose own Onion window could briefly appear between an audio file
+        // and the Kids Mode carousel.
+        Uint32 black = SDL_MapRGB(hardware_surface->format, 0, 0, 0);
+        SDL_FillRect(hardware_surface, NULL, black);
+        if (!real_flip)
+            real_flip = (flip_fn)dlsym(RTLD_NEXT, "SDL_Flip");
+        if (real_flip) {
+            real_flip(hardware_surface);
+            SDL_FillRect(hardware_surface, NULL, black);
+            real_flip(hardware_surface);
+        }
+        else {
+            update_screen(hardware_surface, 0, 0, 0, 0);
+        }
+    }
+
+    if (real_quit)
+        real_quit();
 }

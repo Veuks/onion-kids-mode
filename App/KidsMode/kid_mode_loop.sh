@@ -1627,10 +1627,9 @@ play_video() {
     kill "$duration_watcher" 2> /dev/null
     wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
-    # The audio UI is drawn in the panel's physical 180-degree orientation.
-    # Clear both framebuffer pages before reopening kidui so no rotated
-    # artwork page can reappear behind carousel thumbnails after an MP3.
-    [ "$media_kind" = audio ] && bootScreen clear 2> /dev/null
+    # libvcinput clears both framebuffer pages while FFplay still owns its
+    # SDL surface. Do not call bootScreen here: it can briefly expose an
+    # Onion window before the Kids Mode carousel is redrawn.
     # Restore the latest brightness selected during playback, not the value
     # captured when FFplay started. This also recovers cleanly if playback
     # ended while Kids Mode's own dim/off state was active.
