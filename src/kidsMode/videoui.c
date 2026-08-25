@@ -3246,10 +3246,19 @@ int main(int argc, char *argv[])
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
+    uint32_t last_loop_tick = SDL_GetTicks();
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
+
+        // Onion implements a short POWER sleep by SIGSTOP'ing kidui. On
+        // resume SDL's clock includes that stopped interval; without resetting
+        // the idle origin, the carousel dimmer could immediately turn the
+        // freshly restored backlight off again.
+        if (ticks - last_loop_tick > 250)
+            carousel_last_activity = ticks;
+        last_loop_tick = ticks;
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
         pollCarouselWakeInput(ticks);

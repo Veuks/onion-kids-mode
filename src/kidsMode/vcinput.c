@@ -74,7 +74,9 @@ static Uint32 last_duration_check;
 static Uint32 progress_until;
 static bool progress_waiting_for_video;
 static Uint32 last_activity;
+static Uint32 last_external_backlight_check;
 static int backlight_stage;
+static bool external_backlight_off;
 static long saved_brightness_raw;
 static SDL_Surface *audio_artwork;
 static SDL_Surface *audio_visualizer_surface;
@@ -455,6 +457,36 @@ static void update_backlight(Uint32 now)
         saved_brightness_raw <= 0)
         return;
     Uint32 idle = now - last_activity;
+
+    // A short POWER sleep is owned by Onion's keymon. In audio mode the
+    // stay_awake flag deliberately leaves FFplay running, so distinguish the
+    // system's zero brightness from our own stage-2 screen-off state. Keep
+    // our timer parked until keymon restores the display, then start a fresh
+    // 5/15-second idle cycle instead of switching it straight back off.
+    if (external_backlight_off ||
+        (backlight_stage == 0 && idle >= 4000)) {
+        if (now - last_external_backlight_check >= 500) {
+            last_external_backlight_check = now;
+            long current = read_number_file(brightness_file);
+            if (backlight_stage == 0 && current == 0) {
+                external_backlight_off = true;
+                last_activity = now;
+                return;
+            }
+            if (external_backlight_off && current > 0) {
+                external_backlight_off = false;
+                save_brightness_choice(current);
+                last_activity = now;
+                return;
+            }
+        }
+        if (external_backlight_off) {
+            last_activity = now;
+            return;
+        }
+        idle = now - last_activity;
+    }
+
     if (backlight_stage == 0 && idle >= AUDIO_DIM_DELAY) {
         long current = read_number_file(brightness_file);
         if (current > 0)
