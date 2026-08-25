@@ -463,12 +463,29 @@ static void update_backlight(Uint32 now)
     // system's zero brightness from our own stage-2 screen-off state. Keep
     // our timer parked until keymon restores the display, then start a fresh
     // 5/15-second idle cycle instead of switching it straight back off.
-    if (external_backlight_off ||
-        (backlight_stage == 0 && idle >= 4000)) {
+    if (external_backlight_off || backlight_stage == 2 ||
+        (backlight_stage == 0 && idle >= 4000) ||
+        backlight_stage == 1) {
         if (now - last_external_backlight_check >= 500) {
             last_external_backlight_check = now;
             long current = read_number_file(brightness_file);
             if (backlight_stage == 0 && current == 0) {
+                external_backlight_off = true;
+                last_activity = now;
+                return;
+            }
+            // If our own screen-off state suddenly becomes lit again,
+            // keymon has completed a real POWER wake. Accept its restored
+            // brightness and start a new idle cycle.
+            if (backlight_stage == 2 && current > 0) {
+                backlight_stage = 0;
+                save_brightness_choice(current);
+                last_activity = now;
+                return;
+            }
+            // A zero PWM while merely dimmed was imposed by keymon, not by
+            // our 15-second timer. Park the timer until system wake.
+            if (backlight_stage == 1 && current == 0) {
                 external_backlight_off = true;
                 last_activity = now;
                 return;
@@ -493,10 +510,6 @@ static void update_backlight(Uint32 now)
             save_brightness_choice(current);
         if (write_backlight(AUDIO_DIM_RAW)) {
             backlight_stage = 1;
-            // From the beginning of the dimmed transition, reserve the first
-            // complete button gesture for waking. This also prevents keymon
-            // from changing volume before the child can see the screen.
-            grab_wake_input();
         }
     }
     if (backlight_stage == 1 && idle >= AUDIO_OFF_DELAY &&
@@ -1545,7 +1558,9 @@ static bool map_event(SDL_Event *event)
         if ((in == SDLK_SPACE || in == SDLK_LCTRL || in == SDLK_ESCAPE ||
              in == SDLK_LSHIFT || in == SDLK_LALT || in == SDLK_RCTRL ||
              in == SDLK_RETURN || in == SDLK_LEFT || in == SDLK_RIGHT ||
-             in == SDLK_UP || in == SDLK_DOWN) &&
+             in == SDLK_UP || in == SDLK_DOWN ||
+             scancode == MIYOO_SCANCODE_VOLUMEDOWN ||
+             scancode == MIYOO_SCANCODE_VOLUMEUP) &&
             state == SDL_PRESSED) {
             wake_key = in;
             restore_backlight();

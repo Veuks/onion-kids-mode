@@ -286,15 +286,20 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
         long current = display_getBrightnessRaw();
         if (current > 0)
             carousel_saved_brightness = current;
-        if (grabCarouselWakeInput()) {
-            display_setBrightnessRaw(CAROUSEL_DIM_RAW);
-            carousel_backlight_stage = 1;
-        }
+        // Never EVIOCGRAB the hardware buttons here. Onion's keymon must
+        // always retain POWER so a short press can enter and leave the real
+        // system sleep state reliably.
+        display_setBrightnessRaw(CAROUSEL_DIM_RAW);
+        carousel_backlight_stage = 1;
     }
     if (carousel_backlight_stage == 1 &&
         idle >= CAROUSEL_OFF_DELAY_MS) {
-        display_setBrightnessRaw(0);
-        carousel_backlight_stage = 2;
+        // Only the fully black, app-managed state owns one wake gesture.
+        // Before this point POWER remains entirely native to Onion.
+        if (grabCarouselWakeInput()) {
+            display_setBrightnessRaw(0);
+            carousel_backlight_stage = 2;
+        }
     }
 }
 
@@ -3276,6 +3281,20 @@ int main(int argc, char *argv[])
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
         pollCarouselWakeInput(ticks);
+
+        // The carousel only turns the PWM backlight down; its SDL loop keeps
+        // receiving buttons. Consume the first ordinary button locally and
+        // restore the screen, but leave POWER entirely to Onion/keymon.
+        if (key_changed && active_screen == SCREEN_CAROUSEL &&
+            carousel_backlight_stage != 0 &&
+            keystate[changed_key] == PRESSED &&
+            changed_key != SW_BTN_POWER) {
+            restoreCarouselBacklight();
+            carousel_last_activity = ticks;
+            keystate[changed_key] = RELEASED;
+            key_changed = false;
+            dirty = true;
+        }
         if (key_changed && changed_key == SW_BTN_Y)
             dirty = true;
         if (key_changed && keystate[changed_key] == PRESSED) {
