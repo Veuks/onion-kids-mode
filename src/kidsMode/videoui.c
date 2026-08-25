@@ -3607,7 +3607,15 @@ int main(int argc, char *argv[])
         if (quit)
             break;
 
-        if (dirty) {
+        // keymon sets the PWM to zero before switching the panel off. Since
+        // kidui intentionally stays alive during POWER sleep, never flip a
+        // framebuffer page in that interval: even one late flip can expose a
+        // brief carousel flash unlike Onion's normal sleep transition. Keep
+        // `dirty` set so the complete frame is drawn after wake instead.
+        bool display_lit = true;
+        if (dirty)
+            display_lit = display_getBrightnessRaw() > 0;
+        if (dirty && display_lit) {
             switch (active_screen) {
             case SCREEN_CAROUSEL:
                 renderCarousel(remaining);
