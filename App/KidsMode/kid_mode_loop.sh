@@ -1837,6 +1837,10 @@ cmd_run() {
             --show-series "$show_series_value" \
             --show-music "$show_music_value" \
             --show-cartoons "$show_cartoons_value"
+        # A player killed unexpectedly can leave this global Onion flag
+        # behind. It must never follow us into the carousel, otherwise keymon
+        # leaves kidui running during a real short-POWER system sleep.
+        rm -f /tmp/stay_awake
         if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
             "$kidui_bin" "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         elif [ "$no_pin_recovery" = "1" ]; then

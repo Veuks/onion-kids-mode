@@ -163,6 +163,13 @@ static int carousel_backlight_stage;
 static long carousel_saved_brightness = -1;
 static bool carousel_was_active;
 static bool carousel_wake_grabbed;
+static volatile sig_atomic_t carousel_resume_pending;
+
+static void markCarouselResumed(int signal_number)
+{
+    (void)signal_number;
+    carousel_resume_pending = 1;
+}
 
 #ifdef PLATFORM_MIYOOMINI
 static int carousel_wake_fd = -1;
@@ -3052,6 +3059,10 @@ static bool switchFloor(ContentFloor target, int remaining)
 
 int main(int argc, char *argv[])
 {
+    // Onion sends SIGCONT after a real short-POWER system wake. Remember the
+    // event in the signal handler and perform the SDL/display work safely in
+    // the main loop.
+    signal(SIGCONT, markCarouselResumed);
     loadRuntimePaths();
     bool set_pin_mode = false;
     bool menu_mode = false;
@@ -3246,19 +3257,22 @@ int main(int argc, char *argv[])
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
-    uint32_t last_loop_tick = SDL_GetTicks();
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
 
-        // Onion implements a short POWER sleep by SIGSTOP'ing kidui. On
-        // resume SDL's clock includes that stopped interval; without resetting
-        // the idle origin, the carousel dimmer could immediately turn the
-        // freshly restored backlight off again.
-        if (ticks - last_loop_tick > 250)
+        if (carousel_resume_pending) {
+            carousel_resume_pending = 0;
+            // keymon has already restored the display. Drop any stale
+            // Kids Mode dimmer state and begin a fresh 5/15-second cycle.
+            releaseCarouselWakeInput();
+            carousel_backlight_stage = 0;
+            long current_brightness = display_getBrightnessRaw();
+            if (current_brightness > 0)
+                carousel_saved_brightness = current_brightness;
             carousel_last_activity = ticks;
-        last_loop_tick = ticks;
+        }
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
         pollCarouselWakeInput(ticks);
