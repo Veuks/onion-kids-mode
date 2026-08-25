@@ -53,7 +53,6 @@
 #include <SDL/SDL_rotozoom.h>
 #include <SDL/SDL_ttf.h>
 #include <dirent.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -62,12 +61,8 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
-
-#ifdef PLATFORM_MIYOOMINI
-#include <linux/input.h>
-#include <sys/ioctl.h>
-#endif
 
 #include "components/JsonGameEntry.h"
 #include "components/list.h"
@@ -162,7 +157,6 @@ static uint32_t carousel_last_activity;
 static int carousel_backlight_stage;
 static long carousel_saved_brightness = -1;
 static bool carousel_was_active;
-static bool carousel_wake_grabbed;
 static volatile sig_atomic_t carousel_resume_pending;
 
 static void markCarouselResumed(int signal_number)
@@ -170,55 +164,6 @@ static void markCarouselResumed(int signal_number)
     (void)signal_number;
     carousel_resume_pending = 1;
 }
-
-#ifdef PLATFORM_MIYOOMINI
-static int carousel_wake_fd = -1;
-static unsigned short carousel_wake_code;
-
-static bool isCarouselWakeKey(unsigned short code)
-{
-    return code == KEY_SPACE || code == KEY_LEFTCTRL ||
-           code == KEY_LEFTSHIFT || code == KEY_LEFTALT ||
-           code == KEY_RIGHTCTRL || code == KEY_ENTER ||
-           code == KEY_LEFT || code == KEY_RIGHT || code == KEY_UP ||
-           code == KEY_DOWN || code == KEY_ESC || code == KEY_POWER ||
-           code == KEY_E || code == KEY_T || code == KEY_TAB ||
-           code == KEY_BACKSPACE || code == KEY_VOLUMEDOWN ||
-           code == KEY_VOLUMEUP;
-}
-
-static bool grabCarouselWakeInput(void)
-{
-    if (carousel_wake_grabbed)
-        return true;
-    carousel_wake_fd = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
-    if (carousel_wake_fd < 0)
-        return false;
-    if (ioctl(carousel_wake_fd, EVIOCGRAB, 1) < 0) {
-        close(carousel_wake_fd);
-        carousel_wake_fd = -1;
-        return false;
-    }
-    carousel_wake_grabbed = true;
-    carousel_wake_code = 0;
-    return true;
-}
-
-static void releaseCarouselWakeInput(void)
-{
-    if (carousel_wake_fd >= 0) {
-        if (carousel_wake_grabbed)
-            ioctl(carousel_wake_fd, EVIOCGRAB, 0);
-        close(carousel_wake_fd);
-    }
-    carousel_wake_fd = -1;
-    carousel_wake_grabbed = false;
-    carousel_wake_code = 0;
-}
-#else
-static bool grabCarouselWakeInput(void) { return false; }
-static void releaseCarouselWakeInput(void) {}
-#endif
 
 static void restoreCarouselBacklight(void)
 {
@@ -230,42 +175,13 @@ static void restoreCarouselBacklight(void)
 static void stopCarouselDimmer(void)
 {
     restoreCarouselBacklight();
-    releaseCarouselWakeInput();
     carousel_was_active = false;
-}
-
-static void pollCarouselWakeInput(uint32_t ticks)
-{
-#ifdef PLATFORM_MIYOOMINI
-    if (!carousel_wake_grabbed || carousel_wake_fd < 0)
-        return;
-    struct input_event event;
-    while (read(carousel_wake_fd, &event, sizeof(event)) ==
-           (ssize_t)sizeof(event)) {
-        if (event.type != EV_KEY || !isCarouselWakeKey(event.code))
-            continue;
-        if (carousel_wake_code == 0 && event.value == 1) {
-            // Wake immediately, but keep the device grabbed until release so
-            // neither kidui nor keymon can perform the requested action.
-            carousel_wake_code = event.code;
-            restoreCarouselBacklight();
-            carousel_last_activity = ticks;
-        }
-        else if (carousel_wake_code == event.code && event.value == 0) {
-            releaseCarouselWakeInput();
-            break;
-        }
-    }
-#else
-    (void)ticks;
-#endif
 }
 
 static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
 {
     if (!carousel_active) {
-        if (carousel_was_active || carousel_backlight_stage != 0 ||
-            carousel_wake_grabbed)
+        if (carousel_was_active || carousel_backlight_stage != 0)
             stopCarouselDimmer();
         return;
     }
@@ -294,12 +210,10 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
     }
     if (carousel_backlight_stage == 1 &&
         idle >= CAROUSEL_OFF_DELAY_MS) {
-        // Only the fully black, app-managed state owns one wake gesture.
-        // Before this point POWER remains entirely native to Onion.
-        if (grabCarouselWakeInput()) {
-            display_setBrightnessRaw(0);
-            carousel_backlight_stage = 2;
-        }
+        // Never capture /dev/input on the carousel. A POWER press, including
+        // every repeat from a long hold, must always reach Onion's keymon.
+        display_setBrightnessRaw(0);
+        carousel_backlight_stage = 2;
     }
 }
 
@@ -3262,16 +3176,29 @@ int main(int argc, char *argv[])
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
+    uint32_t last_wall_tick = SDL_GetTicks();
+    clock_t last_cpu_tick = clock();
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
+        clock_t cpu_tick = clock();
+        uint32_t wall_gap = ticks - last_wall_tick;
+        uint32_t cpu_gap = 0;
+        if (cpu_tick >= last_cpu_tick)
+            cpu_gap = (uint32_t)(((uint64_t)(cpu_tick - last_cpu_tick) *
+                                  1000u) /
+                                 CLOCKS_PER_SEC);
+        last_wall_tick = ticks;
+        last_cpu_tick = cpu_tick;
 
-        if (carousel_resume_pending) {
+        // During Onion standby kidui is SIGSTOP'ed: wall time advances while
+        // process CPU time does not. This detects the real resume even on
+        // devices where the SIGCONT callback is delayed or missed.
+        if (carousel_resume_pending || wall_gap > cpu_gap + 500u) {
             carousel_resume_pending = 0;
             // keymon has already restored the display. Drop any stale
             // Kids Mode dimmer state and begin a fresh 5/15-second cycle.
-            releaseCarouselWakeInput();
             carousel_backlight_stage = 0;
             long current_brightness = display_getBrightnessRaw();
             if (current_brightness > 0)
@@ -3280,7 +3207,6 @@ int main(int argc, char *argv[])
         }
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
-        pollCarouselWakeInput(ticks);
 
         // The carousel only turns the PWM backlight down; its SDL loop keeps
         // receiving buttons. Consume the first ordinary button locally and
