@@ -102,7 +102,7 @@ static bool wake_input_grabbed;
 static unsigned short wake_input_code;
 #endif
 
-#define AUDIO_DIM_DELAY 10000
+#define AUDIO_DIM_DELAY 5000
 #define AUDIO_OFF_DELAY 15000
 #define AUDIO_DIM_RAW 3
 #define MIYOO_SCANCODE_VOLUMEDOWN 114
