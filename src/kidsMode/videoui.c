@@ -157,7 +157,6 @@ static long carousel_saved_brightness = -1;
 static bool carousel_was_active;
 static bool carousel_external_screen_off;
 static uint32_t carousel_last_backlight_check;
-static bool carousel_power_transition;
 
 static void restoreCarouselBacklight(void)
 {
@@ -171,7 +170,6 @@ static void stopCarouselDimmer(void)
     restoreCarouselBacklight();
     carousel_was_active = false;
     carousel_external_screen_off = false;
-    carousel_power_transition = false;
 }
 
 static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
@@ -203,7 +201,6 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
                 carousel_backlight_stage = 0;
                 carousel_saved_brightness = current;
                 carousel_last_activity = ticks;
-                carousel_power_transition = false;
                 dirty = true;
             }
             else {
@@ -220,7 +217,6 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
             carousel_backlight_stage = 0;
             carousel_saved_brightness = current;
             carousel_last_activity = ticks;
-            carousel_power_transition = false;
             dirty = true;
             return;
         }
@@ -234,11 +230,16 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
         long current = display_getBrightnessRaw();
         if (current > 0)
             carousel_saved_brightness = current;
+        // Never EVIOCGRAB the hardware buttons here. Onion's keymon must
+        // always retain POWER so a short press can enter and leave the real
+        // system sleep state reliably.
         display_setBrightnessRaw(CAROUSEL_DIM_RAW);
         carousel_backlight_stage = 1;
     }
     if (carousel_backlight_stage == 1 &&
         idle >= CAROUSEL_OFF_DELAY_MS) {
+        // Never capture /dev/input on the carousel. A POWER press, including
+        // every repeat from a long hold, must always reach Onion's keymon.
         display_setBrightnessRaw(0);
         carousel_backlight_stage = 2;
     }
@@ -2891,6 +2892,17 @@ static void flip(void)
 #endif
 }
 
+// A final, static UI frame must exist on every Miyoo framebuffer page.
+// Animation frames intentionally use flip() once for speed; once the final
+// screen has been rendered, this second identical flip synchronizes the other
+// page so display off/on cannot briefly expose an older folder or carousel.
+static void flipSynced(void)
+{
+    flip();
+    SDL_BlitSurface(screen, NULL, video, NULL);
+    SDL_Flip(video);
+}
+
 static SDL_Surface *copyScreenSurface(void)
 {
     SDL_Surface *copy = SDL_CreateRGBSurface(
@@ -3205,10 +3217,6 @@ int main(int argc, char *argv[])
         uint32_t ticks = SDL_GetTicks();
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
-        if (key_changed && active_screen == SCREEN_CAROUSEL &&
-            changed_key == SW_BTN_POWER &&
-            keystate[changed_key] == PRESSED)
-            carousel_power_transition = true;
 
         // The carousel only turns the PWM backlight down; its SDL loop keeps
         // receiving buttons. Consume the first ordinary button locally and
@@ -3617,8 +3625,7 @@ int main(int argc, char *argv[])
         // `dirty` set so the complete frame is drawn after wake instead.
         bool display_lit = true;
         if (dirty)
-            display_lit = display_getBrightnessRaw() > 0 &&
-                          !carousel_power_transition;
+            display_lit = display_getBrightnessRaw() > 0;
         if (dirty && display_lit) {
             switch (active_screen) {
             case SCREEN_CAROUSEL:
@@ -3648,7 +3655,7 @@ int main(int argc, char *argv[])
             }
             if (hold_started != 0)
                 renderHoldBar(ticks - hold_started);
-            flip();
+            flipSynced();
             dirty = false;
         }
         // The carousel is event-driven and redraws only when dirty. Polling at
