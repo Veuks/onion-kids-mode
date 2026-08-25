@@ -95,7 +95,6 @@ static int seek_notice_draw_h;
 static Uint32 last_clock_update;
 static Uint8 *yuv_backup[3];
 static size_t yuv_backup_capacity[3];
-static int yuv_backup_rows[3];
 #ifdef PLATFORM_MIYOOMINI
 static int wake_input_fd = -1;
 static bool wake_input_grabbed;
@@ -219,19 +218,20 @@ static bool save_paused_frame(void)
     if (last_overlay->format != SDL_YV12_OVERLAY &&
         last_overlay->format != SDL_IYUV_OVERLAY)
         return false;
+    size_t plane_sizes[3] = {
+        (size_t)last_overlay->pitches[0] * last_overlay->h,
+        (size_t)last_overlay->pitches[1] * ((last_overlay->h + 1) / 2),
+        (size_t)last_overlay->pitches[2] * ((last_overlay->h + 1) / 2)};
     bool use_clean_backup = last_overlay_painted;
-    for (int i = 0; i < 3 && use_clean_backup; i++) {
-        size_t saved_size =
-            (size_t)last_overlay->pitches[i] * yuv_backup_rows[i];
-        if (yuv_backup[i] == NULL || yuv_backup_rows[i] <= 0 ||
-            yuv_backup_capacity[i] < saved_size)
+    for (int i = 0; i < 3 && use_clean_backup; i++)
+        if (yuv_backup[i] == NULL || yuv_backup_capacity[i] < plane_sizes[i])
             use_clean_backup = false;
+    bool overlay_locked = false;
+    if (!use_clean_backup) {
+        if (SDL_LockYUVOverlay(last_overlay) != 0)
+            return false;
+        overlay_locked = true;
     }
-    // A regional backup contains only the pixels touched by the OSD. Lock the
-    // paused overlay so the untouched part can be read directly while the
-    // saved band supplies pristine pixels underneath the controls.
-    if (SDL_LockYUVOverlay(last_overlay) != 0)
-        return false;
 
     int source_w = last_overlay->w;
     int source_h = last_overlay->h;
@@ -254,15 +254,22 @@ static bool save_paused_frame(void)
         SDL_SWSURFACE, output_w, output_h, 32, 0x00ff0000, 0x0000ff00,
         0x000000ff, 0xff000000);
     if (shot == NULL) {
-        SDL_UnlockYUVOverlay(last_overlay);
+        if (overlay_locked)
+            SDL_UnlockYUVOverlay(last_overlay);
         return false;
     }
 
-    Uint8 *y_plane = last_overlay->pixels[0];
-    int u_index = last_overlay->format == SDL_YV12_OVERLAY ? 2 : 1;
-    int v_index = last_overlay->format == SDL_YV12_OVERLAY ? 1 : 2;
-    Uint8 *u_plane = last_overlay->pixels[u_index];
-    Uint8 *v_plane = last_overlay->pixels[v_index];
+    Uint8 *planes[3] = {
+        use_clean_backup ? yuv_backup[0] : last_overlay->pixels[0],
+        use_clean_backup ? yuv_backup[1] : last_overlay->pixels[1],
+        use_clean_backup ? yuv_backup[2] : last_overlay->pixels[2]};
+    Uint8 *y_plane = planes[0];
+    Uint8 *u_plane = last_overlay->format == SDL_YV12_OVERLAY
+                         ? planes[2]
+                         : planes[1];
+    Uint8 *v_plane = last_overlay->format == SDL_YV12_OVERLAY
+                         ? planes[1]
+                         : planes[2];
     int y_pitch = last_overlay->pitches[0];
     int u_pitch = last_overlay->format == SDL_YV12_OVERLAY
                       ? last_overlay->pitches[2]
@@ -281,19 +288,9 @@ static bool save_paused_frame(void)
         for (int x = 0; x < output_w; x++) {
             int source_x =
                 source_w - 1 - (int)((long long)x * source_w / output_w);
-            int chroma_y = source_y / 2;
-            Uint8 *clean_y = use_clean_backup && source_y < yuv_backup_rows[0]
-                                 ? yuv_backup[0]
-                                 : y_plane;
-            Uint8 *clean_u = use_clean_backup && chroma_y < yuv_backup_rows[u_index]
-                                 ? yuv_backup[u_index]
-                                 : u_plane;
-            Uint8 *clean_v = use_clean_backup && chroma_y < yuv_backup_rows[v_index]
-                                 ? yuv_backup[v_index]
-                                 : v_plane;
-            int yy = clean_y[source_y * y_pitch + source_x] - 16;
-            int uu = clean_u[chroma_y * u_pitch + source_x / 2] - 128;
-            int vv = clean_v[chroma_y * v_pitch + source_x / 2] - 128;
+            int yy = y_plane[source_y * y_pitch + source_x] - 16;
+            int uu = u_plane[(source_y / 2) * u_pitch + source_x / 2] - 128;
+            int vv = v_plane[(source_y / 2) * v_pitch + source_x / 2] - 128;
             if (yy < 0)
                 yy = 0;
             int red = (298 * yy + 409 * vv + 128) >> 8;
@@ -305,7 +302,8 @@ static bool save_paused_frame(void)
     }
     if (SDL_MUSTLOCK(shot))
         SDL_UnlockSurface(shot);
-    SDL_UnlockYUVOverlay(last_overlay);
+    if (overlay_locked)
+        SDL_UnlockYUVOverlay(last_overlay);
 
     char temporary[2048];
     snprintf(temporary, sizeof(temporary), "%s.tmp", target);
@@ -385,7 +383,6 @@ __attribute__((destructor)) static void vcinput_unloaded(void)
         free(yuv_backup[i]);
         yuv_backup[i] = NULL;
         yuv_backup_capacity[i] = 0;
-        yuv_backup_rows[i] = 0;
     }
 }
 
@@ -518,13 +515,7 @@ static void update_clock(void)
     // frame. The clock, backlight and save bookkeeping do not need to run at
     // video-frame frequency. Capping this work also keeps the carousel/player
     // responsive on the Miyoo's small CPU.
-    Uint32 clock_interval = 500;
-    if (!clock_ready || audio_mode || paused || progress_waiting_for_video ||
-        backlight_stage != 0 || seek_input != SDLK_UNKNOWN ||
-        pending_seek_events > 0 || now < progress_until ||
-        (seek_notice[0] != '\0' && now < seek_notice_until))
-        clock_interval = 100;
-    if (clock_ready && now - last_clock_update < clock_interval)
+    if (clock_ready && now - last_clock_update < 100)
         return;
     last_clock_update = now;
     long previous_second = position_seconds;
@@ -835,33 +826,17 @@ static bool backup_and_paint_video_overlay(SDL_Overlay *overlay)
          overlay->format != SDL_IYUV_OVERLAY) ||
         SDL_LockYUVOverlay(overlay) != 0)
         return false;
-    int scale = overlay->w / 320;
-    if (scale < 1)
-        scale = 1;
-    int notice_scale = scale + (scale > 1 ? scale / 2 : 1);
-    // All video OSD primitives are pre-rotated into this physical top band.
-    // Saving only that band replaces three full-frame memcpy operations per
-    // decoded frame while preserving a pristine source for pause/capture.
-    int luma_rows = 24 * scale;
-    if (seek_notice[0] != '\0' && SDL_GetTicks() < seek_notice_until)
-        luma_rows = 35 * scale + 7 * notice_scale + 4;
-    if (luma_rows > overlay->h)
-        luma_rows = overlay->h;
-    int chroma_rows = (luma_rows + 1) / 2;
-    int rows[3] = {luma_rows, chroma_rows, chroma_rows};
     size_t sizes[3] = {
-        (size_t)overlay->pitches[0] * rows[0],
-        (size_t)overlay->pitches[1] * rows[1],
-        (size_t)overlay->pitches[2] * rows[2]};
+        (size_t)overlay->pitches[0] * overlay->h,
+        (size_t)overlay->pitches[1] * ((overlay->h + 1) / 2),
+        (size_t)overlay->pitches[2] * ((overlay->h + 1) / 2)};
     bool ready = true;
     for (int i = 0; i < 3; i++)
         if (!ensure_yuv_backup(i, sizes[i]))
             ready = false;
     if (ready) {
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 3; i++)
             memcpy(yuv_backup[i], overlay->pixels[i], sizes[i]);
-            yuv_backup_rows[i] = rows[i];
-        }
         paint_video_yuv_overlay(overlay);
     }
     SDL_UnlockYUVOverlay(overlay);
@@ -872,12 +847,13 @@ static void restore_video_overlay(SDL_Overlay *overlay)
 {
     if (overlay == NULL || SDL_LockYUVOverlay(overlay) != 0)
         return;
-    for (int i = 0; i < 3; i++) {
-        size_t size = (size_t)overlay->pitches[i] * yuv_backup_rows[i];
-        if (yuv_backup[i] != NULL && yuv_backup_rows[i] > 0 &&
-            yuv_backup_capacity[i] >= size)
-            memcpy(overlay->pixels[i], yuv_backup[i], size);
-    }
+    size_t sizes[3] = {
+        (size_t)overlay->pitches[0] * overlay->h,
+        (size_t)overlay->pitches[1] * ((overlay->h + 1) / 2),
+        (size_t)overlay->pitches[2] * ((overlay->h + 1) / 2)};
+    for (int i = 0; i < 3; i++)
+        if (yuv_backup[i] != NULL && yuv_backup_capacity[i] >= sizes[i])
+            memcpy(overlay->pixels[i], yuv_backup[i], sizes[i]);
     SDL_UnlockYUVOverlay(overlay);
 }
 
