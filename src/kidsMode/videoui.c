@@ -2322,11 +2322,13 @@ static void fillRect(int x, int y, int w, int h, uint32_t color)
 // broken theme must not crash the kid launcher)
 static void renderBase(void)
 {
+    // Always clear the complete software surface first. Some theme
+    // backgrounds contain transparent pixels; blitting them directly over
+    // the previous folder left parts of its artwork visible as a ghost image.
+    fillRect(0, 0, g_display.width, g_display.height, FALLBACK_BG);
     SDL_Surface *bg = theme_background();
     if (bg != NULL)
         SDL_BlitSurface(bg, NULL, screen, NULL);
-    else
-        fillRect(0, 0, g_display.width, g_display.height, FALLBACK_BG);
 }
 
 // Remaining play time in seconds; -1 = timer off (file absent/invalid)
