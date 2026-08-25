@@ -320,17 +320,26 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
             return;
         }
         carousel_saved_brightness = current;
-        if (startCarouselWakeCapture()) {
-            display_setBrightnessRaw(CAROUSEL_DIM_RAW);
-            carousel_backlight_stage = 1;
-        }
+        // Match the proven audio/paused-video sequence exactly: dim first,
+        // but do not own any hardware input while the panel is still lit.
+        display_setBrightnessRaw(CAROUSEL_DIM_RAW);
+        carousel_backlight_stage = 1;
     }
     if (carousel_backlight_stage == 1 &&
         idle >= CAROUSEL_OFF_DELAY_MS) {
-        // Never capture /dev/input on the carousel. A POWER press, including
-        // every repeat from a long hold, must always reach Onion's keymon.
-        display_setBrightnessRaw(0);
-        carousel_backlight_stage = 2;
+        // As in vcinput, reserve one complete wake gesture only when Kids
+        // Mode itself is about to make the screen fully black. If keymon has
+        // already started a real POWER sleep, park instead and never grab it.
+        long current = display_getBrightnessRaw();
+        if (current <= 0) {
+            carousel_external_screen_off = true;
+            carousel_last_activity = ticks;
+            return;
+        }
+        if (startCarouselWakeCapture()) {
+            display_setBrightnessRaw(0);
+            carousel_backlight_stage = 2;
+        }
     }
 }
 
