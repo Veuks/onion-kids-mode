@@ -54,14 +54,12 @@
 #include <SDL/SDL_ttf.h>
 #include <dirent.h>
 #include <limits.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "components/JsonGameEntry.h"
@@ -157,13 +155,8 @@ static uint32_t carousel_last_activity;
 static int carousel_backlight_stage;
 static long carousel_saved_brightness = -1;
 static bool carousel_was_active;
-static volatile sig_atomic_t carousel_resume_pending;
-
-static void markCarouselResumed(int signal_number)
-{
-    (void)signal_number;
-    carousel_resume_pending = 1;
-}
+static bool carousel_external_screen_off;
+static uint32_t carousel_last_backlight_check;
 
 static void restoreCarouselBacklight(void)
 {
@@ -176,6 +169,7 @@ static void stopCarouselDimmer(void)
 {
     restoreCarouselBacklight();
     carousel_was_active = false;
+    carousel_external_screen_off = false;
 }
 
 static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
@@ -192,6 +186,40 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
         long current = display_getBrightnessRaw();
         if (current > 0)
             carousel_saved_brightness = current;
+    }
+
+    // The loop is deliberately kept alive during Onion's POWER sleep, just
+    // like FFplay. Distinguish keymon's display-off state from our own
+    // 15-second black screen and park the idle timer until keymon restores
+    // the configured brightness.
+    if (ticks - carousel_last_backlight_check >= 250) {
+        carousel_last_backlight_check = ticks;
+        long current = display_getBrightnessRaw();
+        if (carousel_external_screen_off) {
+            if (current > 0) {
+                carousel_external_screen_off = false;
+                carousel_backlight_stage = 0;
+                carousel_saved_brightness = current;
+                carousel_last_activity = ticks;
+                dirty = true;
+            }
+            else {
+                carousel_last_activity = ticks;
+            }
+            return;
+        }
+        if (carousel_backlight_stage < 2 && current == 0) {
+            carousel_external_screen_off = true;
+            carousel_last_activity = ticks;
+            return;
+        }
+        if (carousel_backlight_stage == 2 && current > 0) {
+            carousel_backlight_stage = 0;
+            carousel_saved_brightness = current;
+            carousel_last_activity = ticks;
+            dirty = true;
+            return;
+        }
     }
 
     if (carousel_saved_brightness <= 0)
@@ -2978,10 +3006,6 @@ static bool switchFloor(ContentFloor target, int remaining)
 
 int main(int argc, char *argv[])
 {
-    // Onion sends SIGCONT after a real short-POWER system wake. Remember the
-    // event in the signal handler and perform the SDL/display work safely in
-    // the main loop.
-    signal(SIGCONT, markCarouselResumed);
     loadRuntimePaths();
     bool set_pin_mode = false;
     bool menu_mode = false;
@@ -3176,35 +3200,10 @@ int main(int argc, char *argv[])
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
-    uint32_t last_wall_tick = SDL_GetTicks();
-    clock_t last_cpu_tick = clock();
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
-        clock_t cpu_tick = clock();
-        uint32_t wall_gap = ticks - last_wall_tick;
-        uint32_t cpu_gap = 0;
-        if (cpu_tick >= last_cpu_tick)
-            cpu_gap = (uint32_t)(((uint64_t)(cpu_tick - last_cpu_tick) *
-                                  1000u) /
-                                 CLOCKS_PER_SEC);
-        last_wall_tick = ticks;
-        last_cpu_tick = cpu_tick;
-
-        // During Onion standby kidui is SIGSTOP'ed: wall time advances while
-        // process CPU time does not. This detects the real resume even on
-        // devices where the SIGCONT callback is delayed or missed.
-        if (carousel_resume_pending || wall_gap > cpu_gap + 500u) {
-            carousel_resume_pending = 0;
-            // keymon has already restored the display. Drop any stale
-            // Kids Mode dimmer state and begin a fresh 5/15-second cycle.
-            carousel_backlight_stage = 0;
-            long current_brightness = display_getBrightnessRaw();
-            if (current_brightness > 0)
-                carousel_saved_brightness = current_brightness;
-            carousel_last_activity = ticks;
-        }
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
 
