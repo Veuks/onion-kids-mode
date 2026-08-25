@@ -1575,11 +1575,10 @@ hide_ffplay_state() {
 watch_media_duration() {
     duration_log="$1" duration_output="$2" watched_pid="$3"
     tries=0
-    # BusyBox versions shipped by older Onion releases do not all handle
-    # fractional sleep values consistently. Give FFplay one second to write
-    # its header, then use a small number of portable one-second retries.
-    sleep 1
-    while [ "$tries" -lt 10 ] && [ -d "/proc/$watched_pid" ]; do
+    # Keep the proven fast probe loop used by the stable player. It exits as
+    # soon as FFplay writes its one-time Duration header, so these short polls
+    # do not continue during playback.
+    while [ "$tries" -lt 100 ] && [ -d "/proc/$watched_pid" ]; do
         media_seconds="$(awk '
             match($0, /Duration: [0-9]+:[0-9]+:[0-9]+/) {
                 stamp = substr($0, RSTART + 10, RLENGTH - 10)
@@ -1594,7 +1593,7 @@ watch_media_duration() {
             return 0
         fi
         tries=$((tries + 1))
-        sleep 1
+        sleep 0.1
     done
     return 1
 }
@@ -1663,7 +1662,7 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -vn -autoexit -nostats -i "$video" $seek_args \
+            "$ffplay" -vn -autoexit -i "$video" $seek_args \
                 2> "$duration_log" &
     else
         video_filter_args=""
@@ -1677,7 +1676,7 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -autoexit -framedrop -nostats $video_filter_args \
+            "$ffplay" -autoexit -framedrop $video_filter_args \
                 -i "$video" $seek_args \
             2> "$duration_log" &
     fi
