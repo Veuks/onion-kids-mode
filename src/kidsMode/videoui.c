@@ -53,6 +53,7 @@
 #include <SDL/SDL_rotozoom.h>
 #include <SDL/SDL_ttf.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -63,9 +64,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef PLATFORM_MIYOOMINI
+#include <linux/input.h>
+#include <sys/ioctl.h>
+#endif
+
 #include "components/JsonGameEntry.h"
 #include "components/list.h"
 #include "system/battery.h"
+#include "system/display.h"
 #include "system/keymap_sw.h"
 #include "theme/background.h"
 #include "theme/theme.h"
@@ -84,6 +91,9 @@
 #define REMAINING_POLL_MS 2000
 #define SELECTION_WRITE_DELAY_MS 300
 #define TIMESUP_OFF_MS (5 * 60 * 1000)
+#define CAROUSEL_DIM_DELAY_MS 10000
+#define CAROUSEL_OFF_DELAY_MS 15000
+#define CAROUSEL_DIM_RAW 3
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
 #define RESULT_FILE "/tmp/kidsmode_ui_result"
 #define DEFAULT_VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode/Main"
@@ -147,6 +157,139 @@ static bool dirty = true; // set by any render function that needs to keep
                           // animating (e.g. a scrolling title) on the next
                           // loop tick, even with no new input
 static KeyState keystate[320] = {(KeyState)0};
+
+static uint32_t carousel_last_activity;
+static int carousel_backlight_stage;
+static long carousel_saved_brightness = -1;
+static bool carousel_was_active;
+static bool carousel_wake_grabbed;
+
+#ifdef PLATFORM_MIYOOMINI
+static int carousel_wake_fd = -1;
+static unsigned short carousel_wake_code;
+
+static bool isCarouselWakeKey(unsigned short code)
+{
+    return code == KEY_SPACE || code == KEY_LEFTCTRL ||
+           code == KEY_LEFTSHIFT || code == KEY_LEFTALT ||
+           code == KEY_RIGHTCTRL || code == KEY_ENTER ||
+           code == KEY_LEFT || code == KEY_RIGHT || code == KEY_UP ||
+           code == KEY_DOWN || code == KEY_ESC || code == KEY_POWER ||
+           code == KEY_E || code == KEY_T || code == KEY_TAB ||
+           code == KEY_BACKSPACE || code == KEY_VOLUMEDOWN ||
+           code == KEY_VOLUMEUP;
+}
+
+static bool grabCarouselWakeInput(void)
+{
+    if (carousel_wake_grabbed)
+        return true;
+    carousel_wake_fd = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
+    if (carousel_wake_fd < 0)
+        return false;
+    if (ioctl(carousel_wake_fd, EVIOCGRAB, 1) < 0) {
+        close(carousel_wake_fd);
+        carousel_wake_fd = -1;
+        return false;
+    }
+    carousel_wake_grabbed = true;
+    carousel_wake_code = 0;
+    return true;
+}
+
+static void releaseCarouselWakeInput(void)
+{
+    if (carousel_wake_fd >= 0) {
+        if (carousel_wake_grabbed)
+            ioctl(carousel_wake_fd, EVIOCGRAB, 0);
+        close(carousel_wake_fd);
+    }
+    carousel_wake_fd = -1;
+    carousel_wake_grabbed = false;
+    carousel_wake_code = 0;
+}
+#else
+static bool grabCarouselWakeInput(void) { return false; }
+static void releaseCarouselWakeInput(void) {}
+#endif
+
+static void restoreCarouselBacklight(void)
+{
+    if (carousel_backlight_stage != 0 && carousel_saved_brightness > 0)
+        display_setBrightnessRaw((uint32_t)carousel_saved_brightness);
+    carousel_backlight_stage = 0;
+}
+
+static void stopCarouselDimmer(void)
+{
+    restoreCarouselBacklight();
+    releaseCarouselWakeInput();
+    carousel_was_active = false;
+}
+
+static void pollCarouselWakeInput(uint32_t ticks)
+{
+#ifdef PLATFORM_MIYOOMINI
+    if (!carousel_wake_grabbed || carousel_wake_fd < 0)
+        return;
+    struct input_event event;
+    while (read(carousel_wake_fd, &event, sizeof(event)) ==
+           (ssize_t)sizeof(event)) {
+        if (event.type != EV_KEY || !isCarouselWakeKey(event.code))
+            continue;
+        if (carousel_wake_code == 0 && event.value == 1) {
+            // Wake immediately, but keep the device grabbed until release so
+            // neither kidui nor keymon can perform the requested action.
+            carousel_wake_code = event.code;
+            restoreCarouselBacklight();
+            carousel_last_activity = ticks;
+        }
+        else if (carousel_wake_code == event.code && event.value == 0) {
+            releaseCarouselWakeInput();
+            break;
+        }
+    }
+#else
+    (void)ticks;
+#endif
+}
+
+static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
+{
+    if (!carousel_active) {
+        if (carousel_was_active || carousel_backlight_stage != 0 ||
+            carousel_wake_grabbed)
+            stopCarouselDimmer();
+        return;
+    }
+
+    if (!carousel_was_active) {
+        carousel_was_active = true;
+        carousel_last_activity = ticks;
+        long current = display_getBrightnessRaw();
+        if (current > 0)
+            carousel_saved_brightness = current;
+    }
+
+    if (carousel_saved_brightness <= 0)
+        return;
+
+    uint32_t idle = ticks - carousel_last_activity;
+    if (carousel_backlight_stage == 0 && idle >= CAROUSEL_DIM_DELAY_MS) {
+        long current = display_getBrightnessRaw();
+        if (current > 0)
+            carousel_saved_brightness = current;
+        if (grabCarouselWakeInput()) {
+            display_setBrightnessRaw(CAROUSEL_DIM_RAW);
+            carousel_backlight_stage = 1;
+        }
+    }
+    if (carousel_backlight_stage == 1 &&
+        idle >= CAROUSEL_OFF_DELAY_MS) {
+        display_setBrightnessRaw(0);
+        carousel_backlight_stage = 2;
+    }
+}
 
 typedef struct {
     JsonGameEntry item;
@@ -3107,10 +3250,13 @@ int main(int argc, char *argv[])
         uint32_t ticks = SDL_GetTicks();
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
+        pollCarouselWakeInput(ticks);
         if (key_changed && changed_key == SW_BTN_Y)
             dirty = true;
         if (key_changed && keystate[changed_key] == PRESSED) {
             pin_last_input = ticks;
+            if (active_screen == SCREEN_CAROUSEL)
+                carousel_last_activity = ticks;
 
             if (active_screen == SCREEN_CAROUSEL && games_count > 0) {
                 switch (changed_key) {
@@ -3487,6 +3633,8 @@ int main(int argc, char *argv[])
             ticks - selection_changed_at >= SELECTION_WRITE_DELAY_MS)
             writeSelectionState();
 
+        updateCarouselDimmer(ticks, active_screen == SCREEN_CAROUSEL);
+
         if (quit)
             break;
 
@@ -3528,6 +3676,7 @@ int main(int argc, char *argv[])
         msleep(20);
     }
 
+    stopCarouselDimmer();
     if (selection_state_dirty)
         writeSelectionState();
     artwork = NULL;
