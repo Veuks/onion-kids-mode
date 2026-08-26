@@ -1,17 +1,56 @@
 diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
-index 64f22a18..b6a397f5 100644
+index 64f22a18..9b14b8bd 100644
 --- a/src/keymon/keymon.c
 +++ b/src/keymon/keymon.c
-@@ -260,6 +260,8 @@ void deepsleep(void)
+@@ -255,11 +255,47 @@ void deepsleep(void)
+     }
+ }
+ 
++static pid_t signalProcessByName(const char *name, int signal_number)
++{
++    DIR *proc = opendir("/proc");
++    if (proc == NULL)
++        return -1;
++
++    char expected[132];
++    snprintf(expected, sizeof(expected), "(%s)", name);
++    struct dirent *entry;
++    pid_t matched_pid = -1;
++    while ((entry = readdir(proc)) != NULL) {
++        if (entry->d_type != DT_DIR)
++            continue;
++        pid_t pid = atoi(entry->d_name);
++        if (pid <= 2 || pid == getpid())
++            continue;
++        char stat_path[64];
++        snprintf(stat_path, sizeof(stat_path), "/proc/%d/stat", pid);
++        FILE *fp = fopen(stat_path, "r");
++        if (fp == NULL)
++            continue;
++        char comm[128] = "";
++        int fields = fscanf(fp, "%*d %127s", comm);
++        fclose(fp);
++        if (fields == 1 && strcmp(comm, expected) == 0 &&
++            kill(pid, signal_number) == 0) {
++            matched_pid = pid;
++            break;
++        }
++    }
++    closedir(proc);
++    return matched_pid;
++}
++
+ //
+ //    Suspend interface
  //
  void suspend_exec(int timeout)
  {
-+    bool kidsmode_carousel_paused = false;
-+    bool kidsmode_media_paused = false;
++    pid_t kidsmode_carousel_pid = -1;
++    pid_t kidsmode_media_pid = -1;
      keyinput_disable();
  
      // pause playActivity
-@@ -270,6 +272,20 @@ void suspend_exec(int timeout)
+@@ -270,6 +306,18 @@ void suspend_exec(int timeout)
          timeout = -1; // no timeout
      }
      else {
@@ -19,27 +58,25 @@ index 64f22a18..b6a397f5 100644
 +            // Onion's generic suspend list is capped at PIDMAX entries. Stop
 +            // kidui explicitly so repeated sleeps cannot leave the carousel
 +            // running merely because its PID fell beyond that list.
-+            system("killall -STOP kidui");
-+            kidsmode_carousel_paused = true;
++            kidsmode_carousel_pid = signalProcessByName("kidui", SIGSTOP);
 +        }
 +        if (temp_flag_get("kidsmode_media_active")) {
 +            // FFplay is deliberately stopped outside the generic PID list as
 +            // well. POWER then pauses video and audio even when the process
 +            // table contains more than PIDMAX eligible entries.
-+            system("killall -STOP ffplay");
-+            kidsmode_media_paused = true;
++            kidsmode_media_pid = signalProcessByName("ffplay", SIGSTOP);
 +        }
          // suspend processes
          suspend(0);
          setVolume(0);
-@@ -335,9 +351,18 @@ void suspend_exec(int timeout)
+@@ -335,9 +383,18 @@ void suspend_exec(int timeout)
      if (!killexit) {
          // resume processes
          resume();
-+        if (kidsmode_carousel_paused)
-+            system("killall -CONT kidui");
-+        if (kidsmode_media_paused)
-+            system("killall -CONT ffplay");
++        if (kidsmode_carousel_pid > 2)
++            kill(kidsmode_carousel_pid, SIGCONT);
++        if (kidsmode_media_pid > 2)
++            kill(kidsmode_media_pid, SIGCONT);
          // resume playActivity
          system("playActivity resume");
      }
@@ -51,7 +88,7 @@ index 64f22a18..b6a397f5 100644
  
      keyinput_enable();
  }
-@@ -353,6 +378,23 @@ void turnOffScreen(void)
+@@ -353,6 +410,23 @@ void turnOffScreen(void)
      }
  }
  
@@ -75,7 +112,7 @@ index 64f22a18..b6a397f5 100644
  /**
   * @brief Adjusts the CPU clock speed based on the given adjustment value and triggers an OSD message
   *
-@@ -565,6 +607,9 @@ int main(void)
+@@ -565,6 +639,9 @@ int main(void)
                          if (comboKey_menu) {
                              takeScreenshot();
                          }
