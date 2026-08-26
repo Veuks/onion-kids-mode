@@ -724,7 +724,8 @@ restart_keymon() {
         rm -f /tmp/kidsmode_carousel_active \
             /tmp/kidsmode_carousel_dimmed \
             /tmp/kidsmode_carousel_wake \
-            /tmp/kidsmode_carousel_resume
+            /tmp/kidsmode_carousel_resume \
+            /tmp/kidsmode_media_active
         if [ -x "$onion_keymon_bin" ]; then
             "$onion_keymon_bin" &
         else
@@ -1659,8 +1660,14 @@ play_video() {
     hide_ffplay_state
     rm -f "$menu_exit_marker"
     ensure_audio_server
-    touch /tmp/stay_awake
-    cd "$sysdir" || return 1
+    # POWER must invoke Onion's real suspend path. Automatic screen-off for
+    # audio and paused video remains independent inside libvcinput.
+    rm -f /tmp/stay_awake
+    touch /tmp/kidsmode_media_active
+    if ! cd "$sysdir"; then
+        rm -f /tmp/kidsmode_media_active
+        return 1
+    fi
     # A true restart must not ask FFplay to seek, even to zero. Apart from
     # avoiding unnecessary decoder preroll, this keeps 0:00 distinct from a
     # normal resume position.
@@ -1729,7 +1736,7 @@ play_video() {
     fi
     rm -f "$runtime_pos" "$duration_file" "$duration_log" \
         "$brightness_state" "$player_pid" \
-        /tmp/stay_awake
+        /tmp/stay_awake /tmp/kidsmode_media_active
     rm -f /mnt/SDCARD/App/FFplay/pos.cfg "$sysdir/pos.cfg"
     restore_ffplay_state
     check_off_order "End_Save"

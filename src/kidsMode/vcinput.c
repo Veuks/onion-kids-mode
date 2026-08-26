@@ -458,11 +458,10 @@ static void update_backlight(Uint32 now)
         return;
     Uint32 idle = now - last_activity;
 
-    // A short POWER sleep is owned by Onion's keymon. In audio mode the
-    // stay_awake flag deliberately leaves FFplay running, so distinguish the
-    // system's zero brightness from our own stage-2 screen-off state. Keep
-    // our timer parked until keymon restores the display, then start a fresh
-    // 5/15-second idle cycle instead of switching it straight back off.
+    // A short POWER sleep is owned by Onion's keymon. Distinguish its zero
+    // brightness from our own stage-2 screen-off state. Keep our timer parked
+    // until keymon restores the display, then start a fresh 5/15-second idle
+    // cycle instead of switching it straight back off.
     if (external_backlight_off || backlight_stage == 2 ||
         (backlight_stage == 0 && idle >= 4000) ||
         backlight_stage == 1) {

@@ -1,8 +1,45 @@
 diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
-index 64f22a18..c01d0ba2 100644
+index 64f22a18..b6a397f5 100644
 --- a/src/keymon/keymon.c
 +++ b/src/keymon/keymon.c
-@@ -338,6 +338,11 @@ void suspend_exec(int timeout)
+@@ -260,6 +260,8 @@ void deepsleep(void)
+ //
+ void suspend_exec(int timeout)
+ {
++    bool kidsmode_carousel_paused = false;
++    bool kidsmode_media_paused = false;
+     keyinput_disable();
+ 
+     // pause playActivity
+@@ -270,6 +272,20 @@ void suspend_exec(int timeout)
+         timeout = -1; // no timeout
+     }
+     else {
++        if (temp_flag_get("kidsmode_carousel_active")) {
++            // Onion's generic suspend list is capped at PIDMAX entries. Stop
++            // kidui explicitly so repeated sleeps cannot leave the carousel
++            // running merely because its PID fell beyond that list.
++            system("killall -STOP kidui");
++            kidsmode_carousel_paused = true;
++        }
++        if (temp_flag_get("kidsmode_media_active")) {
++            // FFplay is deliberately stopped outside the generic PID list as
++            // well. POWER then pauses video and audio even when the process
++            // table contains more than PIDMAX eligible entries.
++            system("killall -STOP ffplay");
++            kidsmode_media_paused = true;
++        }
+         // suspend processes
+         suspend(0);
+         setVolume(0);
+@@ -335,9 +351,18 @@ void suspend_exec(int timeout)
+     if (!killexit) {
+         // resume processes
+         resume();
++        if (kidsmode_carousel_paused)
++            system("killall -CONT kidui");
++        if (kidsmode_media_paused)
++            system("killall -CONT ffplay");
          // resume playActivity
          system("playActivity resume");
      }
@@ -14,7 +51,7 @@ index 64f22a18..c01d0ba2 100644
  
      keyinput_enable();
  }
-@@ -353,6 +358,23 @@ void turnOffScreen(void)
+@@ -353,6 +378,23 @@ void turnOffScreen(void)
      }
  }
  
@@ -38,7 +75,7 @@ index 64f22a18..c01d0ba2 100644
  /**
   * @brief Adjusts the CPU clock speed based on the given adjustment value and triggers an OSD message
   *
-@@ -565,6 +587,9 @@ int main(void)
+@@ -565,6 +607,9 @@ int main(void)
                          if (comboKey_menu) {
                              takeScreenshot();
                          }
