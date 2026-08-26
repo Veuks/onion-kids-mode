@@ -54,6 +54,7 @@
 #include <SDL/SDL_ttf.h>
 #include <dirent.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,7 +66,6 @@
 #include "components/JsonGameEntry.h"
 #include "components/list.h"
 #include "system/battery.h"
-#include "system/display.h"
 #include "system/keymap_sw.h"
 #include "theme/background.h"
 #include "theme/theme.h"
@@ -84,9 +84,6 @@
 #define REMAINING_POLL_MS 2000
 #define SELECTION_WRITE_DELAY_MS 300
 #define TIMESUP_OFF_MS (5 * 60 * 1000)
-#define CAROUSEL_DIM_DELAY_MS 5000
-#define CAROUSEL_OFF_DELAY_MS 15000
-#define CAROUSEL_DIM_RAW 3
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
 #define RESULT_FILE "/tmp/kidsmode_ui_result"
 #define DEFAULT_VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode/Main"
@@ -150,100 +147,6 @@ static bool dirty = true; // set by any render function that needs to keep
                           // animating (e.g. a scrolling title) on the next
                           // loop tick, even with no new input
 static KeyState keystate[320] = {(KeyState)0};
-
-static uint32_t carousel_last_activity;
-static int carousel_backlight_stage;
-static long carousel_saved_brightness = -1;
-static bool carousel_was_active;
-static bool carousel_external_screen_off;
-static uint32_t carousel_last_backlight_check;
-
-static void restoreCarouselBacklight(void)
-{
-    if (carousel_backlight_stage != 0 && carousel_saved_brightness > 0)
-        display_setBrightnessRaw((uint32_t)carousel_saved_brightness);
-    carousel_backlight_stage = 0;
-}
-
-static void stopCarouselDimmer(void)
-{
-    restoreCarouselBacklight();
-    carousel_was_active = false;
-    carousel_external_screen_off = false;
-}
-
-static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
-{
-    if (!carousel_active) {
-        if (carousel_was_active || carousel_backlight_stage != 0)
-            stopCarouselDimmer();
-        return;
-    }
-
-    if (!carousel_was_active) {
-        carousel_was_active = true;
-        carousel_last_activity = ticks;
-        long current = display_getBrightnessRaw();
-        if (current > 0)
-            carousel_saved_brightness = current;
-    }
-
-    // The loop is deliberately kept alive during Onion's POWER sleep, just
-    // like FFplay. Distinguish keymon's display-off state from our own
-    // 15-second black screen and park the idle timer until keymon restores
-    // the configured brightness.
-    if (ticks - carousel_last_backlight_check >= 250) {
-        carousel_last_backlight_check = ticks;
-        long current = display_getBrightnessRaw();
-        if (carousel_external_screen_off) {
-            if (current > 0) {
-                carousel_external_screen_off = false;
-                carousel_backlight_stage = 0;
-                carousel_saved_brightness = current;
-                carousel_last_activity = ticks;
-                dirty = true;
-            }
-            else {
-                carousel_last_activity = ticks;
-            }
-            return;
-        }
-        if (carousel_backlight_stage < 2 && current == 0) {
-            carousel_external_screen_off = true;
-            carousel_last_activity = ticks;
-            return;
-        }
-        if (carousel_backlight_stage == 2 && current > 0) {
-            carousel_backlight_stage = 0;
-            carousel_saved_brightness = current;
-            carousel_last_activity = ticks;
-            dirty = true;
-            return;
-        }
-    }
-
-    if (carousel_saved_brightness <= 0)
-        return;
-
-    uint32_t idle = ticks - carousel_last_activity;
-    if (carousel_backlight_stage == 0 && idle >= CAROUSEL_DIM_DELAY_MS) {
-        long current = display_getBrightnessRaw();
-        if (current > 0)
-            carousel_saved_brightness = current;
-        // Never EVIOCGRAB the hardware buttons here. Onion's keymon must
-        // always retain POWER so a short press can enter and leave the real
-        // system sleep state reliably.
-        display_setBrightnessRaw(CAROUSEL_DIM_RAW);
-        carousel_backlight_stage = 1;
-    }
-    if (carousel_backlight_stage == 1 &&
-        idle >= CAROUSEL_OFF_DELAY_MS) {
-        // Never capture /dev/input on the carousel. A POWER press, including
-        // every repeat from a long hold, must always reach Onion's keymon.
-        display_setBrightnessRaw(0);
-        carousel_backlight_stage = 2;
-    }
-}
 
 typedef struct {
     JsonGameEntry item;
@@ -2892,17 +2795,6 @@ static void flip(void)
 #endif
 }
 
-// A final, static UI frame must exist on every Miyoo framebuffer page.
-// Animation frames intentionally use flip() once for speed; once the final
-// screen has been rendered, this second identical flip synchronizes the other
-// page so display off/on cannot briefly expose an older folder or carousel.
-static void flipSynced(void)
-{
-    flip();
-    SDL_BlitSurface(screen, NULL, video, NULL);
-    SDL_Flip(video);
-}
-
 static SDL_Surface *copyScreenSurface(void)
 {
     SDL_Surface *copy = SDL_CreateRGBSurface(
@@ -3217,26 +3109,10 @@ int main(int argc, char *argv[])
         uint32_t ticks = SDL_GetTicks();
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
-
-        // The carousel only turns the PWM backlight down; its SDL loop keeps
-        // receiving buttons. Consume the first ordinary button locally and
-        // restore the screen, but leave POWER entirely to Onion/keymon.
-        if (key_changed && active_screen == SCREEN_CAROUSEL &&
-            carousel_backlight_stage != 0 &&
-            keystate[changed_key] == PRESSED &&
-            changed_key != SW_BTN_POWER) {
-            restoreCarouselBacklight();
-            carousel_last_activity = ticks;
-            keystate[changed_key] = RELEASED;
-            key_changed = false;
-            dirty = true;
-        }
         if (key_changed && changed_key == SW_BTN_Y)
             dirty = true;
         if (key_changed && keystate[changed_key] == PRESSED) {
             pin_last_input = ticks;
-            if (active_screen == SCREEN_CAROUSEL)
-                carousel_last_activity = ticks;
 
             if (active_screen == SCREEN_CAROUSEL && games_count > 0) {
                 switch (changed_key) {
@@ -3613,20 +3489,10 @@ int main(int argc, char *argv[])
             ticks - selection_changed_at >= SELECTION_WRITE_DELAY_MS)
             writeSelectionState();
 
-        updateCarouselDimmer(ticks, active_screen == SCREEN_CAROUSEL);
-
         if (quit)
             break;
 
-        // keymon sets the PWM to zero before switching the panel off. Since
-        // kidui intentionally stays alive during POWER sleep, never flip a
-        // framebuffer page in that interval: even one late flip can expose a
-        // brief carousel flash unlike Onion's normal sleep transition. Keep
-        // `dirty` set so the complete frame is drawn after wake instead.
-        bool display_lit = true;
-        if (dirty)
-            display_lit = display_getBrightnessRaw() > 0;
-        if (dirty && display_lit) {
+        if (dirty) {
             switch (active_screen) {
             case SCREEN_CAROUSEL:
                 renderCarousel(remaining);
@@ -3655,16 +3521,12 @@ int main(int argc, char *argv[])
             }
             if (hold_started != 0)
                 renderHoldBar(ticks - hold_started);
-            flipSynced();
+            flip();
             dirty = false;
         }
-        // The carousel is event-driven and redraws only when dirty. Polling at
-        // 100 Hz while it is completely static wastes CPU and battery; 50 Hz
-        // keeps button latency below one frame while halving idle wake-ups.
-        msleep(20);
+        msleep(10);
     }
 
-    stopCarouselDimmer();
     if (selection_state_dirty)
         writeSelectionState();
     artwork = NULL;
