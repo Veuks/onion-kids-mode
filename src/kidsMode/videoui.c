@@ -68,6 +68,7 @@
 #include <sys/ioctl.h>
 #endif
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "components/JsonGameEntry.h"
@@ -96,6 +97,9 @@
 #define CAROUSEL_DIM_RAW 3
 #define BRIGHTNESS_PWM_PATH \
     "/sys/devices/soc0/soc/1f003400.pwm/pwm/pwmchip0/pwm0/duty_cycle"
+#define SUSPEND_GUARD_READY_PREFIX "/tmp/kidsmode_suspend_guard_ready."
+#define CAROUSEL_AUTO_OFF_PREFIX "/tmp/kidsmode_carousel_auto_off."
+#define SUSPEND_GUARD_RESUMED_PREFIX "/tmp/kidsmode_suspend_guard_resumed."
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
 #define RESULT_FILE "/tmp/kidsmode_ui_result"
 #define DEFAULT_VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode/Main"
@@ -163,10 +167,14 @@ static KeyState keystate[320] = {(KeyState)0};
 static uint32_t carousel_last_activity;
 static uint32_t carousel_last_backlight_check;
 static uint32_t carousel_last_loop_tick;
+static uint32_t carousel_resume_guard_until;
 static int carousel_backlight_stage;
 static long carousel_saved_brightness = -1;
 static bool carousel_external_backlight_off;
 static bool carousel_was_active;
+static char suspend_guard_ready_path[128];
+static char carousel_auto_off_path[128];
+static char suspend_guard_resumed_path[128];
 #ifdef PLATFORM_MIYOOMINI
 static int carousel_wake_fd = -1;
 static bool carousel_wake_grabbed;
@@ -198,6 +206,97 @@ static bool writeCarouselBacklight(long value)
     bool ok = fprintf(fp, "%ld\n", value) > 0;
     fclose(fp);
     return ok;
+}
+
+static bool setSmallFlag(const char *path, bool enabled)
+{
+    if (path == NULL || path[0] == '\0')
+        return false;
+    if (!enabled) {
+        remove(path);
+        return true;
+    }
+    FILE *fp = fopen(path, "w");
+    if (fp == NULL)
+        return false;
+    bool ok = fputs("1\n", fp) >= 0;
+    fclose(fp);
+    return ok;
+}
+
+static void carouselSuspendGuardLoop(pid_t kidui_pid,
+                                     const char *ready_path,
+                                     const char *auto_off_path,
+                                     const char *resumed_path)
+{
+    bool stopped_by_guard = false;
+    while (kill(kidui_pid, 0) == 0) {
+        if (access(ready_path, F_OK) != 0) {
+            usleep(100000);
+            continue;
+        }
+        long brightness = readCarouselBacklight();
+        bool automatic_off = access(auto_off_path, F_OK) == 0;
+        if (!stopped_by_guard && brightness == 0 && !automatic_off) {
+            // keymon can omit a recently launched application when its fixed
+            // suspend list is full. Stop kidui explicitly so only keymon's
+            // POWER and MENU handlers remain active during the real sleep.
+            if (kill(kidui_pid, SIGSTOP) == 0)
+                stopped_by_guard = true;
+        }
+        else if (stopped_by_guard && brightness > 0) {
+            setSmallFlag(resumed_path, true);
+            kill(kidui_pid, SIGCONT);
+            stopped_by_guard = false;
+        }
+        usleep(stopped_by_guard ? 50000 : 100000);
+    }
+    if (stopped_by_guard)
+        kill(kidui_pid, SIGCONT);
+    remove(ready_path);
+    remove(auto_off_path);
+    remove(resumed_path);
+}
+
+static void startCarouselSuspendGuard(void)
+{
+    pid_t kidui_pid = getpid();
+    snprintf(suspend_guard_ready_path, sizeof(suspend_guard_ready_path),
+             "%s%ld", SUSPEND_GUARD_READY_PREFIX, (long)kidui_pid);
+    snprintf(carousel_auto_off_path, sizeof(carousel_auto_off_path),
+             "%s%ld", CAROUSEL_AUTO_OFF_PREFIX, (long)kidui_pid);
+    snprintf(suspend_guard_resumed_path, sizeof(suspend_guard_resumed_path),
+             "%s%ld", SUSPEND_GUARD_RESUMED_PREFIX, (long)kidui_pid);
+    remove(suspend_guard_ready_path);
+    remove(carousel_auto_off_path);
+    remove(suspend_guard_resumed_path);
+
+#ifdef PLATFORM_MIYOOMINI
+    pid_t first_child = fork();
+    if (first_child < 0)
+        return;
+    if (first_child == 0) {
+        if (setsid() < 0)
+            _exit(1);
+        pid_t daemon_child = fork();
+        if (daemon_child < 0)
+            _exit(1);
+        if (daemon_child > 0)
+            _exit(0);
+
+        // The grandchild is adopted by init (PPID 1), so Onion's keymon does
+        // not include it in the application suspend list. It owns no SDL or
+        // framebuffer descriptors because it is created before SDL_Init.
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+        carouselSuspendGuardLoop(kidui_pid, suspend_guard_ready_path,
+                                 carousel_auto_off_path,
+                                 suspend_guard_resumed_path);
+        _exit(0);
+    }
+    waitpid(first_child, NULL, 0);
+#endif
 }
 
 #ifdef PLATFORM_MIYOOMINI
@@ -246,6 +345,7 @@ static void releaseCarouselWakeInput(void) {}
 
 static void restoreCarouselBacklight(void)
 {
+    setSmallFlag(carousel_auto_off_path, false);
     if (!carousel_external_backlight_off &&
         carousel_backlight_stage != 0 &&
         carousel_saved_brightness > 0)
@@ -266,6 +366,7 @@ static void resetCarouselAfterSystemResume(uint32_t ticks)
     // A real Onion sleep suspends kidui, so the next SDL tick can jump by many
     // seconds. Never count that suspended time as carousel inactivity.
     releaseCarouselWakeInput();
+    setSmallFlag(carousel_auto_off_path, false);
     carousel_backlight_stage = 0;
     long current = readCarouselBacklight();
     carousel_external_backlight_off = current == 0;
@@ -274,6 +375,16 @@ static void resetCarouselAfterSystemResume(uint32_t ticks)
     carousel_last_activity = ticks;
     carousel_last_backlight_check = ticks;
     dirty = true;
+}
+
+static void discardPendingCarouselInput(void)
+{
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        // POWER/MENU and any buttons touched while keymon owned the suspended
+        // screen belong to the wake gesture, never to carousel navigation.
+    }
+    memset(keystate, RELEASED, sizeof(keystate));
 }
 
 static void pollCarouselWakeInput(uint32_t ticks)
@@ -396,10 +507,19 @@ static void updateCarouselDimmer(uint32_t ticks, bool active)
         }
         if (current < 0 || !grabCarouselWakeInput())
             return;
+        // Mark our own screen-only timeout before writing PWM=0. The external
+        // guard must leave kidui running in this case so its raw wake handler
+        // can consume a button and restore the display.
+        if (!setSmallFlag(carousel_auto_off_path, true)) {
+            releaseCarouselWakeInput();
+            return;
+        }
         if (writeCarouselBacklight(0))
             carousel_backlight_stage = 2;
-        else
+        else {
+            setSmallFlag(carousel_auto_off_path, false);
             releaseCarouselWakeInput();
+        }
     }
 }
 
@@ -3230,6 +3350,10 @@ int main(int argc, char *argv[])
     if (menu_timer_minutes > TIMER_MAX)
         menu_timer_minutes = TIMER_MAX;
 
+    // Start before SDL opens the framebuffer and input devices so the
+    // detached guard inherits no hardware descriptors.
+    startCarouselSuspendGuard();
+
     signal(SIGINT, sigHandler);
     signal(SIGTERM, sigHandler);
 
@@ -3359,6 +3483,10 @@ int main(int argc, char *argv[])
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
 
+    // Resource loading and the first framebuffer setup are complete. From
+    // this point a zero brightness can safely be treated as a POWER sleep.
+    setSmallFlag(suspend_guard_ready_path, true);
+
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
@@ -3367,15 +3495,31 @@ int main(int argc, char *argv[])
         // Detect the long pause before running the dimmer, otherwise a wake
         // after more than 15 seconds looks like expired carousel idle time and
         // switches the freshly restored screen straight back off.
-        if (carousel_last_loop_tick != 0 &&
-            ticks - carousel_last_loop_tick >= 1000)
+        bool guarded_resume =
+            access(suspend_guard_resumed_path, F_OK) == 0;
+        if (guarded_resume)
+            setSmallFlag(suspend_guard_resumed_path, false);
+        if (guarded_resume ||
+            (carousel_last_loop_tick != 0 &&
+             ticks - carousel_last_loop_tick >= 1000))
             resetCarouselAfterSystemResume(ticks);
+        if (guarded_resume) {
+            discardPendingCarouselInput();
+            carousel_resume_guard_until = ticks + 750;
+        }
         carousel_last_loop_tick = ticks;
 
         // While the screen is fully off, raw input is reserved until the
         // complete wake gesture has been consumed, exactly like libvcinput.
         pollCarouselWakeInput(ticks);
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
+
+        if (key_changed && active_screen == SCREEN_CAROUSEL &&
+            ticks < carousel_resume_guard_until) {
+            if (changed_key >= 0 && changed_key < 320)
+                keystate[changed_key] = RELEASED;
+            key_changed = false;
+        }
 
         // Depending on the SDL/input timing, only POWER release may remain in
         // the queue after resume. Either edge is enough to start a fresh idle
@@ -3862,6 +4006,9 @@ int main(int argc, char *argv[])
     // NB: deliberately no final clear+flip here — an extra page flip on the
     // device can leave the visible framebuffer page out of sync with the
     // next process (MainUI painting an invisible page after unlock).
+    setSmallFlag(suspend_guard_ready_path, false);
+    setSmallFlag(carousel_auto_off_path, false);
+    setSmallFlag(suspend_guard_resumed_path, false);
     TTF_Quit();
     SDL_Quit();
 
