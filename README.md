@@ -129,24 +129,6 @@ supported file, either directly or in one of its subfolders. Entries inside a
 folder are sorted alphabetically. The supplied root categories use the fixed
 order Movies, Music, Cartoons, Series and Stories.
 
-### Video orientation
-
-Kids Mode rotates conventional upright videos automatically for the Miyoo
-display. Posters, folder artwork and other carousel images must remain upright.
-For best compatibility use MP4, H.264, AAC, constant frame rate and no more
-than 640 × 480.
-
-An optional direct path remains available for physically pre-rotated videos:
-
-```json
-"pre_rotated_videos": false
-```
-
-Leave it set to `false` for a normal library. Advanced users who physically
-rotate every video by 180° during encoding may set it to `true` to remove the
-real-time FFplay rotation filter. A QuickTime metadata-only rotation is not
-sufficient. This switch never rotates posters or existing artwork.
-
 Each directory can have its own `Imgs` folder. An image uses the same base name
 as the media file beside it. PNG, JPG and JPEG are accepted. The complete
 package includes five ready-to-use category folders with generic 256 × 256

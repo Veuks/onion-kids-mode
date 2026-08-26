@@ -84,15 +84,6 @@
 #define REMAINING_POLL_MS 2000
 #define SELECTION_WRITE_DELAY_MS 300
 #define TIMESUP_OFF_MS (5 * 60 * 1000)
-#define CAROUSEL_DIM_DELAY_MS 5000
-#define CAROUSEL_OFF_DELAY_MS 15000
-#define CAROUSEL_DIM_RAW 3
-#define BRIGHTNESS_PWM_PATH \
-    "/sys/devices/soc0/soc/1f003400.pwm/pwm/pwmchip0/pwm0/duty_cycle"
-#define CAROUSEL_ACTIVE_FLAG "/tmp/kidsmode_carousel_active"
-#define CAROUSEL_DIMMED_FLAG "/tmp/kidsmode_carousel_dimmed"
-#define CAROUSEL_WAKE_FLAG "/tmp/kidsmode_carousel_wake"
-#define CAROUSEL_RESUME_FLAG "/tmp/kidsmode_carousel_resume"
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
 #define RESULT_FILE "/tmp/kidsmode_ui_result"
 #define DEFAULT_VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode/Main"
@@ -156,123 +147,6 @@ static bool dirty = true; // set by any render function that needs to keep
                           // animating (e.g. a scrolling title) on the next
                           // loop tick, even with no new input
 static KeyState keystate[320] = {(KeyState)0};
-
-static uint32_t carousel_last_activity;
-static int carousel_backlight_stage;
-static long carousel_saved_brightness = -1;
-static bool carousel_dimmer_active;
-
-static void setCarouselFlag(const char *path, bool enabled)
-{
-    if (!enabled) {
-        remove(path);
-        return;
-    }
-    FILE *fp = fopen(path, "w");
-    if (fp != NULL)
-        fclose(fp);
-}
-
-static long readCarouselBacklight(void)
-{
-    FILE *fp = fopen(BRIGHTNESS_PWM_PATH, "r");
-    if (fp == NULL)
-        return -1;
-    char value[64] = "";
-    bool ok = fgets(value, sizeof(value), fp) != NULL;
-    fclose(fp);
-    if (!ok)
-        return -1;
-    char *end = NULL;
-    long result = strtol(value, &end, 10);
-    return end != value && result >= 0 ? result : -1;
-}
-
-static bool writeCarouselBacklight(long value)
-{
-    if (value < 0)
-        return false;
-    FILE *fp = fopen(BRIGHTNESS_PWM_PATH, "w");
-    if (fp == NULL)
-        return false;
-    bool ok = fprintf(fp, "%ld\n", value) > 0;
-    fclose(fp);
-    return ok;
-}
-
-static void restoreCarouselBacklight(uint32_t ticks)
-{
-    if (carousel_backlight_stage != 0 && carousel_saved_brightness > 0)
-        writeCarouselBacklight(carousel_saved_brightness);
-    carousel_backlight_stage = 0;
-    carousel_last_activity = ticks;
-    setCarouselFlag(CAROUSEL_DIMMED_FLAG, false);
-}
-
-static void stopCarouselDimmer(uint32_t ticks)
-{
-    if (carousel_backlight_stage != 0)
-        restoreCarouselBacklight(ticks);
-    carousel_dimmer_active = false;
-    setCarouselFlag(CAROUSEL_ACTIVE_FLAG, false);
-    setCarouselFlag(CAROUSEL_DIMMED_FLAG, false);
-    setCarouselFlag(CAROUSEL_WAKE_FLAG, false);
-    setCarouselFlag(CAROUSEL_RESUME_FLAG, false);
-}
-
-static void updateCarouselDimmer(uint32_t ticks, bool active)
-{
-    if (!active) {
-        if (carousel_dimmer_active)
-            stopCarouselDimmer(ticks);
-        return;
-    }
-
-    if (!carousel_dimmer_active) {
-        carousel_dimmer_active = true;
-        carousel_last_activity = ticks;
-        long current = readCarouselBacklight();
-        if (current > 0)
-            carousel_saved_brightness = current;
-        setCarouselFlag(CAROUSEL_ACTIVE_FLAG, true);
-    }
-
-    // These flags are written only by the patched keymon. They make the end
-    // of a POWER wake explicit instead of guessing it from framebuffer or
-    // brightness changes.
-    if (access(CAROUSEL_WAKE_FLAG, F_OK) == 0 ||
-        access(CAROUSEL_RESUME_FLAG, F_OK) == 0) {
-        setCarouselFlag(CAROUSEL_WAKE_FLAG, false);
-        setCarouselFlag(CAROUSEL_RESUME_FLAG, false);
-        setCarouselFlag(CAROUSEL_DIMMED_FLAG, false);
-        carousel_backlight_stage = 0;
-        long current = readCarouselBacklight();
-        if (current > 0)
-            carousel_saved_brightness = current;
-        carousel_last_activity = ticks;
-        dirty = true;
-        return;
-    }
-
-    uint32_t idle = ticks - carousel_last_activity;
-    if (carousel_backlight_stage == 0 && idle >= CAROUSEL_DIM_DELAY_MS) {
-        long current = readCarouselBacklight();
-        if (current <= 0)
-            return;
-        carousel_saved_brightness = current;
-        // Publish the state before changing the panel so keymon always owns
-        // a simultaneous POWER press and can consume it deterministically.
-        setCarouselFlag(CAROUSEL_DIMMED_FLAG, true);
-        if (writeCarouselBacklight(CAROUSEL_DIM_RAW))
-            carousel_backlight_stage = 1;
-        else
-            setCarouselFlag(CAROUSEL_DIMMED_FLAG, false);
-    }
-    if (carousel_backlight_stage == 1 &&
-        idle >= CAROUSEL_OFF_DELAY_MS &&
-        writeCarouselBacklight(0))
-        carousel_backlight_stage = 2;
-}
 
 typedef struct {
     JsonGameEntry item;
@@ -3234,32 +3108,11 @@ int main(int argc, char *argv[])
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
 
-        bool carousel_screen = active_screen == SCREEN_CAROUSEL ||
-                               active_screen == SCREEN_EMPTY;
-        updateCarouselDimmer(ticks, carousel_screen);
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
-
-        // A normal key wakes the dimmed/blanked carousel and that first press
-        // is consumed. POWER is intentionally excluded: the patched keymon is
-        // its only owner and decides between wake-only and Onion suspend.
-        if (key_changed && carousel_screen &&
-            carousel_backlight_stage != 0 &&
-            keystate[changed_key] == PRESSED &&
-            changed_key != SW_BTN_POWER) {
-            restoreCarouselBacklight(ticks);
-            keystate[changed_key] = RELEASED;
-            key_changed = false;
-            dirty = true;
-        }
         if (key_changed && changed_key == SW_BTN_Y)
             dirty = true;
         if (key_changed && keystate[changed_key] == PRESSED) {
             pin_last_input = ticks;
-            // POWER remains owned by keymon, but it still counts as activity.
-            // This prevents the 5-second dim stage from starting between the
-            // POWER press and release just before Onion suspends the device.
-            if (carousel_screen)
-                carousel_last_activity = ticks;
 
             if (active_screen == SCREEN_CAROUSEL && games_count > 0) {
                 switch (changed_key) {
@@ -3674,7 +3527,6 @@ int main(int argc, char *argv[])
         msleep(10);
     }
 
-    stopCarouselDimmer(SDL_GetTicks());
     if (selection_state_dirty)
         writeSelectionState();
     artwork = NULL;

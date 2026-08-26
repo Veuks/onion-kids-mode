@@ -14,8 +14,10 @@
 # Mode flag: /mnt/SDCARD/.kidmode  (present = armed; delete it from a
 # computer to force-disable Kids Mode)
 #
-# Kids Mode runs its own reversible keymon build while armed. Onion's original
-# binary is never overwritten and is relaunched as soon as Kids Mode exits.
+# HARDENING NOTE: while armed, a determined kid can still force-shutdown
+# with a long power press (keymon handles power directly). To harden, patch
+# src/keymon/keymon.c to ignore/limit power events while /mnt/SDCARD/.kidmode
+# exists. This optional system modification is not included.
 # ---------------------------------------------------------------------------
 
 sysdir=/mnt/SDCARD/.tmp_update
@@ -23,8 +25,6 @@ miyoodir=/mnt/SDCARD/miyoo
 appdir=/mnt/SDCARD/App/KidsMode
 
 kidui_bin="$appdir/bin/kidui"
-kids_keymon_bin="$appdir/bin/keymon"
-onion_keymon_bin="$sysdir/bin/keymon"
 configfile="$appdir/kidmode.json"
 flagfile=/mnt/SDCARD/.kidmode
 favfile=/mnt/SDCARD/Roms/favourite.json
@@ -136,7 +136,6 @@ cfg_show_series=true
 cfg_show_music=true
 cfg_show_cartoons=true
 cfg_fav_shortcut=false
-cfg_pre_rotated_videos=false
 
 log() {
     mkdir -p "$(dirname "$logfile")"
@@ -163,51 +162,20 @@ make_salt() {
     fi
 }
 
-flat_json_sane() {
-    # Fast path for the small, flat objects written atomically by Kids Mode.
-    # Suspicious or hand-edited files still fall back to jq validation.
-    [ -f "$1" ] || return 1
-    awk -v required="$2" '
-        /{/ { opened=1 }
-        /}/ { closed=1 }
-        index($0, "\"" required "\"") { found=1 }
-        END { exit !(opened && closed && found) }
-    ' "$1" 2> /dev/null
-}
-
 load_config_cache() {
     [ -f "$configfile" ] || return 1
-    # The file has already been validated by ensure_config. Read this flat
-    # settings object in one small awk process instead of starting jq for every
-    # launch. jq remains the authoritative writer and validation fallback.
-    config_dump="$(awk '
-        BEGIN {
-            value["pin_hash"]=""; value["pin_salt"]="";
-            value["pin_plain"]=""; value["timer_minutes"]="0";
-            value["lock_current_floor"]="false";
-            value["show_stories"]="true"; value["show_movies"]="true";
-            value["show_series"]="true"; value["show_music"]="true";
-            value["show_cartoons"]="true"; value["fav_shortcut"]="false";
-            value["pre_rotated_videos"]="false";
-        }
-        match($0, /"[A-Za-z0-9_]+"[ \t]*:/) {
-            field=substr($0, RSTART, RLENGTH)
-            gsub(/[" \t:]/, "", field)
-            parsed=substr($0, RSTART+RLENGTH)
-            sub(/^[ \t]*/, "", parsed); sub(/[ \t]*,?[ \t]*$/, "", parsed)
-            if (parsed ~ /^".*"$/) {
-                sub(/^"/, "", parsed); sub(/"$/, "", parsed)
-            }
-            if (field in value) value[field]=parsed
-        }
-        END {
-            print value["pin_hash"]; print value["pin_salt"];
-            print value["pin_plain"]; print value["timer_minutes"];
-            print value["lock_current_floor"]; print value["show_stories"];
-            print value["show_movies"]; print value["show_series"];
-            print value["show_music"]; print value["show_cartoons"];
-            print value["fav_shortcut"]; print value["pre_rotated_videos"];
-        }
+    config_dump="$(jq -r '
+        (.pin_hash // ""),
+        (.pin_salt // ""),
+        (.pin_plain // ""),
+        ((.timer_minutes // 0) | tostring),
+        ((.lock_current_floor // false) | tostring),
+        ((if has("show_stories") then .show_stories else true end) | tostring),
+        ((if has("show_movies") then .show_movies else true end) | tostring),
+        ((if has("show_series") then .show_series else true end) | tostring),
+        ((if has("show_music") then .show_music else true end) | tostring),
+        ((if has("show_cartoons") then .show_cartoons else true end) | tostring),
+        ((.fav_shortcut // false) | tostring)
     ' "$configfile" 2> /dev/null)" || return 1
     {
         IFS= read -r cfg_pin_hash
@@ -221,7 +189,6 @@ load_config_cache() {
         IFS= read -r cfg_show_music
         IFS= read -r cfg_show_cartoons
         IFS= read -r cfg_fav_shortcut
-        IFS= read -r cfg_pre_rotated_videos
     } <<EOF
 $config_dump
 EOF
@@ -229,28 +196,14 @@ EOF
         '' | *[!0-9]*) cfg_timer_minutes=0 ;;
     esac
     if [ -f "$profile_preferences_file" ] &&
-        { flat_json_sane "$profile_preferences_file" lock_current_floor ||
-          jq -e . "$profile_preferences_file" > /dev/null 2>&1; }; then
-        profile_dump="$(awk '
-            BEGIN {
-                value["lock_current_floor"]="false";
-                value["show_stories"]="true"; value["show_movies"]="true";
-                value["show_series"]="true"; value["show_music"]="true";
-                value["show_cartoons"]="true";
-            }
-            match($0, /"[A-Za-z0-9_]+"[ \t]*:/) {
-                field=substr($0, RSTART, RLENGTH)
-                gsub(/[" \t:]/, "", field)
-                parsed=substr($0, RSTART+RLENGTH)
-                sub(/^[ \t]*/, "", parsed); sub(/[ \t]*,?[ \t]*$/, "", parsed)
-                if (field in value) value[field]=parsed
-            }
-            END {
-                print value["lock_current_floor"];
-                print value["show_stories"]; print value["show_movies"];
-                print value["show_series"]; print value["show_music"];
-                print value["show_cartoons"];
-            }
+        jq -e . "$profile_preferences_file" > /dev/null 2>&1; then
+        profile_dump="$(jq -r '
+            ((.lock_current_floor // false) | tostring),
+            ((if has("show_stories") then .show_stories else true end) | tostring),
+            ((if has("show_movies") then .show_movies else true end) | tostring),
+            ((if has("show_series") then .show_series else true end) | tostring),
+            ((if has("show_music") then .show_music else true end) | tostring),
+            ((if has("show_cartoons") then .show_cartoons else true end) | tostring)
         ' "$profile_preferences_file" 2> /dev/null)"
         {
             IFS= read -r cfg_lock_current_floor
@@ -319,9 +272,7 @@ is_4_digits() {
 }
 
 ensure_config() {
-    if [ ! -f "$configfile" ] ||
-        { ! flat_json_sane "$configfile" pin_hash &&
-          ! jq -e . "$configfile" > /dev/null 2>&1; }; then
+    if [ ! -f "$configfile" ] || ! jq -e . "$configfile" > /dev/null 2>&1; then
         if [ -f "$configfile" ]; then
             mkdir -p "$backupdir"
             cp "$configfile" "$backupdir/kidmode.json.broken" 2> /dev/null
@@ -347,8 +298,7 @@ profile_config_merge() {
     # Parent-menu display choices belong to the originating Onion profile.
     tmpprefs=/tmp/kidsmode_preferences.$$
     if [ -f "$profile_preferences_file" ] &&
-        { flat_json_sane "$profile_preferences_file" lock_current_floor ||
-          jq -e . "$profile_preferences_file" > /dev/null 2>&1; }; then
+        jq -e . "$profile_preferences_file" > /dev/null 2>&1; then
         prefs_source="$profile_preferences_file"
     else
         prefs_source=/tmp/kidsmode_empty_preferences.$$
@@ -715,26 +665,6 @@ restore_profile_isolation() {
 # expose the parent's recent games. keymon reads keymap.json at startup, so
 # it is restarted after the change. Original keymap restored on unlock.
 
-restart_keymon() {
-    killall keymon 2> /dev/null
-    if [ -f "$flagfile" ] && [ -x "$kids_keymon_bin" ]; then
-        "$kids_keymon_bin" &
-        log "Started Kids Mode keymon."
-    else
-        rm -f /tmp/kidsmode_carousel_active \
-            /tmp/kidsmode_carousel_dimmed \
-            /tmp/kidsmode_carousel_wake \
-            /tmp/kidsmode_carousel_resume \
-            /tmp/kidsmode_media_active
-        if [ -x "$onion_keymon_bin" ]; then
-            "$onion_keymon_bin" &
-        else
-            keymon &
-        fi
-        log "Restored Onion keymon."
-    fi
-}
-
 apply_keymap_override() {
     mkdir -p "$backupdir"
     if [ -f "$keymapcfg" ]; then
@@ -749,7 +679,8 @@ apply_keymap_override() {
         touch "$keymapnone"
         printf '{\n    "ingame_single_press": 2\n}\n' > "$keymapcfg"
     fi
-    restart_keymon
+    killall keymon 2> /dev/null
+    keymon &
     log "MENU button set to exit-to-launcher while armed."
 }
 
@@ -765,6 +696,8 @@ restore_keymap_override() {
     fi
     if [ "$keymap_restored" = "1" ]; then
         sync
+        killall keymon 2> /dev/null
+        keymon &
         log "keymap.json restored."
     fi
 }
@@ -1456,7 +1389,6 @@ disarm() {
     restore_blf_lock
     restore_profile_isolation
     restore_keymap_override
-    restart_keymon
     rm -f "$game_environment_marker"
     ensure_fav_shortcut
     rm -f "$sysdir/cmd_to_run.sh" "$uiresult"
@@ -1593,9 +1525,6 @@ hide_ffplay_state() {
 watch_media_duration() {
     duration_log="$1" duration_output="$2" watched_pid="$3"
     tries=0
-    # Keep the proven fast probe loop used by the stable player. It exits as
-    # soon as FFplay writes its one-time Duration header, so these short polls
-    # do not continue during playback.
     while [ "$tries" -lt 100 ] && [ -d "/proc/$watched_pid" ]; do
         media_seconds="$(awk '
             match($0, /Duration: [0-9]+:[0-9]+:[0-9]+/) {
@@ -1660,14 +1589,8 @@ play_video() {
     hide_ffplay_state
     rm -f "$menu_exit_marker"
     ensure_audio_server
-    # POWER must invoke Onion's real suspend path. Automatic screen-off for
-    # audio and paused video remains independent inside libvcinput.
-    rm -f /tmp/stay_awake
-    touch /tmp/kidsmode_media_active
-    if ! cd "$sysdir"; then
-        rm -f /tmp/kidsmode_media_active
-        return 1
-    fi
+    touch /tmp/stay_awake
+    cd "$sysdir" || return 1
     # A true restart must not ask FFplay to seek, even to zero. Apart from
     # avoiding unnecessary decoder preroll, this keeps 0:00 distinct from a
     # normal resume position.
@@ -1689,9 +1612,6 @@ play_video() {
             "$ffplay" -vn -autoexit -i "$video" $seek_args \
                 2> "$duration_log" &
     else
-        video_filter_args=""
-        [ "$cfg_pre_rotated_videos" = true ] || \
-            video_filter_args='-vf hflip,vflip'
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" \
             VC_SCREENSHOT_FILE="$screenshot_file" VC_MEDIA_KIND=video \
@@ -1700,8 +1620,7 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -autoexit -framedrop $video_filter_args \
-                -i "$video" $seek_args \
+            "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" $seek_args \
             2> "$duration_log" &
     fi
     pid=$!
@@ -1736,7 +1655,7 @@ play_video() {
     fi
     rm -f "$runtime_pos" "$duration_file" "$duration_log" \
         "$brightness_state" "$player_pid" \
-        /tmp/stay_awake /tmp/kidsmode_media_active
+        /tmp/stay_awake
     rm -f /mnt/SDCARD/App/FFplay/pos.cfg "$sysdir/pos.cfg"
     restore_ffplay_state
     check_off_order "End_Save"
@@ -1757,8 +1676,6 @@ cmd_run() {
         return 1
     fi
     chmod a+x "$kidui_bin" 2> /dev/null
-    chmod a+x "$kids_keymon_bin" 2> /dev/null
-    restart_keymon
 
     startup_started_at="$(date +%s)"
     prepare_game_environment_async
@@ -1828,7 +1745,7 @@ cmd_run() {
 
         # Defensive cleanup: nothing may divert the loop into GameSwitcher
         rm -f "$sysdir/.runGameSwitcher" 2> /dev/null
-        pgrep keymon > /dev/null 2>&1 || restart_keymon
+        pgrep keymon > /dev/null 2>&1 || keymon &
 
         # No PIN on file (armed, but the app folder was replaced and no
         # snapshot existed): the unlock gesture sets a NEW pin instead of
@@ -1863,11 +1780,6 @@ cmd_run() {
             --show-series "$show_series_value" \
             --show-music "$show_music_value" \
             --show-cartoons "$show_cartoons_value"
-        # A real POWER sleep must suspend kidui with the other foreground
-        # processes. /tmp/stay_awake is reserved for FFplay playback only;
-        # leaving it here would turn POWER into a display-only sleep and let
-        # the carousel immediately repaint the screen.
-        rm -f /tmp/stay_awake
         if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
             "$kidui_bin" "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         elif [ "$no_pin_recovery" = "1" ]; then
@@ -2068,7 +1980,6 @@ cmd_run() {
     restore_blf_lock
     restore_profile_isolation
     restore_keymap_override
-    restart_keymon
     rm -f "$game_environment_marker"
     rm -f "$sysdir/cmd_to_run.sh"
     bootScreen clear 2> /dev/null
