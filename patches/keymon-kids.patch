@@ -1,0 +1,50 @@
+diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
+index 64f22a18..c01d0ba2 100644
+--- a/src/keymon/keymon.c
++++ b/src/keymon/keymon.c
+@@ -338,6 +338,11 @@ void suspend_exec(int timeout)
+         // resume playActivity
+         system("playActivity resume");
+     }
++    if (temp_flag_get("kidsmode_carousel_active")) {
++        // Tell the launcher that a real Onion suspend/resume cycle ended so
++        // its independent idle timer starts again from a fully lit screen.
++        temp_flag_set("kidsmode_carousel_resume", true);
++    }
+ 
+     keyinput_enable();
+ }
+@@ -353,6 +358,23 @@ void turnOffScreen(void)
+     }
+ }
+ 
++static bool wakeKidsModeCarouselIfDimmed(void)
++{
++    if (!temp_flag_get("kidsmode_carousel_dimmed"))
++        return false;
++
++    // keymon is the sole owner of POWER. When Kids Mode has only dimmed or
++    // blanked its carousel, the first short press restores the screen and is
++    // consumed here. A second short press sees no marker and follows Onion's
++    // normal suspend path below.
++    system_powersave_off();
++    display_on();
++    display_setBrightness(settings.brightness);
++    temp_flag_set("kidsmode_carousel_dimmed", false);
++    temp_flag_set("kidsmode_carousel_wake", true);
++    return true;
++}
++
+ /**
+  * @brief Adjusts the CPU clock speed based on the given adjustment value and triggers an OSD message
+  *
+@@ -565,6 +587,9 @@ int main(void)
+                         if (comboKey_menu) {
+                             takeScreenshot();
+                         }
++                        else if (wakeKidsModeCarouselIfDimmed()) {
++                            // First short POWER press only wakes the carousel.
++                        }
+                         else {
+                             if (settings.disable_standby) {
+                                 deepsleep();

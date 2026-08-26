@@ -14,10 +14,8 @@
 # Mode flag: /mnt/SDCARD/.kidmode  (present = armed; delete it from a
 # computer to force-disable Kids Mode)
 #
-# HARDENING NOTE: while armed, a determined kid can still force-shutdown
-# with a long power press (keymon handles power directly). To harden, patch
-# src/keymon/keymon.c to ignore/limit power events while /mnt/SDCARD/.kidmode
-# exists. This optional system modification is not included.
+# Kids Mode runs its own reversible keymon build while armed. Onion's original
+# binary is never overwritten and is relaunched as soon as Kids Mode exits.
 # ---------------------------------------------------------------------------
 
 sysdir=/mnt/SDCARD/.tmp_update
@@ -25,6 +23,8 @@ miyoodir=/mnt/SDCARD/miyoo
 appdir=/mnt/SDCARD/App/KidsMode
 
 kidui_bin="$appdir/bin/kidui"
+kids_keymon_bin="$appdir/bin/keymon"
+onion_keymon_bin="$sysdir/bin/keymon"
 configfile="$appdir/kidmode.json"
 flagfile=/mnt/SDCARD/.kidmode
 favfile=/mnt/SDCARD/Roms/favourite.json
@@ -715,6 +715,25 @@ restore_profile_isolation() {
 # expose the parent's recent games. keymon reads keymap.json at startup, so
 # it is restarted after the change. Original keymap restored on unlock.
 
+restart_keymon() {
+    killall keymon 2> /dev/null
+    if [ -f "$flagfile" ] && [ -x "$kids_keymon_bin" ]; then
+        "$kids_keymon_bin" &
+        log "Started Kids Mode keymon."
+    else
+        rm -f /tmp/kidsmode_carousel_active \
+            /tmp/kidsmode_carousel_dimmed \
+            /tmp/kidsmode_carousel_wake \
+            /tmp/kidsmode_carousel_resume
+        if [ -x "$onion_keymon_bin" ]; then
+            "$onion_keymon_bin" &
+        else
+            keymon &
+        fi
+        log "Restored Onion keymon."
+    fi
+}
+
 apply_keymap_override() {
     mkdir -p "$backupdir"
     if [ -f "$keymapcfg" ]; then
@@ -729,8 +748,7 @@ apply_keymap_override() {
         touch "$keymapnone"
         printf '{\n    "ingame_single_press": 2\n}\n' > "$keymapcfg"
     fi
-    killall keymon 2> /dev/null
-    keymon &
+    restart_keymon
     log "MENU button set to exit-to-launcher while armed."
 }
 
@@ -746,8 +764,6 @@ restore_keymap_override() {
     fi
     if [ "$keymap_restored" = "1" ]; then
         sync
-        killall keymon 2> /dev/null
-        keymon &
         log "keymap.json restored."
     fi
 }
@@ -1439,6 +1455,7 @@ disarm() {
     restore_blf_lock
     restore_profile_isolation
     restore_keymap_override
+    restart_keymon
     rm -f "$game_environment_marker"
     ensure_fav_shortcut
     rm -f "$sysdir/cmd_to_run.sh" "$uiresult"
@@ -1733,6 +1750,8 @@ cmd_run() {
         return 1
     fi
     chmod a+x "$kidui_bin" 2> /dev/null
+    chmod a+x "$kids_keymon_bin" 2> /dev/null
+    restart_keymon
 
     startup_started_at="$(date +%s)"
     prepare_game_environment_async
@@ -1802,7 +1821,7 @@ cmd_run() {
 
         # Defensive cleanup: nothing may divert the loop into GameSwitcher
         rm -f "$sysdir/.runGameSwitcher" 2> /dev/null
-        pgrep keymon > /dev/null 2>&1 || keymon &
+        pgrep keymon > /dev/null 2>&1 || restart_keymon
 
         # No PIN on file (armed, but the app folder was replaced and no
         # snapshot existed): the unlock gesture sets a NEW pin instead of
@@ -1837,12 +1856,10 @@ cmd_run() {
             --show-series "$show_series_value" \
             --show-music "$show_music_value" \
             --show-cartoons "$show_cartoons_value"
-        # Do not create /tmp/stay_awake for the carousel. Unlike audio
-        # playback, kidui has nothing that must continue during a real POWER
-        # sleep; letting Onion suspend it avoids two independent handlers
-        # reacting to the same wake gesture. Media playback still creates its
-        # own stay_awake marker in play_video().
-        rm -f /tmp/stay_awake
+        # Use the same proven POWER-sleep path as media playback: keymon keeps
+        # kidui alive while it owns display off/on, and videoui parks its idle
+        # timer while the system screen is off.
+        touch /tmp/stay_awake
         if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
             "$kidui_bin" "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         elif [ "$no_pin_recovery" = "1" ]; then
@@ -1855,6 +1872,7 @@ cmd_run() {
             "$kidui_bin" "$@" > "$uilog" 2>&1
         fi
         ui_rc=$?
+        rm -f /tmp/stay_awake
         pin_notice=""
 
         # Folder navigation now stays inside kidui instead of relaunching it.
@@ -2043,6 +2061,7 @@ cmd_run() {
     restore_blf_lock
     restore_profile_isolation
     restore_keymap_override
+    restart_keymon
     rm -f "$game_environment_marker"
     rm -f "$sysdir/cmd_to_run.sh"
     bootScreen clear 2> /dev/null
