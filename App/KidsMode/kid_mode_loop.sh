@@ -1856,10 +1856,11 @@ cmd_run() {
             --show-series "$show_series_value" \
             --show-music "$show_music_value" \
             --show-cartoons "$show_cartoons_value"
-        # Use the same proven POWER-sleep path as media playback: keymon keeps
-        # kidui alive while it owns display off/on, and videoui parks its idle
-        # timer while the system screen is off.
-        touch /tmp/stay_awake
+        # A real POWER sleep must suspend kidui with the other foreground
+        # processes. /tmp/stay_awake is reserved for FFplay playback only;
+        # leaving it here would turn POWER into a display-only sleep and let
+        # the carousel immediately repaint the screen.
+        rm -f /tmp/stay_awake
         if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
             "$kidui_bin" "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         elif [ "$no_pin_recovery" = "1" ]; then
@@ -1872,7 +1873,6 @@ cmd_run() {
             "$kidui_bin" "$@" > "$uilog" 2>&1
         fi
         ui_rc=$?
-        rm -f /tmp/stay_awake
         pin_notice=""
 
         # Folder navigation now stays inside kidui instead of relaunching it.
