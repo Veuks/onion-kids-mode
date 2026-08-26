@@ -30,16 +30,12 @@ jobs:
         shell: bash
         run: |
           source /root/.bashrc
-          git -C onion apply "$GITHUB_WORKSPACE/patches/keymon-kids.patch"
-          make -C onion/src/keymon \
-            BUILD_DIR="$GITHUB_WORKSPACE/App/KidsMode/bin"
           cp -r src/kidsMode onion/src/
           cd onion/src/kidsMode
           make
-          file kidui libvcinput.so "$GITHUB_WORKSPACE/App/KidsMode/bin/keymon"
+          file kidui libvcinput.so
           cp kidui libvcinput.so "$GITHUB_WORKSPACE/App/KidsMode/bin/"
           chmod +x "$GITHUB_WORKSPACE/App/KidsMode/bin/kidui" \
-            "$GITHUB_WORKSPACE/App/KidsMode/bin/keymon" \
             "$GITHUB_WORKSPACE/App/KidsMode/"*.sh
       - name: Upload complete artifact
         uses: actions/upload-artifact@v4
