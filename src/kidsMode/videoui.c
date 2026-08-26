@@ -162,6 +162,7 @@ static KeyState keystate[320] = {(KeyState)0};
 
 static uint32_t carousel_last_activity;
 static uint32_t carousel_last_backlight_check;
+static uint32_t carousel_last_loop_tick;
 static int carousel_backlight_stage;
 static long carousel_saved_brightness = -1;
 static bool carousel_external_backlight_off;
@@ -258,6 +259,21 @@ static void stopCarouselDimmer(void)
     releaseCarouselWakeInput();
     carousel_external_backlight_off = false;
     carousel_was_active = false;
+}
+
+static void resetCarouselAfterSystemResume(uint32_t ticks)
+{
+    // A real Onion sleep suspends kidui, so the next SDL tick can jump by many
+    // seconds. Never count that suspended time as carousel inactivity.
+    releaseCarouselWakeInput();
+    carousel_backlight_stage = 0;
+    long current = readCarouselBacklight();
+    carousel_external_backlight_off = current == 0;
+    if (current > 0)
+        carousel_saved_brightness = current;
+    carousel_last_activity = ticks;
+    carousel_last_backlight_check = ticks;
+    dirty = true;
 }
 
 static void pollCarouselWakeInput(uint32_t ticks)
@@ -3347,10 +3363,26 @@ int main(int argc, char *argv[])
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
 
+        // SDL_GetTicks advances across the system sleep on this platform.
+        // Detect the long pause before running the dimmer, otherwise a wake
+        // after more than 15 seconds looks like expired carousel idle time and
+        // switches the freshly restored screen straight back off.
+        if (carousel_last_loop_tick != 0 &&
+            ticks - carousel_last_loop_tick >= 1000)
+            resetCarouselAfterSystemResume(ticks);
+        carousel_last_loop_tick = ticks;
+
         // While the screen is fully off, raw input is reserved until the
         // complete wake gesture has been consumed, exactly like libvcinput.
         pollCarouselWakeInput(ticks);
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
+
+        // Depending on the SDL/input timing, only POWER release may remain in
+        // the queue after resume. Either edge is enough to start a fresh idle
+        // period; the event itself is still left to Onion.
+        if (key_changed && changed_key == SW_BTN_POWER &&
+            active_screen == SCREEN_CAROUSEL)
+            carousel_last_activity = ticks;
 
         // During the dimmed stage SDL still receives buttons. The first press
         // restores the screen and is deliberately not passed to the carousel.
