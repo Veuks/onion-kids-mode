@@ -3255,7 +3255,10 @@ int main(int argc, char *argv[])
             dirty = true;
         if (key_changed && keystate[changed_key] == PRESSED) {
             pin_last_input = ticks;
-            if (carousel_screen && changed_key != SW_BTN_POWER)
+            // POWER remains owned by keymon, but it still counts as activity.
+            // This prevents the 5-second dim stage from starting between the
+            // POWER press and release just before Onion suspends the device.
+            if (carousel_screen)
                 carousel_last_activity = ticks;
 
             if (active_screen == SCREEN_CAROUSEL && games_count > 0) {
