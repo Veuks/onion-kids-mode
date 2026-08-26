@@ -1,8 +1,21 @@
 diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
-index 64f22a18..8f4658a4 100644
+index 64f22a18..fae33b45 100644
 --- a/src/keymon/keymon.c
 +++ b/src/keymon/keymon.c
-@@ -333,6 +333,12 @@ void suspend_exec(int timeout)
+@@ -276,6 +276,12 @@ void suspend_exec(int timeout)
+     }
+     rumble(0);
+     display_setBrightnessRaw(0);
++    if (temp_flag_get("kidsmode_carousel_active")) {
++        // kidui renders through the framebuffer. Give the backlight time to
++        // become fully dark before display_off() saves and clears that buffer,
++        // otherwise the clear can be visible as a one-frame flash.
++        msleep(100);
++    }
+     display_off();
+     system_powersave_on();
+ 
+@@ -333,6 +339,12 @@ void suspend_exec(int timeout)
      display_setBrightness(settings.brightness);
      setVolume(settings.mute ? 0 : settings.volume);
      if (!killexit) {
@@ -15,7 +28,7 @@ index 64f22a18..8f4658a4 100644
          // resume processes
          resume();
          // resume playActivity
-@@ -353,6 +359,19 @@ void turnOffScreen(void)
+@@ -353,6 +365,19 @@ void turnOffScreen(void)
      }
  }
  
@@ -35,7 +48,7 @@ index 64f22a18..8f4658a4 100644
  /**
   * @brief Adjusts the CPU clock speed based on the given adjustment value and triggers an OSD message
   *
-@@ -467,6 +486,7 @@ int main(void)
+@@ -467,6 +492,7 @@ int main(void)
      bool b_BTN_Not_Menu_Pressed = false;
      bool b_BTN_Menu_Pressed = false;
      bool power_pressed = false;
@@ -43,7 +56,7 @@ index 64f22a18..8f4658a4 100644
      bool volUp_state = false;
      bool volUp_active = false;
      bool volDown_state = false;
-@@ -545,8 +565,11 @@ int main(void)
+@@ -545,8 +571,11 @@ int main(void)
  
              switch (ev.code) {
              case HW_BTN_POWER:
@@ -56,7 +69,7 @@ index 64f22a18..8f4658a4 100644
                  if (!comboKey_menu && val == REPEAT) {
                      repeat_power++;
                      if (repeat_power == 7) {
-@@ -565,6 +588,10 @@ int main(void)
+@@ -565,6 +594,10 @@ int main(void)
                          if (comboKey_menu) {
                              takeScreenshot();
                          }
@@ -67,7 +80,7 @@ index 64f22a18..8f4658a4 100644
                          else {
                              if (settings.disable_standby) {
                                  deepsleep();
-@@ -575,6 +602,7 @@ int main(void)
+@@ -575,6 +608,7 @@ int main(void)
                          }
                      }
                      power_pressed = false;
