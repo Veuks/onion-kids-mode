@@ -1,145 +1,8 @@
 diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
-index 64f22a18..75e9b449 100644
+index 64f22a18..c2eabc79 100644
 --- a/src/keymon/keymon.c
 +++ b/src/keymon/keymon.c
-@@ -4,6 +4,7 @@
- #include <fcntl.h>
- #include <poll.h>
- #include <signal.h>
-+#include <stdarg.h>
- #include <stdint.h>
- #include <stdlib.h>
- #include <sys/mman.h>
-@@ -53,6 +54,25 @@
- 
- uint32_t suspendpid[PIDMAX];
- 
-+#define KIDSMODE_KEYMON_LOG \
-+    "/mnt/SDCARD/.tmp_update/logs/kidsmode-keymon.log"
-+
-+static void kidsmodeLog(const char *format, ...)
-+{
-+    if (access("/mnt/SDCARD/.kidmode", F_OK) != 0)
-+        return;
-+    FILE *fp = fopen(KIDSMODE_KEYMON_LOG, "a");
-+    if (fp == NULL)
-+        return;
-+    fprintf(fp, "%ld keymon=%d ", (long)time(NULL), getpid());
-+    va_list args;
-+    va_start(args, format);
-+    vfprintf(fp, format, args);
-+    va_end(args);
-+    fputc('\n', fp);
-+    fclose(fp);
-+}
-+
- const int KONAMI_CODE[] = {HW_BTN_UP, HW_BTN_UP, HW_BTN_DOWN, HW_BTN_DOWN,
-                            HW_BTN_LEFT, HW_BTN_RIGHT, HW_BTN_LEFT, HW_BTN_RIGHT,
-                            HW_BTN_B, HW_BTN_A};
-@@ -255,13 +275,58 @@ void deepsleep(void)
-     }
- }
- 
-+static pid_t signalProcessByName(const char *name, int signal_number)
-+{
-+    DIR *proc = opendir("/proc");
-+    if (proc == NULL)
-+        return -1;
-+
-+    char expected[132];
-+    snprintf(expected, sizeof(expected), "(%s)", name);
-+    struct dirent *entry;
-+    pid_t matched_pid = -1;
-+    while ((entry = readdir(proc)) != NULL) {
-+        if (entry->d_type != DT_DIR)
-+            continue;
-+        pid_t pid = atoi(entry->d_name);
-+        if (pid <= 2 || pid == getpid())
-+            continue;
-+        char stat_path[64];
-+        snprintf(stat_path, sizeof(stat_path), "/proc/%d/stat", pid);
-+        FILE *fp = fopen(stat_path, "r");
-+        if (fp == NULL)
-+            continue;
-+        char comm[128] = "";
-+        int fields = fscanf(fp, "%*d %127s", comm);
-+        fclose(fp);
-+        if (fields == 1 && strcmp(comm, expected) == 0 &&
-+            kill(pid, signal_number) == 0) {
-+            matched_pid = pid;
-+            break;
-+        }
-+    }
-+    closedir(proc);
-+    kidsmodeLog("signal target=%s signal=%d matched_pid=%d result=%s", name,
-+                signal_number, matched_pid,
-+                matched_pid > 2 ? "ok" : "not-found");
-+    return matched_pid;
-+}
-+
- //
- //    Suspend interface
- //
- void suspend_exec(int timeout)
- {
-+    pid_t kidsmode_carousel_pid = -1;
-+    pid_t kidsmode_media_pid = -1;
-     keyinput_disable();
- 
-+    kidsmodeLog("suspend begin stay_awake=%d carousel=%d dimmed=%d media=%d",
-+                temp_flag_get("stay_awake"),
-+                temp_flag_get("kidsmode_carousel_active"),
-+                temp_flag_get("kidsmode_carousel_dimmed"),
-+                temp_flag_get("kidsmode_media_active"));
-+
-     // pause playActivity
-     system("playActivity stop_all");
- 
-@@ -270,8 +335,23 @@ void suspend_exec(int timeout)
-         timeout = -1; // no timeout
-     }
-     else {
-+        if (temp_flag_get("kidsmode_carousel_active")) {
-+            // Onion's generic suspend list is capped at PIDMAX entries. Stop
-+            // kidui explicitly so repeated sleeps cannot leave the carousel
-+            // running merely because its PID fell beyond that list.
-+            kidsmode_carousel_pid = signalProcessByName("kidui", SIGSTOP);
-+        }
-+        if (temp_flag_get("kidsmode_media_active")) {
-+            // FFplay is deliberately stopped outside the generic PID list as
-+            // well. POWER then pauses video and audio even when the process
-+            // table contains more than PIDMAX eligible entries.
-+            kidsmode_media_pid = signalProcessByName("ffplay", SIGSTOP);
-+        }
-         // suspend processes
--        suspend(0);
-+        int generic_suspended = suspend(0);
-+        kidsmodeLog("suspend stopped carousel_pid=%d media_pid=%d generic=%d",
-+                    kidsmode_carousel_pid, kidsmode_media_pid,
-+                    generic_suspended);
-         setVolume(0);
-     }
-     rumble(0);
-@@ -290,8 +370,10 @@ void suspend_exec(int timeout)
-             if ((ev.type != EV_KEY) || (ev.value > REPEAT))
-                 continue;
-             if (ev.code == HW_BTN_POWER) {
--                if (ev.value == RELEASED)
-+                if (ev.value == RELEASED) {
-+                    kidsmodeLog("suspend wake event=POWER_RELEASE");
-                     break;
-+                }
-                 else if (ev.value == PRESSED)
-                     repeat_power = 0;
-                 else if (ev.value == REPEAT) {
-@@ -335,9 +417,21 @@ void suspend_exec(int timeout)
-     if (!killexit) {
-         // resume processes
-         resume();
-+        if (kidsmode_carousel_pid > 2)
-+            kill(kidsmode_carousel_pid, SIGCONT);
-+        if (kidsmode_media_pid > 2)
-+            kill(kidsmode_media_pid, SIGCONT);
+@@ -338,6 +338,11 @@ void suspend_exec(int timeout)
          // resume playActivity
          system("playActivity resume");
      }
@@ -148,21 +11,15 @@ index 64f22a18..75e9b449 100644
 +        // its independent idle timer starts again from a fully lit screen.
 +        temp_flag_set("kidsmode_carousel_resume", true);
 +    }
-+
-+    kidsmodeLog("suspend end killexit=%u carousel_pid=%d media_pid=%d",
-+                killexit, kidsmode_carousel_pid, kidsmode_media_pid);
  
      keyinput_enable();
  }
-@@ -353,6 +447,24 @@ void turnOffScreen(void)
+@@ -353,6 +358,19 @@ void turnOffScreen(void)
      }
  }
  
-+static bool wakeKidsModeCarouselIfDimmed(void)
++static void wakeKidsModeCarousel(void)
 +{
-+    if (!temp_flag_get("kidsmode_carousel_dimmed"))
-+        return false;
-+
 +    // keymon is the sole owner of POWER. When Kids Mode has only dimmed or
 +    // blanked its carousel, the first short press restores the screen and is
 +    // consumed here. A second short press sees no marker and follows Onion's
@@ -172,50 +29,48 @@ index 64f22a18..75e9b449 100644
 +    display_setBrightness(settings.brightness);
 +    temp_flag_set("kidsmode_carousel_dimmed", false);
 +    temp_flag_set("kidsmode_carousel_wake", true);
-+    kidsmodeLog("POWER consumed as carousel backlight wake");
-+    return true;
 +}
 +
  /**
   * @brief Adjusts the CPU clock speed based on the given adjustment value and triggers an OSD message
   *
-@@ -434,6 +546,7 @@ int main(void)
-     signal(SIGSEGV, quit);
-     signal(SIGUSR1, signal_refresh);
-     log_setName("keymon");
-+    kidsmodeLog("START patched keymon");
- 
-     getDeviceModel();
- 
-@@ -545,8 +658,13 @@ int main(void)
+@@ -467,6 +485,7 @@ int main(void)
+     bool b_BTN_Not_Menu_Pressed = false;
+     bool b_BTN_Menu_Pressed = false;
+     bool power_pressed = false;
++    bool carousel_dimmed_at_power_press = false;
+     bool volUp_state = false;
+     bool volUp_active = false;
+     bool volDown_state = false;
+@@ -545,8 +564,11 @@ int main(void)
  
              switch (ev.code) {
              case HW_BTN_POWER:
 -                if (val == PRESSED)
 +                if (val == PRESSED) {
                      power_pressed = true;
-+                    kidsmodeLog("POWER pressed carousel=%d dimmed=%d media=%d",
-+                                temp_flag_get("kidsmode_carousel_active"),
-+                                temp_flag_get("kidsmode_carousel_dimmed"),
-+                                temp_flag_get("kidsmode_media_active"));
++                    carousel_dimmed_at_power_press =
++                        temp_flag_get("kidsmode_carousel_dimmed");
 +                }
                  if (!comboKey_menu && val == REPEAT) {
                      repeat_power++;
                      if (repeat_power == 7) {
-@@ -560,11 +678,16 @@ int main(void)
-                     break;
-                 }
-                 if (val == RELEASED) {
-+                    kidsmodeLog("POWER released armed=%d repeats=%u combo=%d",
-+                                power_pressed, repeat_power, comboKey_menu);
-                     // suspend
-                     if (power_pressed && repeat_power < 7) {
+@@ -565,6 +587,10 @@ int main(void)
                          if (comboKey_menu) {
                              takeScreenshot();
                          }
-+                        else if (wakeKidsModeCarouselIfDimmed()) {
++                        else if (carousel_dimmed_at_power_press) {
 +                            // First short POWER press only wakes the carousel.
++                            wakeKidsModeCarousel();
 +                        }
                          else {
                              if (settings.disable_standby) {
                                  deepsleep();
+@@ -575,6 +601,7 @@ int main(void)
+                         }
+                     }
+                     power_pressed = false;
++                    carousel_dimmed_at_power_press = false;
+                 }
+                 repeat_power = 0;
+                 break;
