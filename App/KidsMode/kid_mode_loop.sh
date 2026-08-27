@@ -1627,18 +1627,40 @@ play_video() {
     # theme. Fall back to Onion's standard Exo 2 face when a theme omits it.
     osd_font="/customer/app/Exo-2-Bold-Italic.ttf"
     osd_font_size=24
+    battery_fixed=false
+    battery_text_align=left
+    battery_offset_x=0
+    battery_offset_y=0
     theme_path="$(jq -r '.theme // empty' /mnt/SDCARD/system.json \
         2> /dev/null)"
+    if [ ! -d "$theme_path" ] &&
+       [ -r /mnt/SDCARD/Saves/CurrentProfile/theme/currentTheme ]; then
+        IFS= read -r theme_path < \
+            /mnt/SDCARD/Saves/CurrentProfile/theme/currentTheme
+    fi
     [ "$theme_path" = "./" ] && theme_path="/mnt/SDCARD/miyoo/app/"
     [ -d "$theme_path" ] || theme_path="/mnt/SDCARD/miyoo/app/"
     theme_config="${theme_path%/}/config.json"
     if [ -r "$theme_config" ]; then
-        theme_font="$(jq -r \
-            '.batteryPercentage.font // .hint.font // empty' \
-            "$theme_config" 2> /dev/null)"
-        theme_font_size="$(jq -r \
-            '.batteryPercentage.size // 24' "$theme_config" \
-            2> /dev/null)"
+        profile_theme_config=/mnt/SDCARD/Saves/CurrentProfile/theme/config.json
+        if [ -r "$profile_theme_config" ]; then
+            effective_theme="$(jq -s '.[0] * .[1]' "$theme_config" \
+                "$profile_theme_config" 2> /dev/null)"
+        else
+            effective_theme="$(jq -c '.' "$theme_config" 2> /dev/null)"
+        fi
+        theme_font="$(printf '%s' "$effective_theme" | jq -r \
+            '.batteryPercentage.font // .hint.font // empty' 2> /dev/null)"
+        theme_font_size="$(printf '%s' "$effective_theme" | jq -r \
+            '.batteryPercentage.size // 24' 2> /dev/null)"
+        battery_fixed="$(printf '%s' "$effective_theme" | jq -r \
+            '.batteryPercentage.fixed // false' 2> /dev/null)"
+        battery_text_align="$(printf '%s' "$effective_theme" | jq -r \
+            '.batteryPercentage.textAlign // "left"' 2> /dev/null)"
+        battery_offset_x="$(printf '%s' "$effective_theme" | jq -r \
+            '.batteryPercentage.offsetX // 0' 2> /dev/null)"
+        battery_offset_y="$(printf '%s' "$effective_theme" | jq -r \
+            '.batteryPercentage.offsetY // 0' 2> /dev/null)"
         if [ -n "$theme_font" ]; then
             case "$theme_font" in
                 /*) candidate_font="$theme_font" ;;
@@ -1673,6 +1695,10 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             VC_OSD_FONT="$osd_font" VC_OSD_FONT_SIZE="$osd_font_size" \
+            VC_BATTERY_FIXED="$battery_fixed" \
+            VC_BATTERY_TEXT_ALIGN="$battery_text_align" \
+            VC_BATTERY_OFFSET_X="$battery_offset_x" \
+            VC_BATTERY_OFFSET_Y="$battery_offset_y" \
             VC_THEME_PATH="$theme_path" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
             "$ffplay" -vn -autoexit -i "$video" $seek_args \
@@ -1686,6 +1712,10 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             VC_OSD_FONT="$osd_font" VC_OSD_FONT_SIZE="$osd_font_size" \
+            VC_BATTERY_FIXED="$battery_fixed" \
+            VC_BATTERY_TEXT_ALIGN="$battery_text_align" \
+            VC_BATTERY_OFFSET_X="$battery_offset_x" \
+            VC_BATTERY_OFFSET_Y="$battery_offset_y" \
             VC_THEME_PATH="$theme_path" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
             "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" $seek_args \
