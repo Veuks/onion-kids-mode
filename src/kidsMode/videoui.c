@@ -109,10 +109,9 @@ typedef enum { SCREEN_CAROUSEL,
 
 #define MENU_UNLOCK 0
 #define MENU_ADDTIME 1
-#define MENU_NOTIMER 2
-#define MENU_LOCKFLOOR 3
-#define MENU_CATEGORIES 4
-#define MENU_SWITCHPROFILE 5
+#define MENU_LOCKFLOOR 2
+#define MENU_CATEGORIES 3
+#define MENU_SWITCHPROFILE 4
 #define CATEGORY_MOVIES 0
 #define CATEGORY_MUSIC 1
 #define CATEGORY_CARTOONS 2
@@ -2869,7 +2868,10 @@ static void renderTimesUp(void)
 static void formatAddMinutes(void *self, char *out_label)
 {
     ListItem *item = (ListItem *)self;
-    sprintf(out_label, "+%d min", item->value * TIMER_STEP);
+    if (item->value == 0)
+        sprintf(out_label, "OFF");
+    else
+        sprintf(out_label, "+%d min", item->value * TIMER_STEP);
 }
 
 static void onLockFloorToggle(void *self)
@@ -2927,23 +2929,24 @@ static void renderMenu(List *list, int remaining)
     theme_renderList(screen, list);
 
     // Status line: current remaining time, and — while the add-time row is
-    // selected — what it becomes when applied. Same font as the menu rows,
-    // tucked bottom-right above the footer.
+    // selected — what it becomes when applied. Five menu rows leave the last
+    // native list row free for this information above the footer.
     char info[STR_MAX] = "";
     int rem_min = remaining >= 0 ? (remaining + 59) / 60 : -1;
     if (list->active_pos == MENU_ADDTIME) {
         int add_min = list->items[MENU_ADDTIME].value * TIMER_STEP;
-        if (rem_min >= 0)
+        if (add_min == 0 && rem_min >= 0)
+            snprintf(info, sizeof(info),
+                     "Time left: %d min (no limit after)", rem_min);
+        else if (add_min == 0)
+            snprintf(info, sizeof(info), "No timer set");
+        else if (rem_min >= 0)
             snprintf(info, sizeof(info),
                      "Time left: %d min (%d min after adding)", rem_min,
                      rem_min + add_min);
         else
             snprintf(info, sizeof(info), "No timer (%d min after adding)",
                      add_min);
-    }
-    else if (list->active_pos == MENU_NOTIMER && rem_min >= 0) {
-        snprintf(info, sizeof(info), "Time left: %d min (no limit after)",
-                 rem_min);
     }
     else {
         if (rem_min >= 0)
@@ -3300,20 +3303,16 @@ int main(int argc, char *argv[])
     int remaining = -1;
 
     // Parent menu list (native Onion list component)
-    List menu_list = list_create(6, LIST_SMALL);
+    List menu_list = list_create(5, LIST_SMALL);
     list_addItem(&menu_list,
                  (ListItem){.label = "Exit Kids Mode",
                             .item_type = ACTION});
     list_addItem(&menu_list, (ListItem){.label = "Add play time",
                                         .item_type = MULTIVALUE,
-                                        .value_min = 1,
+                                        .value_min = 0,
                                         .value_max = TIMER_MAX / TIMER_STEP,
                                         .value = 1,
                                         .value_formatter = formatAddMinutes});
-    // Faded and skipped while no timer is running — nothing to turn off
-    list_addItem(&menu_list, (ListItem){.label = "Turn off timer",
-                                        .item_type = ACTION,
-                                        .disabled = menu_remaining < 0});
     // Use separate fixed strings rather than a conditional label inside the
     // initializer: this is safer with Onion's copied ListItem representation
     // and the shorter wording leaves ample room for the toggle on every theme.
@@ -3643,16 +3642,17 @@ int main(int argc, char *argv[])
                         quit = true;
                     }
                     else if (menu_list.active_pos == MENU_ADDTIME) {
-                        char minutes_str[16];
-                        snprintf(minutes_str, sizeof(minutes_str), "%d",
-                                 menu_list.items[MENU_ADDTIME].value *
-                                     TIMER_STEP);
-                        writeResult("MENU", "ADDTIME", minutes_str);
-                        exit_code = 5;
-                        quit = true;
-                    }
-                    else if (menu_list.active_pos == MENU_NOTIMER) {
-                        writeResult("MENU", "NOTIMER", NULL);
+                        int add_minutes =
+                            menu_list.items[MENU_ADDTIME].value * TIMER_STEP;
+                        if (add_minutes == 0) {
+                            writeResult("MENU", "NOTIMER", NULL);
+                        }
+                        else {
+                            char minutes_str[16];
+                            snprintf(minutes_str, sizeof(minutes_str), "%d",
+                                     add_minutes);
+                            writeResult("MENU", "ADDTIME", minutes_str);
+                        }
                         exit_code = 5;
                         quit = true;
                     }

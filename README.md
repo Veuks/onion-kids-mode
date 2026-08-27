@@ -295,11 +295,15 @@ Hold SELECT + START for about three seconds, enter the four-digit PIN, then
 choose:
 
 - **Exit Kids Mode** — restore Onion and return to its normal interface.
-- **Add play time** — add 5 to 120 minutes to the current session.
-- **Turn off timer** — continue without a time limit.
+- **Add play time** — select `OFF` to remove the time limit, or add 5 to 120
+  minutes to the current session.
 - **Games only / Videos only** — lock the section currently being viewed. The
   vertical navigation arrow disappears while the lock is enabled.
-- **Back** — return to the child interface.
+- **Media folders** — choose which root media categories are visible.
+- **Switch to Main/Guest profile** — safely load the other Onion profile's
+  Kids Mode environment when it is available.
+
+Press B to return from either parent-menu screen.
 
 ## Timer and resume behavior
 
