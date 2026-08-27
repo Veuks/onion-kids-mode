@@ -123,6 +123,8 @@ static int scaled_battery_target_width;
 #define MEDIA_PLAYING_FLAG "/tmp/kidsmode_media_playing"
 #define MIYOO_SCANCODE_VOLUMEDOWN 114
 #define MIYOO_SCANCODE_VOLUMEUP 115
+#define MIYOO_DISPLAY_WIDTH 640
+#define MIYOO_DISPLAY_HEIGHT 480
 
 static void update_screen(SDL_Surface *surface, Sint32 x, Sint32 y,
                           Uint32 width, Uint32 height)
@@ -868,22 +870,54 @@ static void yuv_logical_rect(SDL_Overlay *overlay, int x, int y, int w,
              yy, uu, vv);
 }
 
+// FFplay's YUV surface can be 320, 640, 1280 or 1920 pixels wide, and its
+// destination rectangle can be smaller than the 640x480 framebuffer. Convert
+// display-pixel measurements back into YUV pixels so the OSD has one stable
+// on-screen size instead of changing with every video's encoded resolution.
+static int yuv_from_screen_x(SDL_Overlay *overlay, int pixels)
+{
+    int destination_width = last_overlay_rect_ready && last_overlay_rect.w > 0
+                                ? last_overlay_rect.w
+                                : MIYOO_DISPLAY_WIDTH;
+    int result = pixels * overlay->w / destination_width;
+    return result < 1 ? 1 : result;
+}
+
+static int yuv_from_screen_y(SDL_Overlay *overlay, int pixels)
+{
+    int destination_height = last_overlay_rect_ready && last_overlay_rect.h > 0
+                                 ? last_overlay_rect.h
+                                 : MIYOO_DISPLAY_HEIGHT;
+    int result = pixels * overlay->h / destination_height;
+    return result < 1 ? 1 : result;
+}
+
+static int yuv_osd_font_size(SDL_Overlay *overlay)
+{
+    int display_size = osd_size_for_width(MIYOO_DISPLAY_WIDTH, 100);
+    return yuv_from_screen_x(overlay, display_size);
+}
+
 static void yuv_battery_peek(SDL_Overlay *overlay)
 {
     if (!battery_peek_visible())
         return;
-    SDL_Surface *icon = battery_icon_for_width(overlay->w);
+    int icon_reference_width =
+        yuv_from_screen_x(overlay, MIYOO_DISPLAY_WIDTH);
+    SDL_Surface *icon = battery_icon_for_width(icon_reference_width);
     char text[8];
     snprintf(text, sizeof(text), "%d%%", battery_percentage);
     SDL_Surface *label = osd_text(&battery_text_cache, text,
-                                  osd_size_for_width(overlay->w, 100));
+                                  yuv_osd_font_size(overlay));
     if (icon == NULL && label == NULL)
         return;
-    int spacer = icon != NULL && label != NULL ? 5 * overlay->w / 640 : 0;
+    int spacer = icon != NULL && label != NULL
+                     ? yuv_from_screen_x(overlay, 5)
+                     : 0;
     int total_w = (icon != NULL ? icon->w : 0) + spacer +
                   (label != NULL ? label->w : 0);
-    int right_edge = overlay->w * 620 / 640;
-    int center_y = overlay->w * 30 / 640;
+    int right_edge = overlay->w - yuv_from_screen_x(overlay, 20);
+    int center_y = yuv_from_screen_y(overlay, 30);
     int x = right_edge - total_w;
     if (icon != NULL) {
         yuv_blit_osd_text(overlay, icon, x, center_y - icon->h / 2);
@@ -909,9 +943,6 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
 {
     if (!player_overlay_visible())
         return;
-    int scale = overlay->w / 320;
-    if (scale < 1)
-        scale = 1;
     Uint32 now = SDL_GetTicks();
     bool controls_visible = duration_seconds > 0 &&
         (paused || progress_waiting_for_video || now < progress_until ||
@@ -927,7 +958,7 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
     format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
     format_time(duration_seconds - elapsed, true, remaining_text,
                 sizeof(remaining_text));
-    int font_size = osd_size_for_width(overlay->w, 100);
+    int font_size = yuv_osd_font_size(overlay);
     SDL_Surface *elapsed_label = osd_text(&elapsed_text_cache, elapsed_text,
                                           font_size);
     SDL_Surface *remaining_label = osd_text(&remaining_text_cache,
@@ -937,13 +968,14 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
     int label_h = elapsed_label->h > remaining_label->h
                       ? elapsed_label->h
                       : remaining_label->h;
-    int bar_y = overlay->h - 14 * scale;
+    int bar_y = overlay->h - yuv_from_screen_y(overlay, 28);
     int logical_y = bar_y - label_h / 2;
-    int margin = 8 * scale;
+    int margin = yuv_from_screen_x(overlay, 16);
+    int label_gap = yuv_from_screen_x(overlay, 16);
     int elapsed_width = elapsed_label->w;
     int remaining_width = remaining_label->w;
-    int bar_x = margin + elapsed_width + 8 * scale;
-    int bar_right = overlay->w - margin - remaining_width - 8 * scale;
+    int bar_x = margin + elapsed_width + label_gap;
+    int bar_right = overlay->w - margin - remaining_width - label_gap;
     int bar_w = bar_right - bar_x;
     if (bar_w < overlay->w / 4) {
         bar_x = overlay->w / 4;
@@ -958,20 +990,24 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
                      122, 193, 160);
     int knob_x = bar_x +
         (int)((long long)bar_w * elapsed / duration_seconds);
-    yuv_progress_knob(overlay, knob_x, bar_y, scale < 3 ? 3 : scale + 1);
+    yuv_progress_knob(overlay, knob_x, bar_y,
+                      yuv_from_screen_x(overlay, 5));
 
     if (seek_notice[0] != '\0' && SDL_GetTicks() < seek_notice_until) {
         SDL_Surface *notice = osd_text(
             &seek_text_cache, seek_notice,
-            osd_size_for_width(overlay->w, 115));
+            yuv_from_screen_x(
+                overlay,
+                osd_size_for_width(MIYOO_DISPLAY_WIDTH, 115)));
         int width = notice != NULL ? notice->w : 0;
         int logical_x = seek_notice_forward
-                            ? overlay->w - width - 9 * scale
-                            : 9 * scale;
+                            ? overlay->w - width -
+                                  yuv_from_screen_x(overlay, 18)
+                            : yuv_from_screen_x(overlay, 18);
         // Match the framebuffer path used while paused. Its physical offset
         // is 35 base-scale pixels from the panel edge; account for the glyph
         // height when expressing that same point in logical coordinates.
-        int logical_y = overlay->h - 35 * scale -
+        int logical_y = overlay->h - yuv_from_screen_y(overlay, 70) -
                         (notice != NULL ? notice->h : 0);
         yuv_blit_osd_text(overlay, notice, logical_x, logical_y);
     }
@@ -1291,16 +1327,39 @@ static SDL_Surface *battery_icon_for_width(int target_width)
         0x000000ff, 0xff000000);
     if (scaled_battery_icon == NULL)
         return source;
-    SDL_FillRect(scaled_battery_icon, NULL,
-                 SDL_MapRGBA(scaled_battery_icon->format, 0, 0, 0, 0));
-    SDL_SetAlpha(source, 0, 255);
-    if (SDL_SoftStretch(source, NULL, scaled_battery_icon, NULL) != 0) {
+
+    // SDL_SoftStretch on the Miyoo SDL 1.2 build does not reliably preserve
+    // per-pixel alpha and can turn the transparent charging-icon canvas into
+    // a large white rectangle. Scale the already-rotated 32-bit pixels
+    // directly so their RGBA values remain untouched.
+    bool source_locked = SDL_MUSTLOCK(source);
+    bool target_locked = SDL_MUSTLOCK(scaled_battery_icon);
+    if (source_locked && SDL_LockSurface(source) != 0) {
         SDL_FreeSurface(scaled_battery_icon);
         scaled_battery_icon = NULL;
-        SDL_SetAlpha(source, SDL_SRCALPHA, 255);
         return source;
     }
-    SDL_SetAlpha(source, SDL_SRCALPHA, 255);
+    if (target_locked && SDL_LockSurface(scaled_battery_icon) != 0) {
+        if (source_locked)
+            SDL_UnlockSurface(source);
+        SDL_FreeSurface(scaled_battery_icon);
+        scaled_battery_icon = NULL;
+        return source;
+    }
+    for (int y = 0; y < height; y++) {
+        int source_y = y * source->h / height;
+        Uint32 *source_row = (Uint32 *)((Uint8 *)source->pixels +
+                                        source_y * source->pitch);
+        Uint32 *target_row =
+            (Uint32 *)((Uint8 *)scaled_battery_icon->pixels +
+                       y * scaled_battery_icon->pitch);
+        for (int x = 0; x < width; x++)
+            target_row[x] = source_row[x * source->w / width];
+    }
+    if (target_locked)
+        SDL_UnlockSurface(scaled_battery_icon);
+    if (source_locked)
+        SDL_UnlockSurface(source);
     SDL_SetAlpha(scaled_battery_icon, SDL_SRCALPHA, 255);
     return scaled_battery_icon;
 }
