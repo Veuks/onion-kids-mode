@@ -958,7 +958,7 @@ static void yuv_battery_peek(SDL_Overlay *overlay)
     const char *font_path = getenv("VC_OSD_FONT");
     if (font_path != NULL && strstr(font_path, "Exo-2") != NULL)
         label_offset_y -=
-            (int)(0.075 * osd_size_for_width(MIYOO_DISPLAY_WIDTH, 100));
+            (int)(0.15 * osd_size_for_width(MIYOO_DISPLAY_WIDTH, 100));
     int scaled_offset_y = label_offset_y == 0
                               ? 0
                               : yuv_from_screen_y(overlay,
@@ -1026,7 +1026,7 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
                       : remaining_label->h;
     int bar_y = overlay->h - yuv_from_screen_y(overlay, 28);
     int logical_y = bar_y - label_h / 2 -
-                    yuv_from_screen_y(overlay, 4);
+                    yuv_from_screen_y(overlay, 6);
     int margin = yuv_from_screen_x(overlay, 16);
     int label_gap = yuv_from_screen_x(overlay, 16);
     int elapsed_width = elapsed_label->w;
@@ -1059,7 +1059,7 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
             &seek_text_cache, seek_notice,
             yuv_from_screen_x(
                 overlay,
-                osd_size_for_width(MIYOO_DISPLAY_WIDTH, 115)));
+                osd_size_for_width(MIYOO_DISPLAY_WIDTH, 100)));
         int width = notice != NULL ? notice->w : 0;
         int logical_x = seek_notice_forward
                             ? overlay->w - width -
@@ -1197,7 +1197,7 @@ static void draw_battery_peek(SDL_Surface *surface)
     const char *font_path = getenv("VC_OSD_FONT");
     if (font_path != NULL && strstr(font_path, "Exo-2") != NULL)
         label_offset_y -=
-            (int)(0.075 * osd_size_for_width(surface->w, 100));
+            (int)(0.15 * osd_size_for_width(surface->w, 100));
     label_offset_y = label_offset_y * surface->w / 640;
     if (icon != NULL) {
         blit_osd_text(surface, icon, icon_x, center_y - icon->h / 2);
@@ -1752,7 +1752,7 @@ static void draw_progress_bar(SDL_Surface *surface)
     if (base_scale < 1)
         base_scale = 1;
     int bar_y = surface->h - 14 * base_scale;
-    int logical_y = bar_y - label_h / 2 - 4 * base_scale / 2;
+    int logical_y = bar_y - label_h / 2 - 3 * base_scale;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
     Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
 
@@ -1843,7 +1843,7 @@ static void draw_audio_progress_only(void)
     if (base_scale < 1)
         base_scale = 1;
     int bar_y = surface->h - 14 * base_scale;
-    int logical_y = bar_y - label_h / 2 - 4 * base_scale / 2;
+    int logical_y = bar_y - label_h / 2 - 3 * base_scale;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
     Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
 
@@ -1919,7 +1919,7 @@ static void draw_seek_notice(void)
         return;
     SDL_Surface *notice = osd_text(
         &seek_text_cache, seek_notice,
-        osd_size_for_width(surface->w, 115));
+        osd_size_for_width(surface->w, 100));
     if (notice == NULL)
         return;
     int width = notice->w;
