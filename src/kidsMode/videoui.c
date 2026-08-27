@@ -85,8 +85,8 @@
 #define REMAINING_POLL_MS 2000
 #define SELECTION_WRITE_DELAY_MS 300
 #define TIMESUP_OFF_MS (5 * 60 * 1000)
-#define CAROUSEL_DIM_DELAY_MS 5000
-#define CAROUSEL_OFF_DELAY_MS 15000
+#define CAROUSEL_DIM_DELAY_MS 15000
+#define CAROUSEL_OFF_DELAY_MS 30000
 #define CAROUSEL_DIM_RAW 3
 #define CAROUSEL_DIMMED_FLAG "/tmp/kidsmode_carousel_dimmed"
 #define REMAINING_FILE "/tmp/kidsmode_remaining"

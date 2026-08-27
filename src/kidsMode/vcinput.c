@@ -57,6 +57,8 @@ static bool key_repeat_enabled;
 static char seek_notice[8];
 static bool seek_notice_forward;
 static Uint32 seek_notice_until;
+static bool battery_peek_down;
+static int battery_percentage;
 static bool player_config_ready;
 static bool audio_mode;
 static const char *artwork_file;
@@ -93,8 +95,8 @@ static Uint32 last_clock_update;
 static Uint8 *yuv_backup[3];
 static size_t yuv_backup_capacity[3];
 
-#define AUDIO_DIM_DELAY 5000
-#define AUDIO_OFF_DELAY 15000
+#define AUDIO_DIM_DELAY 15000
+#define AUDIO_OFF_DELAY 30000
 #define AUDIO_DIM_RAW 3
 #define MEDIA_DIMMED_FLAG "/tmp/kidsmode_media_dimmed"
 #define MEDIA_PLAYING_FLAG "/tmp/kidsmode_media_playing"
@@ -111,14 +113,31 @@ static void update_screen(SDL_Surface *surface, Sint32 x, Sint32 y,
 }
 
 static void update_clock(void);
+static long read_number_file(const char *path);
 static void draw_player_overlay(void);
 static void draw_audio_progress_only(void);
 static void draw_seek_notice(void);
+static void draw_battery_peek(SDL_Surface *surface);
 static void restore_video_overlay(SDL_Overlay *overlay);
 static int text_width(const char *text, int scale);
 static void format_time(long seconds, bool remaining, char *out,
                         size_t out_size);
 static bool player_overlay_visible(void);
+
+static int read_battery_percentage(void)
+{
+    long value = read_number_file("/tmp/percBat");
+    if (value < 0)
+        value = 0;
+    if (value > 100)
+        value = 100;
+    return (int)value;
+}
+
+static bool battery_peek_visible(void)
+{
+    return battery_peek_down;
+}
 
 static void mark_playback_started(void)
 {
@@ -635,6 +654,7 @@ static const unsigned char *glyph_rows(char c)
     static const unsigned char dot[7] = {0,0,0,0,0,4,4};
     static const unsigned char apostrophe[7] = {4,4,2,0,0,0,0};
     static const unsigned char question[7] = {14,17,1,2,4,0,4};
+    static const unsigned char percent[7] = {17,2,4,8,17,0,0};
     if (c == 's')
         return ess;
     if (c == 'm')
@@ -660,6 +680,7 @@ static const unsigned char *glyph_rows(char c)
     case '.': return dot;
     case '\'': return apostrophe;
     case '?': return question;
+    case '%': return percent;
     default: return NULL;
     }
 }
@@ -758,6 +779,17 @@ static void yuv_logical_rect(SDL_Overlay *overlay, int x, int y, int w,
              yy, uu, vv);
 }
 
+static void yuv_battery_peek(SDL_Overlay *overlay, int scale)
+{
+    if (!battery_peek_visible())
+        return;
+    char text[8];
+    snprintf(text, sizeof(text), "%d%%", battery_percentage);
+    int width = text_width(text, scale);
+    yuv_rotated_text(overlay, text, overlay->w - 8 * scale - width,
+                     8 * scale, scale);
+}
+
 static void yuv_progress_knob(SDL_Overlay *overlay, int logical_x,
                               int logical_y, int radius)
 {
@@ -772,11 +804,15 @@ static void yuv_progress_knob(SDL_Overlay *overlay, int logical_x,
 
 static void paint_video_yuv_overlay(SDL_Overlay *overlay)
 {
-    if (duration_seconds <= 0 || !player_overlay_visible())
+    if (!player_overlay_visible())
         return;
     int scale = overlay->w / 320;
     if (scale < 1)
         scale = 1;
+    if (duration_seconds <= 0) {
+        yuv_battery_peek(overlay, scale);
+        return;
+    }
     long elapsed = position_seconds;
     if (elapsed < 0) elapsed = 0;
     if (elapsed > duration_seconds) elapsed = duration_seconds;
@@ -821,6 +857,7 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
         yuv_rotated_text(overlay, seek_notice, logical_x,
                          logical_y, notice_scale);
     }
+    yuv_battery_peek(overlay, scale);
 }
 
 static bool backup_and_paint_video_overlay(SDL_Overlay *overlay)
@@ -910,6 +947,20 @@ static void draw_rotated_text(SDL_Surface *surface, const char *text,
         draw_glyph(surface, text[length - 1 - i],
                    physical_x + i * 6 * scale, physical_y, scale, black,
                    color);
+}
+
+static void draw_battery_peek(SDL_Surface *surface)
+{
+    if (surface == NULL || !battery_peek_visible())
+        return;
+    int scale = surface->w >= 600 ? 2 : 1;
+    char text[8];
+    snprintf(text, sizeof(text), "%d%%", battery_percentage);
+    int width = text_width(text, scale);
+    Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
+    Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
+    draw_rotated_text(surface, text, surface->w - 16 - width, 16, scale,
+                      black, white);
 }
 
 static void make_audio_title(char *out, size_t out_size, int max_chars)
@@ -1361,6 +1412,7 @@ static void paint_player_overlay(SDL_Surface *surface)
     draw_audio_background(surface);
     draw_progress_bar(surface);
     draw_seek_notice();
+    draw_battery_peek(surface);
 }
 
 static bool player_overlay_visible(void)
@@ -1368,6 +1420,8 @@ static bool player_overlay_visible(void)
     Uint32 now = SDL_GetTicks();
     if (backlight_stage == 2)
         return false;
+    if (battery_peek_visible())
+        return true;
     if (audio_mode)
         return true;
     if (progress_waiting_for_video)
@@ -1619,6 +1673,34 @@ static bool map_event(SDL_Event *event)
         }
         if (progressive_seek(event, now))
             return false;
+        return true;
+    }
+
+    if (in == SDLK_LALT && !menu_down) { /* Miyoo Y: battery */
+        if (state == SDL_PRESSED && !battery_peek_down) {
+            battery_peek_down = true;
+            battery_percentage = read_battery_percentage();
+            if (audio_mode || paused) {
+                overlay_force_redraw = true;
+                draw_player_overlay();
+            }
+        }
+        else if (state == SDL_RELEASED && battery_peek_down) {
+            battery_peek_down = false;
+            if (audio_mode) {
+                overlay_force_redraw = true;
+                draw_player_overlay();
+            }
+            else if (paused && last_overlay != NULL &&
+                     last_overlay_rect_ready && real_overlay != NULL) {
+                if (last_overlay_painted) {
+                    restore_video_overlay(last_overlay);
+                    last_overlay_painted = false;
+                }
+                real_overlay(last_overlay, &last_overlay_rect);
+                draw_player_overlay();
+            }
+        }
         return true;
     }
 
