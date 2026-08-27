@@ -17,6 +17,7 @@
 //   exit 5:  "MENU" \n "UNLOCK"
 //            "MENU" \n "ADDTIME" \n <minutes>   (inline add-time selector)
 //            "MENU" \n "NOTIMER"                (turn the play timer off)
+//            "MENU" \n "SWITCHPROFILE" \n Main|Guest
 //            "TIMER" \n <minutes>               (--pick-timer mode)
 //   exit 7:  "POWEROFF"  (Time's up screen sat idle for 5 minutes)
 //   exit 1:  canceled / error / nothing selected (result file removed)
@@ -111,13 +112,12 @@ typedef enum { SCREEN_CAROUSEL,
 #define MENU_NOTIMER 2
 #define MENU_LOCKFLOOR 3
 #define MENU_CATEGORIES 4
-#define MENU_BACK 5
+#define MENU_SWITCHPROFILE 5
 #define CATEGORY_MOVIES 0
 #define CATEGORY_MUSIC 1
 #define CATEGORY_CARTOONS 2
 #define CATEGORY_SERIES 3
 #define CATEGORY_STORIES 4
-#define CATEGORY_BACK 5
 #define LOCKFLOOR_RESULT_FILE "/tmp/kidsmode_lockfloor_result"
 #define CATEGORIES_RESULT_FILE "/tmp/kidsmode_categories_result"
 #define FLOOR_STATE_FILE "/tmp/kidsmode_floor"
@@ -3225,6 +3225,7 @@ int main(int argc, char *argv[])
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
     int menu_lock_floor = 0;
+    char menu_switch_profile[16] = "";
     char pin_title[STR_MAX] = "";
     char select_rompath[STR_MAX] = "";
 
@@ -3247,6 +3248,9 @@ int main(int argc, char *argv[])
             menu_remaining = atoi(argv[++i]);
         else if (strcmp(argv[i], "--lock-floor") == 0 && i + 1 < argc)
             menu_lock_floor = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--switch-profile") == 0 && i + 1 < argc)
+            strncpy(menu_switch_profile, argv[++i],
+                    sizeof(menu_switch_profile) - 1);
         else if (strcmp(argv[i], "--show-stories") == 0 && i + 1 < argc)
             show_stories = atoi(argv[++i]) != 0;
         else if (strcmp(argv[i], "--show-movies") == 0 && i + 1 < argc)
@@ -3328,10 +3332,22 @@ int main(int argc, char *argv[])
     list_addItem(&menu_list,
                  (ListItem){.label = "Media folders",
                             .item_type = ACTION});
+    char switch_profile_label[64];
+    if (strcmp(menu_switch_profile, "Main") == 0)
+        snprintf(switch_profile_label, sizeof(switch_profile_label),
+                 "Switch to Main profile");
+    else if (strcmp(menu_switch_profile, "Guest") == 0)
+        snprintf(switch_profile_label, sizeof(switch_profile_label),
+                 "Switch to Guest profile");
+    else
+        snprintf(switch_profile_label, sizeof(switch_profile_label),
+                 "Profile switch unavailable");
     list_addItem(&menu_list,
-                 (ListItem){.label = "Back", .item_type = ACTION});
+                 (ListItem){.label = switch_profile_label,
+                            .item_type = ACTION,
+                            .disabled = menu_switch_profile[0] == '\0'});
 
-    List category_list = list_create(6, LIST_SMALL);
+    List category_list = list_create(5, LIST_SMALL);
     list_addItem(&category_list,
                  (ListItem){.label = "Movies",
                             .item_type = TOGGLE,
@@ -3357,8 +3373,6 @@ int main(int argc, char *argv[])
                             .item_type = TOGGLE,
                             .value = show_stories ? 1 : 0,
                             .action = onStoriesToggle});
-    list_addItem(&category_list,
-                 (ListItem){.label = "Back", .item_type = ACTION});
 
     if (set_pin_mode) {
         active_screen = SCREEN_PIN;
@@ -3650,8 +3664,11 @@ int main(int argc, char *argv[])
                         active_screen = SCREEN_CATEGORIES;
                         dirty = true;
                     }
-                    else if (menu_list.active_pos == MENU_BACK) {
-                        exit_code = 1;
+                    else if (menu_list.active_pos == MENU_SWITCHPROFILE &&
+                             menu_switch_profile[0] != '\0') {
+                        writeResult("MENU", "SWITCHPROFILE",
+                                    menu_switch_profile);
+                        exit_code = 5;
                         quit = true;
                     }
                     break;
@@ -3683,14 +3700,8 @@ int main(int argc, char *argv[])
                     break;
                 case SW_BTN_A:
                 case SW_BTN_START:
-                    if (category_list.active_pos == CATEGORY_BACK) {
-                        active_screen = SCREEN_MENU;
-                        dirty = true;
-                    }
-                    else {
-                        list_activateItem(&category_list);
-                        dirty = true;
-                    }
+                    list_activateItem(&category_list);
+                    dirty = true;
                     break;
                 case SW_BTN_B:
                     active_screen = SCREEN_MENU;

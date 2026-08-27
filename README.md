@@ -38,6 +38,9 @@ sections use the active Onion theme and slide smoothly between each other.
 - Fully separate Main and Guest kid environments. Each has its own game saves,
   media library, playback positions, carousel selections and artwork cache.
 - The same parent PIN and session timer are shared by both environments.
+- The PIN-protected parent menu can switch directly between Main and Guest
+  without leaving Kids Mode. This option appears only when the other Onion
+  profile is available.
 
 ## Requirements
 
@@ -77,6 +80,12 @@ parent menu.
 The environment is chosen automatically from the Onion profile used to launch
 Kids Mode. PIN and timer state are shared under `Saves/KidsMode`; profile-bound
 state is stored under `Saves/KidsMode/Main` or `Saves/KidsMode/Guest`.
+
+After entering the PIN, the parent menu displays **Switch to Main profile** or
+**Switch to Guest profile** when the other Onion profile exists. Switching
+stores the current child's saves and carousel state, loads the other profile's
+favorites, media, saves and state, and returns directly to Kids Mode. The
+active timer continues unchanged.
 
 ### Clean installation and manual file move
 
@@ -260,7 +269,7 @@ rewinding and at the bottom-right when moving forward.
 
 Audio playback shows the selected file's artwork, or the nearest inherited
 folder artwork, with a thin progress line and elapsed/remaining time. After
-10 seconds without input the display changes to minimum brightness; five
+15 seconds without input the display changes to minimum brightness; 15
 seconds later the backlight turns off while playback and the timer continue.
 Press A, B, X, Y, a direction, START, SELECT, MENU, POWER or either volume
 button to restore the display. That first press is consumed: it only wakes the

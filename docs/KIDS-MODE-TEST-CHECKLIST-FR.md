@@ -13,7 +13,7 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - GAUCHE/DROITE parcourt la section affichée.
 - HAUT passe des jeux aux vidéos et BAS revient aux jeux.
 - La flèche du bas reste au-dessus des commandes PLAY et RESTART.
-- Les dossiers `Movies`, `Series`, `Music` et `Stories` apparaissent s'ils
+- Les dossiers `Movies`, `Music`, `Cartoons`, `Series` et `Stories` apparaissent s'ils
   contiennent un média directement ou dans un sous-dossier.
 - A ouvre plusieurs niveaux de dossiers et B remonte exactement d'un niveau.
 - Chaque niveau retrouve sa dernière sélection après un aller-retour et après
@@ -35,15 +35,15 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - Avec une image de série ou d'épisode, le nom de l'épisode reste sous l'image.
 - Le verrou **Games only / Videos only** masque la flèche verticale.
 - A reprend et X redémarre après confirmation.
-- En pause, MENU + X crée `Imgs/Nom de la vidéo.bmp`. Une seconde capture
+- En pause, MENU + X + Y crée `Imgs/Nom de la vidéo.bmp`. Une seconde capture
   remplace ce fichier et le BMP apparaît dans le carrousel à l'endroit.
-- MENU + X pendant la lecture ne crée aucune capture. Supprimer le BMP
+- MENU + X + Y pendant la lecture ne crée aucune capture. Supprimer le BMP
   restaure l'affiche PNG/JPG ou l'image héritée du dossier.
 - Les fichiers MP3, M4A, AAC, FLAC, OGG, OPUS, WAV et WMA apparaissent et se
   lancent comme les vidéos.
 - Pendant un fichier audio, la pochette correcte est affichée avec une ligne
   de progression, le temps écoulé à gauche et le temps restant à droite.
-- Après 10 secondes sans action, la luminosité passe au minimum. Cinq secondes
+- Après 15 secondes sans action, la luminosité passe au minimum. Quinze secondes
   plus tard, le rétroéclairage s'éteint sans interrompre le son ni le timer.
 - Un premier appui sur A, B ou MENU rallume uniquement l'écran, sans reprendre,
   mettre en pause ni quitter le lecteur.
@@ -52,5 +52,10 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - Une extinction pendant un jeu ou une vidéo reprend le contenu.
 - Une extinction depuis le carrousel restaure seulement la sélection.
 - Le timer est partagé entre les jeux et les vidéos.
+- Depuis le menu parent du profil Main, **Switch to Guest profile** charge les
+  favoris, médias, positions et sauvegardes Kids du profil Guest sans quitter
+  Kids Mode. La bascule inverse restaure exactement l'environnement Main.
+- Répéter Main → Guest → Main après avoir sauvegardé un jeu dans chaque profil :
+  les deux sauvegardes doivent rester distinctes et le timer ne doit pas repartir.
 - À zéro, **Time's up!** et **See you next time** sont affichés.
 - SELECT + START pendant trois secondes ouvre le menu parent.

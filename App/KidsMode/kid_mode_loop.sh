@@ -1277,12 +1277,144 @@ pick_session_timer() {
 
     set_timer_minutes "$picked"
     state_write 0 0 # fresh budget for this session
-    update_remaining_now
+update_remaining_now
+}
+
+# -------------------------- Onion profile switch ---------------------------
+# Run only after the parent PIN has been accepted. Kids Mode first puts the
+# current child's saves back in KidsProfile/<origin>, restores the Onion
+# profile that was parked at arm time, then performs the same whole-profile
+# directory swap as Onion's official Guest Mode app. The script is relaunched
+# afterwards so every profile-specific path and cached preference is rebuilt
+# from the new origin.
+switch_kids_profile() {
+    target_profile="$1"
+    [ "$target_profile" != "$source_profile" ] || return 0
+
+    case "$source_profile:$target_profile" in
+        Main:Guest)
+            incoming_profile=/mnt/SDCARD/Saves/GuestProfile
+            parked_profile=/mnt/SDCARD/Saves/MainProfile
+            guest_config=configON.json
+            ;;
+        Guest:Main)
+            incoming_profile=/mnt/SDCARD/Saves/MainProfile
+            parked_profile=/mnt/SDCARD/Saves/GuestProfile
+            guest_config=configOFF.json
+            ;;
+        *)
+            log "Rejected invalid profile switch: $source_profile -> $target_profile"
+            return 1
+            ;;
+    esac
+
+    if [ ! -d "$incoming_profile" ] || [ -e "$parked_profile" ]; then
+        log "Profile switch unavailable: $source_profile -> $target_profile"
+        infoPanel -t "Kids Mode" -m "The requested Onion profile is unavailable." --auto
+        return 1
+    fi
+
+    log "Switching Kids Mode profile: $source_profile -> $target_profile"
+    wait_for_game_environment
+    stop_ticker
+
+    # Save the current Kids environment, then restore the current Onion
+    # profile completely before asking Onion's profile folders to trade places.
+    restore_profile_isolation
+    rm -f "$game_environment_marker" "$game_prepare_pid_file"
+
+    mkdir -p "$current_profile/lists"
+    for onion_list in /mnt/SDCARD/Roms/*.json; do
+        [ -f "$onion_list" ] || continue
+        cp -f "$onion_list" "$current_profile/lists/" || {
+            log "Profile switch aborted: could not save Onion lists."
+            apply_profile_isolation
+            start_ticker
+            return 1
+        }
+    done
+
+    system_json=/mnt/SDCARD/system.json
+    current_theme_file="$current_profile/theme/currentTheme"
+    if [ -f "$system_json" ] && command -v jq > /dev/null 2>&1; then
+        mkdir -p "$current_profile/theme"
+        jq -r '.theme // empty' "$system_json" > "$current_theme_file.tmp" 2> /dev/null &&
+            mv -f "$current_theme_file.tmp" "$current_theme_file"
+        rm -f "$current_theme_file.tmp"
+    fi
+    sync
+
+    # The second rename can still fail on a damaged/full card. Roll the first
+    # one back immediately so CurrentProfile is never left missing.
+    if ! mv "$current_profile" "$parked_profile"; then
+        log "Profile switch aborted: could not park CurrentProfile."
+        apply_profile_isolation
+        start_ticker
+        return 1
+    fi
+    if ! mv "$incoming_profile" "$current_profile"; then
+        mv "$parked_profile" "$current_profile" 2> /dev/null
+        log "Profile switch rolled back: could not activate $target_profile."
+        apply_profile_isolation
+        start_ticker
+        return 1
+    fi
+
+    # Make the new origin authoritative immediately after the directory swap.
+    # If the marker cannot be committed, put both Onion profiles back exactly
+    # where they were rather than continuing with ambiguous ownership.
+    if ! printf '%s\n' "$target_profile" > "$source_profile_file.tmp" ||
+        ! mv -f "$source_profile_file.tmp" "$source_profile_file"; then
+        rm -f "$source_profile_file.tmp"
+        mv "$current_profile" "$incoming_profile" 2> /dev/null
+        mv "$parked_profile" "$current_profile" 2> /dev/null
+        log "Profile switch rolled back: could not save the active profile."
+        apply_profile_isolation
+        start_ticker
+        return 1
+    fi
+
+    # Replace the global favorites/recent JSON files with the newly active
+    # Onion profile's copies. This intentionally mirrors Guest Mode itself.
+    rm -f /mnt/SDCARD/Roms/*.json
+    for onion_list in "$current_profile"/lists/*.json; do
+        [ -f "$onion_list" ] || continue
+        cp -f "$onion_list" /mnt/SDCARD/Roms/
+    done
+
+    current_theme_file="$current_profile/theme/currentTheme"
+    if [ -s "$current_theme_file" ] && [ -f "$system_json" ] &&
+        command -v jq > /dev/null 2>&1; then
+        theme_tmp=/tmp/kidsmode_system_theme.$$
+        if jq --arg theme "$(sed -n 1p "$current_theme_file")" \
+            '.theme = $theme' "$system_json" > "$theme_tmp" 2> /dev/null; then
+            mv -f "$theme_tmp" "$system_json"
+        else
+            rm -f "$theme_tmp"
+        fi
+    fi
+
+    # Keep Onion's Guest Mode app icon/label accurate for the day Kids Mode is
+    # eventually unlocked. Older Onion layouts simply skip this optional step.
+    guest_app=/mnt/SDCARD/App/Guest_Mode
+    if [ -f "$guest_app/data/$guest_config" ]; then
+        cp -f "$guest_app/data/$guest_config" "$guest_app/config.json"
+    fi
+    command -v themeSwitcher > /dev/null 2>&1 && themeSwitcher --reapply_icons
+
+    rm -f /tmp/kidsmode_floor /tmp/kidsmode_selection \
+        /tmp/kidsmode_game_selection /tmp/kidsmode_video_selection \
+        /tmp/kidsmode_folder /tmp/kidsmode_folder_history
+    sync
+    log "Kids Mode profile switched to $target_profile."
+
+    # Re-exec rather than mutating dozens of cached profile paths in place.
+    exec /bin/sh "$appdir/kid_mode_loop.sh" run
 }
 
 # ------------------------------ parent menu --------------------------------
-# Shown after a correct PIN: exit Kids Mode or add play time. "Add play
-# time" is an inline value selector on the menu row itself (LEFT/RIGHT to
+# Shown after a correct PIN: exit Kids Mode, switch Main/Guest or add play
+# time. "Add play time" is an inline value selector on the menu row (LEFT/RIGHT to
 # pick 5-120 min, A/START to apply) — kidui reports the chosen minutes on
 # line 3 of the result. Returns 0 = unlock requested, 1 = stay in Kids Mode.
 
@@ -1293,10 +1425,19 @@ parent_menu() {
         [ "$cfg_lock_current_floor" = "true" ] && lock_val=1
         refresh_category_values
         [ "$active_floor" = videos ] && menu_floor=VIDEOS || menu_floor=GAMES
+        switch_profile_arg=""
+        if [ "$source_profile" = Main ] &&
+            [ -d /mnt/SDCARD/Saves/GuestProfile ]; then
+            switch_profile_arg=Guest
+        elif [ "$source_profile" = Guest ] &&
+            [ -d /mnt/SDCARD/Saves/MainProfile ]; then
+            switch_profile_arg=Main
+        fi
         "$kidui_bin" --parent-menu \
             --remaining "$(timer_remaining)" \
             --floor "$menu_floor" \
             --lock-floor "$lock_val" \
+            --switch-profile "$switch_profile_arg" \
             --show-stories "$show_stories_value" \
             --show-movies "$show_movies_value" \
             --show-series "$show_series_value" \
@@ -1399,6 +1540,13 @@ parent_menu() {
                         # Straight back to the kid so they can play (the menu
                         # already previewed the new remaining time)
                         return 1
+                        ;;
+                esac
+                ;;
+            SWITCHPROFILE)
+                case "$menu_arg" in
+                    Main | Guest)
+                        switch_kids_profile "$menu_arg"
                         ;;
                 esac
                 ;;
