@@ -2409,52 +2409,93 @@ static int batteryPercentageFast(void)
 static bool carousel_battery_charging;
 static int carousel_battery_percentage;
 
-// Onion deliberately hides the percentage when theme_batterySurface() is
-// called with its special charging value (500). Kids Mode keeps the charging
-// icon, but also renders the live percentage beside it with the active
-// theme's battery font and color.
-static void renderChargingBattery(void)
+// This is Onion's normal battery-surface layout with one deliberate change:
+// BATTERY_CHARGING is used for the icon without hiding the percentage. Keeping
+// the composition inside one transparent surface makes charging pixel-for-
+// pixel identical to the normal gauge and avoids direct-TTF white rectangles.
+static SDL_Surface *chargingBatterySurface(int percentage)
 {
     SDL_Surface *icon = resource_getSurface(BATTERY_CHARGING);
     TTF_Font *font = resource_getFont(BATTERY);
-    SDL_Surface *text = NULL;
+    BatteryPercentage_s *style = &theme()->batteryPercentage;
+    if (icon == NULL || font == NULL)
+        return NULL;
 
-    int pct = carousel_battery_percentage;
+    int offset_y = style->offsetY;
+    const char *family = TTF_FontFaceFamilyName(font);
+    if (family != NULL && strncmp(family, "Exo 2", 5) == 0)
+        offset_y -= (int)(0.075 * TTF_FontHeight(font));
 
-    if (font != NULL) {
-        char buffer[8];
-        snprintf(buffer, sizeof(buffer), "%d%%", pct);
-        text = TTF_RenderUTF8_Blended(font, buffer,
-                                     theme()->batteryPercentage.color);
-        if (text != NULL)
-            SDL_SetAlpha(text, 0, SDL_ALPHA_TRANSPARENT);
+    char buffer[8];
+    snprintf(buffer, sizeof(buffer), "%d%%", percentage);
+    SDL_Surface *text =
+        TTF_RenderUTF8_Blended(font, buffer, style->color);
+    if (text == NULL)
+        return NULL;
+    SDL_SetAlpha(text, 0, SDL_ALPHA_TRANSPARENT);
+
+    bool visible = style->visible && icon->w <= 640;
+    const int spacer = 5;
+    int image_width = 2 * (text->w + spacer) + icon->w;
+    int image_height = text->h > icon->h ? text->h : icon->w;
+    if (!visible) {
+        image_width = icon->w;
+        image_height = icon->h;
     }
-
-    if (icon == NULL && text == NULL)
-        return;
-
-    int spacer = icon != NULL && text != NULL ? (int)(5.0 * g_scale) : 0;
-    int total_w = (icon != NULL ? icon->w : 0) + spacer +
-                  (text != NULL ? text->w : 0);
-    int center_x = (int)(596.0 * g_scale);
-    int center_y = (int)(30.0 * g_scale);
-    int x = center_x - total_w / 2;
-
-    if (icon != NULL) {
-        SDL_Rect pos = {x, center_y - icon->h / 2};
-        SDL_BlitSurface(icon, NULL, screen, &pos);
-        x += icon->w + spacer;
+    else if (style->fixed || style->textAlign == CENTER) {
+        image_width = icon->w > text->w ? icon->w : text->w;
     }
+    if (image_width % 2 != 0)
+        image_width++;
+    if (image_height % 2 != 0)
+        image_height++;
+    if (image_width < 48)
+        image_width = 48;
+    if (image_height < 48)
+        image_height = 48;
 
-    if (text != NULL) {
-        int offset_y = theme()->batteryPercentage.offsetY;
-        const char *family = TTF_FontFaceFamilyName(font);
-        if (family != NULL && strncmp(family, "Exo 2", 5) == 0)
-            offset_y -= (int)(0.075 * TTF_FontHeight(font));
-        SDL_Rect pos = {x, center_y - text->h / 2 + offset_y};
-        SDL_BlitSurface(text, NULL, screen, &pos);
+    SDL_Surface *image = SDL_CreateRGBSurface(
+        0, image_width, image_height, 32, 0x00ff0000, 0x0000ff00,
+        0x000000ff, 0xff000000);
+    if (image == NULL) {
         SDL_FreeSurface(text);
+        return NULL;
     }
+    SDL_FillRect(image, NULL, SDL_MapRGBA(image->format, 0, 0, 0, 0));
+
+    SDL_Rect icon_pos = {0, (image_height - icon->h) / 2};
+    SDL_Rect text_pos = {0, (image_height - text->h) / 2 + offset_y};
+    if (visible) {
+        if (style->fixed) {
+            if (style->textAlign == RIGHT)
+                text_pos.x = icon->w - text->w + style->offsetX;
+            else if (style->textAlign == CENTER)
+                text_pos.x = (icon->w - text->w) / 2 + style->offsetX;
+            else
+                text_pos.x = style->offsetX;
+        }
+        else if (style->textAlign == RIGHT) {
+            icon_pos.x = text->w + spacer;
+            text_pos.x = style->offsetX;
+        }
+        else if (style->textAlign == CENTER) {
+            text_pos.x = (icon->w - text->w) / 2 + style->offsetX;
+        }
+        else {
+            text_pos.x = icon->w + spacer + style->offsetX;
+        }
+    }
+
+    SDL_Surface *converted_icon = SDL_ConvertSurface(icon, image->format, 0);
+    if (converted_icon != NULL) {
+        SDL_SetAlpha(converted_icon, 0, SDL_ALPHA_TRANSPARENT);
+        SDL_BlitSurface(converted_icon, NULL, image, &icon_pos);
+        SDL_FreeSurface(converted_icon);
+    }
+    if (visible)
+        SDL_BlitSurface(text, NULL, image, &text_pos);
+    SDL_FreeSurface(text);
+    return image;
 }
 
 // Small "12 min" chip in the top-right corner (where MainUI keeps its
@@ -2474,7 +2515,16 @@ static void renderTimeChip(int remaining)
         // while held is re-armed in main()'s loop, same reasoning as the
         // scrolling title above.)
         if (carousel_battery_charging)
-            renderChargingBattery();
+        {
+            SDL_Surface *batt =
+                chargingBatterySurface(carousel_battery_percentage);
+            if (batt != NULL) {
+                SDL_Rect pos = {(int)(596.0 * g_scale) - batt->w / 2,
+                                (int)(30.0 * g_scale) - batt->h / 2};
+                SDL_BlitSurface(batt, NULL, screen, &pos);
+                SDL_FreeSurface(batt);
+            }
+        }
         else {
             int pct = carousel_battery_percentage;
             SDL_Surface *batt = theme_batterySurface(pct);

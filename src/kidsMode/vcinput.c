@@ -115,12 +115,15 @@ static SDL_Surface *battery_icons[6];
 static SDL_Surface *scaled_battery_icon;
 static SDL_Surface *scaled_battery_source;
 static int scaled_battery_target_width;
+static bool video_geometry_logged;
+static bool battery_geometry_logged;
 
 #define AUDIO_DIM_DELAY 15000
 #define AUDIO_OFF_DELAY 30000
 #define AUDIO_DIM_RAW 3
 #define MEDIA_DIMMED_FLAG "/tmp/kidsmode_media_dimmed"
 #define MEDIA_PLAYING_FLAG "/tmp/kidsmode_media_playing"
+#define OSD_GEOMETRY_LOG "/mnt/SDCARD/.tmp_update/logs/kidsmode-osd-geometry.log"
 #define MIYOO_SCANCODE_VOLUMEDOWN 114
 #define MIYOO_SCANCODE_VOLUMEUP 115
 #define MIYOO_DISPLAY_WIDTH 640
@@ -385,6 +388,12 @@ __attribute__((constructor)) static void vcinput_loaded(void)
     FILE *fp = fopen("/tmp/vcinput_loaded", "w");
     if (fp) {
         fputs("1\n", fp);
+        fclose(fp);
+    }
+    remove(OSD_GEOMETRY_LOG);
+    fp = fopen(OSD_GEOMETRY_LOG, "w");
+    if (fp != NULL) {
+        fputs("vcinput geometry diagnostic 1\n", fp);
         fclose(fp);
     }
 }
@@ -919,6 +928,28 @@ static void yuv_battery_peek(SDL_Overlay *overlay)
     int right_edge = overlay->w - yuv_from_screen_x(overlay, 20);
     int center_y = yuv_from_screen_y(overlay, 30);
     int x = right_edge - total_w;
+    if (!battery_geometry_logged) {
+        FILE *fp = fopen(OSD_GEOMETRY_LOG, "a");
+        if (fp != NULL) {
+            fprintf(fp,
+                    "battery overlay=%dx%d dst=%d,%d,%d,%d hw=%dx%d "
+                    "font=%d icon=%dx%d label=%dx%d gap=%d x=%d y=%d "
+                    "charging=%d percentage=%d\n",
+                    overlay->w, overlay->h, last_overlay_rect.x,
+                    last_overlay_rect.y, last_overlay_rect.w,
+                    last_overlay_rect.h,
+                    hardware_surface != NULL ? hardware_surface->w : 0,
+                    hardware_surface != NULL ? hardware_surface->h : 0,
+                    yuv_osd_font_size(overlay),
+                    icon != NULL ? icon->w : 0,
+                    icon != NULL ? icon->h : 0,
+                    label != NULL ? label->w : 0,
+                    label != NULL ? label->h : 0, spacer, x, center_y,
+                    battery_charging ? 1 : 0, battery_percentage);
+            fclose(fp);
+        }
+        battery_geometry_logged = true;
+    }
     if (icon != NULL) {
         yuv_blit_osd_text(overlay, icon, x, center_y - icon->h / 2);
         x += icon->w + spacer;
@@ -980,6 +1011,28 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
     if (bar_w < overlay->w / 4) {
         bar_x = overlay->w / 4;
         bar_w = overlay->w / 2;
+    }
+    if (!video_geometry_logged) {
+        FILE *fp = fopen(OSD_GEOMETRY_LOG, "a");
+        if (fp != NULL) {
+            fprintf(fp,
+                    "progress overlay=%dx%d dst=%d,%d,%d,%d hw=%dx%d "
+                    "font=%d elapsed=%dx%d remaining=%dx%d bar=%d,%d,%d "
+                    "label_y=%d env_font_size=%s\n",
+                    overlay->w, overlay->h, last_overlay_rect.x,
+                    last_overlay_rect.y, last_overlay_rect.w,
+                    last_overlay_rect.h,
+                    hardware_surface != NULL ? hardware_surface->w : 0,
+                    hardware_surface != NULL ? hardware_surface->h : 0,
+                    font_size, elapsed_label->w, elapsed_label->h,
+                    remaining_label->w, remaining_label->h, bar_x, bar_y,
+                    bar_w, logical_y,
+                    getenv("VC_OSD_FONT_SIZE") != NULL
+                        ? getenv("VC_OSD_FONT_SIZE")
+                        : "unset");
+            fclose(fp);
+        }
+        video_geometry_logged = true;
     }
     yuv_blit_osd_text(overlay, elapsed_label, margin, logical_y);
     yuv_blit_osd_text(overlay, remaining_label,
