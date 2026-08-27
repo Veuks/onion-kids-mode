@@ -1,0 +1,36 @@
+diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
+index 64f22a18..d526bf70 100644
+--- a/src/keymon/keymon.c
++++ b/src/keymon/keymon.c
+@@ -49,9 +49,9 @@
+ #define CHECK_SEC 15   // Interval sec to check hibernate/adc
+ #define SHUTDOWN_MIN 1 // Minutes to power off after hibernate
+ #define REPEAT_SEC(val) ((val * 1000 - 250) / 50)
+-#define PIDMAX 32
++#define PIDMAX 128
+ 
+-uint32_t suspendpid[PIDMAX];
++uint32_t suspendpid[PIDMAX + 1];
+ 
+ const int KONAMI_CODE[] = {HW_BTN_UP, HW_BTN_UP, HW_BTN_DOWN, HW_BTN_DOWN,
+                            HW_BTN_LEFT, HW_BTN_RIGHT, HW_BTN_LEFT, HW_BTN_RIGHT,
+@@ -262,6 +262,12 @@ void suspend_exec(int timeout)
+ {
+     keyinput_disable();
+ 
++    // Hide every process transition before playActivity or the foreground
++    // application is stopped. This changes PWM only, so no framebuffer page
++    // can flash while Onion enters its normal suspend sequence.
++    display_setBrightnessRaw(0);
++    msleep(20);
++
+     // pause playActivity
+     system("playActivity stop_all");
+ 
+@@ -275,6 +281,5 @@ void suspend_exec(int timeout)
+         setVolume(0);
+     }
+     rumble(0);
+-    display_setBrightnessRaw(0);
+     display_off();
+     system_powersave_on();

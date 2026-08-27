@@ -6,12 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef PLATFORM_MIYOOMINI
-#include <fcntl.h>
-#include <linux/input.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
-#endif
 
 typedef int (*poll_fn)(SDL_Event *);
 typedef int (*wait_fn)(SDL_Event *);
@@ -74,7 +68,9 @@ static Uint32 last_duration_check;
 static Uint32 progress_until;
 static bool progress_waiting_for_video;
 static Uint32 last_activity;
+static Uint32 last_external_backlight_check;
 static int backlight_stage;
+static bool external_backlight_off;
 static long saved_brightness_raw;
 static SDL_Surface *audio_artwork;
 static SDL_Surface *audio_visualizer_surface;
@@ -95,11 +91,6 @@ static int seek_notice_draw_h;
 static Uint32 last_clock_update;
 static Uint8 *yuv_backup[3];
 static size_t yuv_backup_capacity[3];
-#ifdef PLATFORM_MIYOOMINI
-static int wake_input_fd = -1;
-static bool wake_input_grabbed;
-static unsigned short wake_input_code;
-#endif
 
 #define AUDIO_DIM_DELAY 10000
 #define AUDIO_OFF_DELAY 15000
@@ -137,50 +128,6 @@ static void mark_playback_started(void)
         last_save = playback_started_at;
     }
 }
-
-#ifdef PLATFORM_MIYOOMINI
-static bool is_wake_hardware_key(unsigned short code)
-{
-    return code == KEY_SPACE || code == KEY_LEFTCTRL ||
-           code == KEY_LEFTSHIFT || code == KEY_LEFTALT ||
-           code == KEY_RIGHTCTRL || code == KEY_ENTER ||
-           code == KEY_LEFT || code == KEY_RIGHT || code == KEY_UP ||
-           code == KEY_DOWN || code == KEY_ESC || code == KEY_POWER ||
-           code == KEY_VOLUMEDOWN || code == KEY_VOLUMEUP;
-}
-
-static bool grab_wake_input(void)
-{
-    if (wake_input_grabbed)
-        return true;
-    wake_input_fd = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
-    if (wake_input_fd < 0)
-        return false;
-    if (ioctl(wake_input_fd, EVIOCGRAB, 1) < 0) {
-        close(wake_input_fd);
-        wake_input_fd = -1;
-        return false;
-    }
-    wake_input_grabbed = true;
-    wake_input_code = 0;
-    return true;
-}
-
-static void release_wake_input(void)
-{
-    if (wake_input_fd >= 0) {
-        if (wake_input_grabbed)
-            ioctl(wake_input_fd, EVIOCGRAB, 0);
-        close(wake_input_fd);
-    }
-    wake_input_fd = -1;
-    wake_input_grabbed = false;
-    wake_input_code = 0;
-}
-#else
-static bool grab_wake_input(void) { return false; }
-static void release_wake_input(void) {}
-#endif
 
 static void clear_audio_seek_notice(void)
 {
@@ -378,43 +325,11 @@ static void restore_backlight(void)
 __attribute__((destructor)) static void vcinput_unloaded(void)
 {
     restore_backlight();
-    release_wake_input();
     for (int i = 0; i < 3; i++) {
         free(yuv_backup[i]);
         yuv_backup[i] = NULL;
         yuv_backup_capacity[i] = 0;
     }
-}
-
-static void poll_wake_input(Uint32 now)
-{
-#ifdef PLATFORM_MIYOOMINI
-    if (!wake_input_grabbed || wake_input_fd < 0)
-        return;
-    struct input_event ev;
-    while (read(wake_input_fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
-        if (ev.type != EV_KEY || !is_wake_hardware_key(ev.code))
-            continue;
-        if (wake_input_code == 0 && ev.value == 1) {
-            // Wake on the press for immediate feedback, but retain EVIOCGRAB
-            // through its release so neither keymon nor FFplay can act on
-            // any part of the gesture (especially POWER).
-            wake_input_code = ev.code;
-            restore_backlight();
-            last_activity = now;
-            if (audio_mode)
-                draw_audio_progress_only();
-            else
-                draw_player_overlay();
-        }
-        else if (wake_input_code == ev.code && ev.value == 0) {
-            release_wake_input();
-            break;
-        }
-    }
-#else
-    (void)now;
-#endif
 }
 
 static void load_player_config(Uint32 now)
@@ -455,24 +370,62 @@ static void update_backlight(Uint32 now)
         saved_brightness_raw <= 0)
         return;
     Uint32 idle = now - last_activity;
+
+    // POWER remains owned by Onion even while the player is dimmed or black.
+    // Since /tmp/stay_awake keeps playback running, observe Onion's own
+    // backlight transition and park our timer until it restores the display.
+    if (now - last_external_backlight_check >= 250) {
+        last_external_backlight_check = now;
+        long current = read_number_file(brightness_file);
+
+        if (external_backlight_off) {
+            if (current > 0) {
+                external_backlight_off = false;
+                backlight_stage = 0;
+                save_brightness_choice(current);
+                last_activity = now;
+            }
+            else {
+                last_activity = now;
+            }
+            return;
+        }
+
+        if (backlight_stage == 0 && current == 0) {
+            external_backlight_off = true;
+            last_activity = now;
+            return;
+        }
+        if (backlight_stage == 1) {
+            if (current == 0) {
+                external_backlight_off = true;
+                last_activity = now;
+                return;
+            }
+            if (current > AUDIO_DIM_RAW) {
+                backlight_stage = 0;
+                save_brightness_choice(current);
+                last_activity = now;
+            }
+        }
+        else if (backlight_stage == 2 && current > 0) {
+            backlight_stage = 0;
+            save_brightness_choice(current);
+            last_activity = now;
+        }
+    }
+
+    idle = now - last_activity;
     if (backlight_stage == 0 && idle >= AUDIO_DIM_DELAY) {
         long current = read_number_file(brightness_file);
         if (current > 0)
             save_brightness_choice(current);
-        if (write_backlight(AUDIO_DIM_RAW)) {
+        if (write_backlight(AUDIO_DIM_RAW))
             backlight_stage = 1;
-            // From the beginning of the dimmed transition, reserve the first
-            // complete button gesture for waking. This also prevents keymon
-            // from changing volume before the child can see the screen.
-            grab_wake_input();
-        }
     }
-    if (backlight_stage == 1 && idle >= AUDIO_OFF_DELAY &&
-        grab_wake_input()) {
+    if (backlight_stage == 1 && idle >= AUDIO_OFF_DELAY) {
         if (write_backlight(0))
             backlight_stage = 2;
-        else
-            release_wake_input();
     }
 }
 
@@ -521,7 +474,6 @@ static void update_clock(void)
     long previous_second = position_seconds;
     load_player_config(now);
     update_duration(now);
-    poll_wake_input(now);
     update_backlight(now);
     if (!clock_ready) {
         const char *start = getenv("VC_START_SECONDS");
@@ -1506,6 +1458,12 @@ static bool map_event(SDL_Event *event)
         return true;
     }
 
+    // Onion has entered its own POWER screen-off state. Playback is allowed
+    // to continue because /tmp/stay_awake is active, but player controls must
+    // remain inert until Onion itself completes the POWER wake.
+    if ((audio_mode || paused) && external_backlight_off)
+        return true;
+
     if ((audio_mode || paused) && backlight_stage != 0) {
         // The player buttons and D-pad can wake an audio screen or a paused
         // video. Consume the whole gesture so waking cannot also seek,
@@ -1513,7 +1471,9 @@ static bool map_event(SDL_Event *event)
         if ((in == SDLK_SPACE || in == SDLK_LCTRL || in == SDLK_ESCAPE ||
              in == SDLK_LSHIFT || in == SDLK_LALT || in == SDLK_RCTRL ||
              in == SDLK_RETURN || in == SDLK_LEFT || in == SDLK_RIGHT ||
-             in == SDLK_UP || in == SDLK_DOWN) &&
+             in == SDLK_UP || in == SDLK_DOWN ||
+             scancode == MIYOO_SCANCODE_VOLUMEDOWN ||
+             scancode == MIYOO_SCANCODE_VOLUMEUP) &&
             state == SDL_PRESSED) {
             wake_key = in;
             restore_backlight();

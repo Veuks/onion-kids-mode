@@ -3234,6 +3234,20 @@ int main(int argc, char *argv[])
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
 
+        // Make the visual transition to Onion sleep immediate and uniform.
+        // Only the PWM is changed here: no clear, render or framebuffer flip.
+        // The POWER event itself continues untouched to Onion's keymon.
+        if (key_changed && active_screen == SCREEN_CAROUSEL &&
+            changed_key == SW_BTN_POWER &&
+            keystate[changed_key] == PRESSED) {
+            long current = display_getBrightnessRaw();
+            if (carousel_saved_brightness <= 0 && current > 0)
+                carousel_saved_brightness = current;
+            display_setBrightnessRaw(0);
+            carousel_backlight_stage = 2;
+            carousel_last_activity = ticks;
+        }
+
         // When the carousel is dimmed or black, the first ordinary button
         // only restores the backlight. POWER is never consumed here: Onion
         // keeps its normal short-press sleep and wake behaviour.

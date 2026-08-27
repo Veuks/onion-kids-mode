@@ -14,10 +14,10 @@
 # Mode flag: /mnt/SDCARD/.kidmode  (present = armed; delete it from a
 # computer to force-disable Kids Mode)
 #
-# HARDENING NOTE: while armed, a determined kid can still force-shutdown
-# with a long power press (keymon handles power directly). To harden, patch
-# src/keymon/keymon.c to ignore/limit power events while /mnt/SDCARD/.kidmode
-# exists. This optional system modification is not included.
+# Kids Mode runs its own minimally patched keymon while armed. Onion's binary
+# is never overwritten and is restarted immediately when Kids Mode exits.
+# The patch keeps Onion's normal POWER behaviour, expands reliable process
+# suspension and blanks the backlight before any framebuffer can flash.
 # ---------------------------------------------------------------------------
 
 sysdir=/mnt/SDCARD/.tmp_update
@@ -25,6 +25,8 @@ miyoodir=/mnt/SDCARD/miyoo
 appdir=/mnt/SDCARD/App/KidsMode
 
 kidui_bin="$appdir/bin/kidui"
+kids_keymon_bin="$appdir/bin/keymon"
+onion_keymon_bin="$sysdir/bin/keymon"
 configfile="$appdir/kidmode.json"
 flagfile=/mnt/SDCARD/.kidmode
 favfile=/mnt/SDCARD/Roms/favourite.json
@@ -665,6 +667,20 @@ restore_profile_isolation() {
 # expose the parent's recent games. keymon reads keymap.json at startup, so
 # it is restarted after the change. Original keymap restored on unlock.
 
+restart_keymon() {
+    killall keymon 2> /dev/null
+    if [ -f "$flagfile" ] && [ -x "$kids_keymon_bin" ]; then
+        "$kids_keymon_bin" &
+        log "Started Kids Mode keymon."
+    elif [ -x "$onion_keymon_bin" ]; then
+        "$onion_keymon_bin" &
+        log "Restored Onion keymon."
+    else
+        keymon &
+        log "Started system keymon."
+    fi
+}
+
 apply_keymap_override() {
     mkdir -p "$backupdir"
     if [ -f "$keymapcfg" ]; then
@@ -679,8 +695,7 @@ apply_keymap_override() {
         touch "$keymapnone"
         printf '{\n    "ingame_single_press": 2\n}\n' > "$keymapcfg"
     fi
-    killall keymon 2> /dev/null
-    keymon &
+    restart_keymon
     log "MENU button set to exit-to-launcher while armed."
 }
 
@@ -696,10 +711,10 @@ restore_keymap_override() {
     fi
     if [ "$keymap_restored" = "1" ]; then
         sync
-        killall keymon 2> /dev/null
-        keymon &
         log "keymap.json restored."
     fi
+    # Also restore Onion's original binary when no keymap backup existed.
+    restart_keymon
 }
 
 # ------------------------------ play timer ---------------------------------
@@ -1589,7 +1604,10 @@ play_video() {
     hide_ffplay_state
     rm -f "$menu_exit_marker"
     ensure_audio_server
-    touch /tmp/stay_awake
+    # POWER uses the same genuine Onion suspend path for media and carousel.
+    # The Kids Mode keymon has enough PID slots to stop and resume FFplay
+    # reliably, so playback and its controls cannot continue during sleep.
+    rm -f /tmp/stay_awake
     cd "$sysdir" || return 1
     # A true restart must not ask FFplay to seek, even to zero. Apart from
     # avoiding unnecessary decoder preroll, this keeps 0:00 distinct from a
@@ -1676,6 +1694,8 @@ cmd_run() {
         return 1
     fi
     chmod a+x "$kidui_bin" 2> /dev/null
+    chmod a+x "$kids_keymon_bin" 2> /dev/null
+    restart_keymon
 
     startup_started_at="$(date +%s)"
     prepare_game_environment_async
@@ -1745,7 +1765,7 @@ cmd_run() {
 
         # Defensive cleanup: nothing may divert the loop into GameSwitcher
         rm -f "$sysdir/.runGameSwitcher" 2> /dev/null
-        pgrep keymon > /dev/null 2>&1 || keymon &
+        pgrep keymon > /dev/null 2>&1 || restart_keymon
 
         # No PIN on file (armed, but the app folder was replaced and no
         # snapshot existed): the unlock gesture sets a NEW pin instead of
