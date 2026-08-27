@@ -97,6 +97,7 @@ static size_t yuv_backup_capacity[3];
 #define AUDIO_OFF_DELAY 15000
 #define AUDIO_DIM_RAW 3
 #define MEDIA_DIMMED_FLAG "/tmp/kidsmode_media_dimmed"
+#define MEDIA_PLAYING_FLAG "/tmp/kidsmode_media_playing"
 #define MIYOO_SCANCODE_VOLUMEDOWN 114
 #define MIYOO_SCANCODE_VOLUMEUP 115
 
@@ -314,6 +315,17 @@ static void set_media_dimmed_flag(bool enabled)
         fclose(fp);
 }
 
+static void set_media_playing_flag(bool enabled)
+{
+    if (!enabled) {
+        remove(MEDIA_PLAYING_FLAG);
+        return;
+    }
+    FILE *fp = fopen(MEDIA_PLAYING_FLAG, "w");
+    if (fp != NULL)
+        fclose(fp);
+}
+
 static void save_brightness_choice(long value)
 {
     if (value <= 0)
@@ -343,6 +355,7 @@ __attribute__((destructor)) static void vcinput_unloaded(void)
     // shutdown splash. The shell restores brightness only after that splash
     // has been painted completely.
     remove(MEDIA_DIMMED_FLAG);
+    remove(MEDIA_PLAYING_FLAG);
     if (access("/tmp/.offOrder", F_OK) != 0 &&
         access("/tmp/shutting_down", F_OK) != 0)
         restore_backlight();
@@ -359,6 +372,7 @@ static void load_player_config(Uint32 now)
         return;
     const char *kind = getenv("VC_MEDIA_KIND");
     audio_mode = kind != NULL && strcmp(kind, "audio") == 0;
+    set_media_playing_flag(true);
     artwork_file = getenv("VC_ARTWORK_FILE");
     media_title = getenv("VC_MEDIA_TITLE");
     duration_file = getenv("VC_DURATION_FILE");
@@ -1632,6 +1646,7 @@ static bool map_event(SDL_Event *event)
             restore_backlight();
             last_activity = now;
             paused = false;
+            set_media_playing_flag(true);
             progress_until = now + 2000;
             seek_notice_until = now + 2000;
             progress_waiting_for_video = !audio_mode;
@@ -1658,6 +1673,7 @@ static bool map_event(SDL_Event *event)
     if (in == SDLK_LCTRL) { /* Miyoo B: pause only */
         if (state == SDL_PRESSED && !paused) {
             paused = true;
+            set_media_playing_flag(false);
             last_activity = now;
             overlay_force_redraw = !audio_mode;
             if (audio_mode)

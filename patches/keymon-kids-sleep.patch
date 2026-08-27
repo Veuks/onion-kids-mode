@@ -102,3 +102,18 @@ index 64f22a1..1d9ac89 100644
                  }
                  repeat_power = 0;
                  break;
+@@ -914,7 +935,13 @@ int main(void)
+         else
+             hibernate_time = settings.sleep_timer;
+ 
+-        if (hibernate_time && !temp_flag_get("stay_awake")) {
++        // Active Kids Mode media playback is not inactivity. Keep Onion's
++        // hibernation timer armed for paused media and the carousel, but do
++        // not let a playing audio/video file trigger automatic shutdown.
++        if (temp_flag_get("kidsmode_media_playing")) {
++            hibernate_start = ticks;
++        }
++        else if (hibernate_time && !temp_flag_get("stay_awake")) {
+             if (ticks - hibernate_start > hibernate_time * 60 * 1000) {
+                 suspend_exec(SHUTDOWN_MIN * 60000);
+                 hibernate_start = ticks;
