@@ -3331,20 +3331,19 @@ int main(int argc, char *argv[])
     list_addItem(&menu_list,
                  (ListItem){.label = "Media folders",
                             .item_type = ACTION});
-    char switch_profile_label[64];
     if (strcmp(menu_switch_profile, "Main") == 0)
-        snprintf(switch_profile_label, sizeof(switch_profile_label),
-                 "Switch to Main profile");
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Switch to Main profile",
+                                .item_type = ACTION});
     else if (strcmp(menu_switch_profile, "Guest") == 0)
-        snprintf(switch_profile_label, sizeof(switch_profile_label),
-                 "Switch to Guest profile");
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Switch to Guest profile",
+                                .item_type = ACTION});
     else
-        snprintf(switch_profile_label, sizeof(switch_profile_label),
-                 "Profile switch unavailable");
-    list_addItem(&menu_list,
-                 (ListItem){.label = switch_profile_label,
-                            .item_type = ACTION,
-                            .disabled = menu_switch_profile[0] == '\0'});
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Profile switch unavailable",
+                                .item_type = ACTION,
+                                .disabled = true});
 
     List category_list = list_create(5, LIST_SMALL);
     list_addItem(&category_list,
