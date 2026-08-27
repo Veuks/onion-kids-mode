@@ -936,11 +936,23 @@ stop_ticker() {
 check_off_order() {
     [ -f /tmp/.offOrder ] || return 0
     touch /tmp/shutting_down
+    # Hide the outgoing carousel/player before any process cleanup. Keep the
+    # PWM black until bootScreen has painted both framebuffer pages, then
+    # reveal only Onion's completed shutdown image.
+    [ -w "$brightness_pwm" ] && printf '0\n' > "$brightness_pwm"
     for _off_script in "$sysdir"/checkoff/*.sh; do
         [ -f "$_off_script" ] && sh "$_off_script"
     done
-    bootScreen "$1" &
-    sleep 1
+    bootScreen "$1" 2> /dev/null
+    shutdown_brightness=$(/customer/app/jsonval brightness 2> /dev/null)
+    case "$shutdown_brightness" in
+        '' | *[!0-9]*) shutdown_brightness=5 ;;
+    esac
+    shutdown_brightness_raw=$(awk -v level="$shutdown_brightness" \
+        'BEGIN { printf "%d", 3 * exp(0.350656 * level) + 0.5 }')
+    [ -w "$brightness_pwm" ] &&
+        printf '%s\n' "$shutdown_brightness_raw" > "$brightness_pwm"
+    sleep 0.3
     shutdown
     sleep 60 # never reached; wait for poweroff
 }
@@ -1657,7 +1669,8 @@ play_video() {
     # Restore the latest brightness selected during playback, not the value
     # captured when FFplay started. This also recovers cleanly if playback
     # ended while Kids Mode's own dim/off state was active.
-    if [ -r "$brightness_state" ] && [ -w "$brightness_pwm" ]; then
+    if [ ! -f /tmp/.offOrder ] && [ ! -f /tmp/shutting_down ] &&
+        [ -r "$brightness_state" ] && [ -w "$brightness_pwm" ]; then
         brightness_restore="$(cat "$brightness_state" 2> /dev/null)"
         case "$brightness_restore" in
             '' | *[!0-9]*) ;;

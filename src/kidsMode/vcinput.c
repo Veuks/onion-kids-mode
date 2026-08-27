@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef int (*poll_fn)(SDL_Event *);
 typedef int (*wait_fn)(SDL_Event *);
@@ -338,7 +339,13 @@ static void restore_backlight(void)
 
 __attribute__((destructor)) static void vcinput_unloaded(void)
 {
-    restore_backlight();
+    // Do not reveal FFplay's final frame while Onion is preparing its
+    // shutdown splash. The shell restores brightness only after that splash
+    // has been painted completely.
+    remove(MEDIA_DIMMED_FLAG);
+    if (access("/tmp/.offOrder", F_OK) != 0 &&
+        access("/tmp/shutting_down", F_OK) != 0)
+        restore_backlight();
     for (int i = 0; i < 3; i++) {
         free(yuv_backup[i]);
         yuv_backup[i] = NULL;

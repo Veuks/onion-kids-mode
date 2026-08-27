@@ -186,7 +186,18 @@ static void restoreCarouselBacklight(void)
 
 static void stopCarouselDimmer(void)
 {
-    restoreCarouselBacklight();
+    // During shutdown the Onion splash must be drawn while the backlight
+    // remains black. Restoring here would briefly expose the last carousel
+    // frame before kid_mode_loop.sh has finished painting that splash.
+    if (access("/tmp/.offOrder", F_OK) == 0 ||
+        access("/tmp/shutting_down", F_OK) == 0) {
+        carousel_backlight_stage = 0;
+        carousel_system_screen_off = false;
+        setCarouselDimmedFlag(false);
+    }
+    else {
+        restoreCarouselBacklight();
+    }
     carousel_was_active = false;
     carousel_last_loop_tick = 0;
 }
