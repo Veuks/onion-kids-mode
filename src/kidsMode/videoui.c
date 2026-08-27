@@ -2357,16 +2357,88 @@ static int readRemaining(void)
     return result;
 }
 
+static bool batteryIsChargingFast(void)
+{
+    FILE *fp = fopen("/tmp/.axp_result", "r");
+    if (fp != NULL) {
+        char buf[160] = "";
+        bool charging = false;
+        if (fgets(buf, sizeof(buf), fp) != NULL) {
+            char *field = strstr(buf, "\"charging\"");
+            char *separator = field != NULL ? strchr(field, ':') : NULL;
+            charging = separator != NULL && atoi(separator + 1) != 0;
+            if (!charging)
+                charging = strstr(buf, "\"battery\":500") != NULL;
+        }
+        fclose(fp);
+        return charging;
+    }
+    return battery_isCharging();
+}
+
+static bool carousel_battery_charging;
+
+// Onion deliberately hides the percentage when theme_batterySurface() is
+// called with its special charging value (500). Kids Mode keeps the charging
+// icon, but also renders the live percentage beside it with the active
+// theme's battery font and color.
+static void renderChargingBattery(void)
+{
+    SDL_Surface *icon = resource_getSurface(BATTERY_CHARGING);
+    TTF_Font *font = resource_getFont(BATTERY);
+    SDL_Surface *text = NULL;
+
+    int pct = battery_getPercentage();
+    if (pct < 0 || pct > 100)
+        pct = 100;
+
+    if (font != NULL) {
+        char buffer[8];
+        snprintf(buffer, sizeof(buffer), "%d%%", pct);
+        text = TTF_RenderUTF8_Blended(font, buffer,
+                                     theme()->batteryPercentage.color);
+        if (text != NULL)
+            SDL_SetAlpha(text, 0, SDL_ALPHA_TRANSPARENT);
+    }
+
+    if (icon == NULL && text == NULL)
+        return;
+
+    int spacer = icon != NULL && text != NULL ? (int)(5.0 * g_scale) : 0;
+    int total_w = (icon != NULL ? icon->w : 0) + spacer +
+                  (text != NULL ? text->w : 0);
+    int center_x = (int)(596.0 * g_scale);
+    int center_y = (int)(30.0 * g_scale);
+    int x = center_x - total_w / 2;
+
+    if (icon != NULL) {
+        SDL_Rect pos = {x, center_y - icon->h / 2};
+        SDL_BlitSurface(icon, NULL, screen, &pos);
+        x += icon->w + spacer;
+    }
+
+    if (text != NULL) {
+        int offset_y = theme()->batteryPercentage.offsetY;
+        const char *family = TTF_FontFaceFamilyName(font);
+        if (family != NULL && strncmp(family, "Exo 2", 5) == 0)
+            offset_y -= (int)(0.075 * TTF_FontHeight(font));
+        SDL_Rect pos = {x, center_y - text->h / 2 + offset_y};
+        SDL_BlitSurface(text, NULL, screen, &pos);
+        SDL_FreeSurface(text);
+    }
+}
+
 // Small "12 min" chip in the top-right corner (where MainUI keeps its
 // battery), switching to the accent color for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
-    bool battery_peek = keystate[SW_BTN_Y] != RELEASED;
+    bool battery_peek = keystate[SW_BTN_Y] != RELEASED ||
+                        carousel_battery_charging;
     if (remaining < 0 && !battery_peek)
         return;
 
     if (battery_peek) {
-        // Y held: show the theme's own battery gauge (icon + %), at
+        // Y held, or charging: show the theme's own battery gauge at
         // the exact same coordinates Onion's own MainUI header uses
         // (theme_renderHeaderBattery: centered at 596*scale, 30*scale) —
         // not a guessed position — whether or not a timer is running.
@@ -2374,13 +2446,17 @@ static void renderTimeChip(int remaining)
         // run long enough for it to actually change. (Continued redraw
         // while held is re-armed in main()'s loop, same reasoning as the
         // scrolling title above.)
-        int pct = battery_isCharging() ? 500 : battery_getPercentage();
-        SDL_Surface *batt = theme_batterySurface(pct);
-        if (batt != NULL) {
-            SDL_Rect pos = {(int)(596.0 * g_scale) - batt->w / 2,
-                            (int)(30.0 * g_scale) - batt->h / 2};
-            SDL_BlitSurface(batt, NULL, screen, &pos);
-            SDL_FreeSurface(batt);
+        if (carousel_battery_charging)
+            renderChargingBattery();
+        else {
+            int pct = battery_getPercentage();
+            SDL_Surface *batt = theme_batterySurface(pct);
+            if (batt != NULL) {
+                SDL_Rect pos = {(int)(596.0 * g_scale) - batt->w / 2,
+                                (int)(30.0 * g_scale) - batt->h / 2};
+                SDL_BlitSurface(batt, NULL, screen, &pos);
+                SDL_FreeSurface(batt);
+            }
         }
         return;
     }
@@ -3256,11 +3332,22 @@ int main(int argc, char *argv[])
     uint32_t last_hold_ms = 0;
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
+    uint32_t last_charging_poll = 0;
     uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
+    carousel_battery_charging = batteryIsChargingFast();
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
+        if (ticks - last_charging_poll >= 2000) {
+            last_charging_poll = ticks;
+            bool charging = batteryIsChargingFast();
+            if (charging != carousel_battery_charging) {
+                carousel_battery_charging = charging;
+                if (active_screen == SCREEN_CAROUSEL)
+                    dirty = true;
+            }
+        }
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
 

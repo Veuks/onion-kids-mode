@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
+#include <SDL/SDL_ttf.h>
 #include <dlfcn.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -59,6 +60,8 @@ static bool seek_notice_forward;
 static Uint32 seek_notice_until;
 static bool battery_peek_down;
 static int battery_percentage;
+static bool battery_charging;
+static Uint32 last_battery_check;
 static bool player_config_ready;
 static bool audio_mode;
 static const char *artwork_file;
@@ -83,9 +86,9 @@ static bool inside_present;
 static SDLKey wake_key = SDLK_UNKNOWN;
 static bool overlay_force_redraw = true;
 static bool audio_progress_ready;
-static char last_elapsed_text[24];
-static char last_remaining_text[24];
 static int last_progress_knob = -1;
+static int last_progress_bar_x = -1;
+static int last_progress_bar_w;
 static bool seek_notice_drawn;
 static int seek_notice_draw_x;
 static int seek_notice_draw_y;
@@ -94,6 +97,21 @@ static int seek_notice_draw_h;
 static Uint32 last_clock_update;
 static Uint8 *yuv_backup[3];
 static size_t yuv_backup_capacity[3];
+
+typedef struct {
+    char text[32];
+    int size;
+    SDL_Surface *surface;
+} OsdTextCache;
+
+static OsdTextCache battery_text_cache;
+static OsdTextCache elapsed_text_cache;
+static OsdTextCache remaining_text_cache;
+static OsdTextCache seek_text_cache;
+static TTF_Font *osd_fonts[4];
+static int osd_font_sizes[4];
+static bool osd_ttf_owned;
+static SDL_Surface *battery_icons[6];
 
 #define AUDIO_DIM_DELAY 15000
 #define AUDIO_OFF_DELAY 30000
@@ -118,6 +136,13 @@ static void draw_player_overlay(void);
 static void draw_audio_progress_only(void);
 static void draw_seek_notice(void);
 static void draw_battery_peek(SDL_Surface *surface);
+static SDL_Surface *osd_text(OsdTextCache *cache, const char *text,
+                             int size);
+static void blit_osd_text(SDL_Surface *target, SDL_Surface *text,
+                          int logical_x, int logical_y);
+static void yuv_blit_osd_text(SDL_Overlay *overlay, SDL_Surface *text,
+                              int logical_x, int logical_y);
+static SDL_Surface *battery_icon(void);
 static void restore_video_overlay(SDL_Overlay *overlay);
 static int text_width(const char *text, int scale);
 static void format_time(long seconds, bool remaining, char *out,
@@ -134,9 +159,53 @@ static int read_battery_percentage(void)
     return (int)value;
 }
 
+static bool read_battery_charging(void)
+{
+    if (read_number_file("/tmp/percBat") == 500)
+        return true;
+    FILE *fp = fopen("/tmp/.axp_result", "r");
+    if (fp == NULL)
+        return false;
+    char buf[160] = "";
+    bool charging = false;
+    if (fgets(buf, sizeof(buf), fp) != NULL) {
+        char *field = strstr(buf, "\"charging\"");
+        char *separator = field != NULL ? strchr(field, ':') : NULL;
+        charging = separator != NULL && atoi(separator + 1) != 0;
+        if (!charging)
+            charging = strstr(buf, "\"battery\":500") != NULL;
+    }
+    fclose(fp);
+    return charging;
+}
+
+static bool update_battery_status(Uint32 now, bool force)
+{
+    if (!force && now - last_battery_check < 1000)
+        return false;
+    last_battery_check = now;
+    int percentage = read_battery_percentage();
+    bool charging = read_battery_charging();
+    bool changed = percentage != battery_percentage ||
+                   charging != battery_charging;
+    battery_percentage = percentage;
+    battery_charging = charging;
+    return changed;
+}
+
 static bool battery_peek_visible(void)
 {
-    return battery_peek_down;
+    return battery_peek_down || battery_charging;
+}
+
+static int osd_size_for_width(int width, int percent)
+{
+    const char *configured = getenv("VC_OSD_FONT_SIZE");
+    int base = configured != NULL ? atoi(configured) : 24;
+    if (base < 12 || base > 48)
+        base = 24;
+    int size = base * width * percent / (640 * 100);
+    return size < 10 ? 10 : size;
 }
 
 static void mark_playback_started(void)
@@ -383,6 +452,23 @@ __attribute__((destructor)) static void vcinput_unloaded(void)
         yuv_backup[i] = NULL;
         yuv_backup_capacity[i] = 0;
     }
+    OsdTextCache *caches[] = {&battery_text_cache, &elapsed_text_cache,
+                              &remaining_text_cache, &seek_text_cache};
+    for (int i = 0; i < 4; i++) {
+        SDL_FreeSurface(caches[i]->surface);
+        caches[i]->surface = NULL;
+    }
+    for (int i = 0; i < 4; i++) {
+        if (osd_fonts[i] != NULL)
+            TTF_CloseFont(osd_fonts[i]);
+        osd_fonts[i] = NULL;
+    }
+    for (int i = 0; i < 6; i++) {
+        SDL_FreeSurface(battery_icons[i]);
+        battery_icons[i] = NULL;
+    }
+    if (osd_ttf_owned)
+        TTF_Quit();
 }
 
 static void load_player_config(Uint32 now)
@@ -392,6 +478,7 @@ static void load_player_config(Uint32 now)
     const char *kind = getenv("VC_MEDIA_KIND");
     audio_mode = kind != NULL && strcmp(kind, "audio") == 0;
     set_media_playing_flag(true);
+    update_battery_status(now, true);
     artwork_file = getenv("VC_ARTWORK_FILE");
     media_title = getenv("VC_MEDIA_TITLE");
     duration_file = getenv("VC_DURATION_FILE");
@@ -546,6 +633,7 @@ static void update_clock(void)
     load_player_config(now);
     update_duration(now);
     update_backlight(now);
+    bool battery_changed = update_battery_status(now, false);
     if (!clock_ready) {
         const char *start = getenv("VC_START_SECONDS");
         position_seconds = start ? strtol(start, NULL, 10) : 0;
@@ -572,6 +660,21 @@ static void update_clock(void)
         if ((now / 5000) != (last_save / 5000))
             save_checkpoint();
         last_save = now;
+    }
+    if (battery_changed) {
+        if (audio_mode && !inside_present) {
+            overlay_force_redraw = true;
+            draw_player_overlay();
+        }
+        else if (paused && last_overlay != NULL && last_overlay_rect_ready &&
+                 real_overlay != NULL) {
+            if (last_overlay_painted) {
+                restore_video_overlay(last_overlay);
+                last_overlay_painted = false;
+            }
+            real_overlay(last_overlay, &last_overlay_rect);
+            draw_player_overlay();
+        }
     }
     if (audio_mode && backlight_stage != 2 && !inside_present &&
         position_seconds != previous_second) {
@@ -654,7 +757,6 @@ static const unsigned char *glyph_rows(char c)
     static const unsigned char dot[7] = {0,0,0,0,0,4,4};
     static const unsigned char apostrophe[7] = {4,4,2,0,0,0,0};
     static const unsigned char question[7] = {14,17,1,2,4,0,4};
-    static const unsigned char percent[7] = {17,2,4,8,17,0,0};
     if (c == 's')
         return ess;
     if (c == 'm')
@@ -680,7 +782,6 @@ static const unsigned char *glyph_rows(char c)
     case '.': return dot;
     case '\'': return apostrophe;
     case '?': return question;
-    case '%': return percent;
     default: return NULL;
     }
 }
@@ -733,45 +834,6 @@ static void yuv_rect(SDL_Overlay *overlay, int x, int y, int w, int h,
     }
 }
 
-static void yuv_glyph(SDL_Overlay *overlay, char c, int x, int y, int scale,
-                      bool outline)
-{
-    const unsigned char *rows = glyph_rows(c);
-    if (rows == NULL)
-        return;
-    // Draw the complete outline first, then all foreground pixels. Painting
-    // black+white one glyph pixel at a time lets the next pixel's outline
-    // overwrite its neighbour, which produced the dotted/hatched playback
-    // font visible in screenshots. The paused framebuffer path already uses
-    // these same two passes and therefore remains solid.
-    int first_pass = outline ? 0 : 1;
-    for (int pass = first_pass; pass < 2; pass++)
-        for (int row = 0; row < 7; row++)
-            for (int col = 0; col < 5; col++) {
-                if (!(rows[6 - row] & (1 << col)))
-                    continue;
-                if (pass == 0)
-                    yuv_rect(overlay, x + col * scale - 1,
-                             y + row * scale - 1, scale + 2, scale + 2,
-                             16, 128, 128);
-                else
-                    yuv_rect(overlay, x + col * scale, y + row * scale,
-                             scale, scale, 235, 128, 128);
-            }
-}
-
-static void yuv_rotated_text(SDL_Overlay *overlay, const char *text,
-                             int logical_x, int logical_y, int scale)
-{
-    int length = (int)strlen(text);
-    int width = text_width(text, scale);
-    int physical_x = overlay->w - logical_x - width;
-    int physical_y = overlay->h - logical_y - 7 * scale;
-    for (int i = 0; i < length; i++)
-        yuv_glyph(overlay, text[length - 1 - i],
-                  physical_x + i * 6 * scale, physical_y, scale, true);
-}
-
 static void yuv_logical_rect(SDL_Overlay *overlay, int x, int y, int w,
                              int h, Uint8 yy, Uint8 uu, Uint8 vv)
 {
@@ -779,15 +841,29 @@ static void yuv_logical_rect(SDL_Overlay *overlay, int x, int y, int w,
              yy, uu, vv);
 }
 
-static void yuv_battery_peek(SDL_Overlay *overlay, int scale)
+static void yuv_battery_peek(SDL_Overlay *overlay)
 {
     if (!battery_peek_visible())
         return;
+    SDL_Surface *icon = battery_icon();
     char text[8];
     snprintf(text, sizeof(text), "%d%%", battery_percentage);
-    int width = text_width(text, scale);
-    yuv_rotated_text(overlay, text, overlay->w - 8 * scale - width,
-                     8 * scale, scale);
+    SDL_Surface *label = osd_text(&battery_text_cache, text,
+                                  osd_size_for_width(overlay->w, 100));
+    if (icon == NULL && label == NULL)
+        return;
+    int spacer = icon != NULL && label != NULL ? 5 * overlay->w / 640 : 0;
+    int total_w = (icon != NULL ? icon->w : 0) + spacer +
+                  (label != NULL ? label->w : 0);
+    int center_x = overlay->w * 596 / 640;
+    int center_y = overlay->w * 30 / 640;
+    int x = center_x - total_w / 2;
+    if (icon != NULL) {
+        yuv_blit_osd_text(overlay, icon, x, center_y - icon->h / 2);
+        x += icon->w + spacer;
+    }
+    if (label != NULL)
+        yuv_blit_osd_text(overlay, label, x, center_y - label->h / 2);
 }
 
 static void yuv_progress_knob(SDL_Overlay *overlay, int logical_x,
@@ -809,8 +885,12 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
     int scale = overlay->w / 320;
     if (scale < 1)
         scale = 1;
-    if (duration_seconds <= 0) {
-        yuv_battery_peek(overlay, scale);
+    Uint32 now = SDL_GetTicks();
+    bool controls_visible = duration_seconds > 0 &&
+        (paused || progress_waiting_for_video || now < progress_until ||
+         (seek_notice[0] != '\0' && now < seek_notice_until));
+    if (!controls_visible) {
+        yuv_battery_peek(overlay);
         return;
     }
     long elapsed = position_seconds;
@@ -820,11 +900,21 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
     format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
     format_time(duration_seconds - elapsed, true, remaining_text,
                 sizeof(remaining_text));
-    int logical_y = overlay->h - 20 * scale;
+    int font_size = osd_size_for_width(overlay->w, 78);
+    SDL_Surface *elapsed_label = osd_text(&elapsed_text_cache, elapsed_text,
+                                          font_size);
+    SDL_Surface *remaining_label = osd_text(&remaining_text_cache,
+                                            remaining_text, font_size);
+    if (elapsed_label == NULL || remaining_label == NULL)
+        return;
+    int label_h = elapsed_label->h > remaining_label->h
+                      ? elapsed_label->h
+                      : remaining_label->h;
+    int logical_y = overlay->h - 8 * scale - label_h;
     int bar_y = overlay->h - 14 * scale;
     int margin = 8 * scale;
-    int elapsed_width = text_width(elapsed_text, scale);
-    int remaining_width = text_width(remaining_text, scale);
+    int elapsed_width = elapsed_label->w;
+    int remaining_width = remaining_label->w;
     int bar_x = margin + elapsed_width + 8 * scale;
     int bar_right = overlay->w - margin - remaining_width - 8 * scale;
     int bar_w = bar_right - bar_x;
@@ -832,10 +922,9 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
         bar_x = overlay->w / 4;
         bar_w = overlay->w / 2;
     }
-    yuv_rotated_text(overlay, elapsed_text, margin, logical_y, scale);
-    yuv_rotated_text(overlay, remaining_text,
-                     overlay->w - margin - remaining_width, logical_y,
-                     scale);
+    yuv_blit_osd_text(overlay, elapsed_label, margin, logical_y);
+    yuv_blit_osd_text(overlay, remaining_label,
+                      overlay->w - margin - remaining_width, logical_y);
     yuv_logical_rect(overlay, bar_x, bar_y - 1, bar_w, 3,
                      16, 128, 128);
     yuv_logical_rect(overlay, bar_x, bar_y, bar_w, 1,
@@ -845,19 +934,21 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
     yuv_progress_knob(overlay, knob_x, bar_y, scale < 3 ? 3 : scale + 1);
 
     if (seek_notice[0] != '\0' && SDL_GetTicks() < seek_notice_until) {
-        int notice_scale = scale + (scale > 1 ? scale / 2 : 1);
-        int width = text_width(seek_notice, notice_scale);
+        SDL_Surface *notice = osd_text(
+            &seek_text_cache, seek_notice,
+            osd_size_for_width(overlay->w, 115));
+        int width = notice != NULL ? notice->w : 0;
         int logical_x = seek_notice_forward
                             ? overlay->w - width - 9 * scale
                             : 9 * scale;
         // Match the framebuffer path used while paused. Its physical offset
         // is 35 base-scale pixels from the panel edge; account for the glyph
         // height when expressing that same point in logical coordinates.
-        int logical_y = overlay->h - 35 * scale - 7 * notice_scale;
-        yuv_rotated_text(overlay, seek_notice, logical_x,
-                         logical_y, notice_scale);
+        int logical_y = overlay->h - 35 * scale -
+                        (notice != NULL ? notice->h : 0);
+        yuv_blit_osd_text(overlay, notice, logical_x, logical_y);
     }
-    yuv_battery_peek(overlay, scale);
+    yuv_battery_peek(overlay);
 }
 
 static bool backup_and_paint_video_overlay(SDL_Overlay *overlay)
@@ -953,14 +1044,25 @@ static void draw_battery_peek(SDL_Surface *surface)
 {
     if (surface == NULL || !battery_peek_visible())
         return;
-    int scale = surface->w >= 600 ? 2 : 1;
+    SDL_Surface *icon = battery_icon();
     char text[8];
     snprintf(text, sizeof(text), "%d%%", battery_percentage);
-    int width = text_width(text, scale);
-    Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
-    Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
-    draw_rotated_text(surface, text, surface->w - 16 - width, 16, scale,
-                      black, white);
+    SDL_Surface *label = osd_text(&battery_text_cache, text,
+                                  osd_size_for_width(surface->w, 100));
+    if (icon == NULL && label == NULL)
+        return;
+    int spacer = icon != NULL && label != NULL ? 5 * surface->w / 640 : 0;
+    int total_w = (icon != NULL ? icon->w : 0) + spacer +
+                  (label != NULL ? label->w : 0);
+    int center_x = surface->w * 596 / 640;
+    int center_y = surface->h * 30 / 480;
+    int x = center_x - total_w / 2;
+    if (icon != NULL) {
+        blit_osd_text(surface, icon, x, center_y - icon->h / 2);
+        x += icon->w + spacer;
+    }
+    if (label != NULL)
+        blit_osd_text(surface, label, x, center_y - label->h / 2);
 }
 
 static void make_audio_title(char *out, size_t out_size, int max_chars)
@@ -1055,6 +1157,258 @@ static void rotate_surface_180(SDL_Surface *surface)
     }
     if (locked)
         SDL_UnlockSurface(surface);
+}
+
+static bool battery_icon_path(const char *name, char *out, size_t out_size)
+{
+    const char *theme = getenv("VC_THEME_PATH");
+    const char *roots[3] = {
+        "/mnt/SDCARD/Saves/CurrentProfile/theme",
+        theme != NULL && theme[0] != '\0' ? theme : "/mnt/SDCARD/miyoo/app",
+        "/mnt/SDCARD/miyoo/app"};
+    for (int i = 0; i < 3; i++) {
+        snprintf(out, out_size, "%s%s/skin/%s.png", roots[i],
+                 roots[i][strlen(roots[i]) - 1] == '/' ? "" : "/", name);
+        if (access(out, R_OK) == 0)
+            return true;
+    }
+    out[0] = '\0';
+    return false;
+}
+
+static SDL_Surface *battery_icon(void)
+{
+    int index;
+    const char *name;
+    if (battery_charging) {
+        index = 5;
+        name = "ic-power-charge-100%";
+    }
+    else if (battery_percentage < 5) {
+        index = 0;
+        name = "power-0%-icon";
+    }
+    else if (battery_percentage < 30) {
+        index = 1;
+        name = "power-20%-icon";
+    }
+    else if (battery_percentage < 60) {
+        index = 2;
+        name = "power-50%-icon";
+    }
+    else if (battery_percentage < 90) {
+        index = 3;
+        name = "power-80%-icon";
+    }
+    else {
+        index = 4;
+        name = "power-full-icon";
+    }
+    if (battery_icons[index] != NULL)
+        return battery_icons[index];
+    char path[512];
+    if (!battery_icon_path(name, path, sizeof(path)) && index == 4 &&
+        !battery_icon_path("power-full-icon_back", path, sizeof(path)))
+        return NULL;
+    if (path[0] == '\0')
+        return NULL;
+    SDL_Surface *raw = IMG_Load(path);
+    if (raw == NULL)
+        return NULL;
+    if (raw->format->BytesPerPixel == 4) {
+        battery_icons[index] = raw;
+    }
+    else {
+        battery_icons[index] = SDL_CreateRGBSurface(
+            SDL_SWSURFACE, raw->w, raw->h, 32, 0x00ff0000, 0x0000ff00,
+            0x000000ff, 0xff000000);
+        if (battery_icons[index] != NULL) {
+            SDL_FillRect(battery_icons[index], NULL,
+                         SDL_MapRGBA(battery_icons[index]->format,
+                                     0, 0, 0, 0));
+            SDL_BlitSurface(raw, NULL, battery_icons[index], NULL);
+        }
+        SDL_FreeSurface(raw);
+    }
+    if (battery_icons[index] != NULL) {
+        rotate_surface_180(battery_icons[index]);
+        SDL_SetAlpha(battery_icons[index], SDL_SRCALPHA, 255);
+    }
+    return battery_icons[index];
+}
+
+static TTF_Font *osd_font(int size)
+{
+    if (size < 10)
+        size = 10;
+    for (int i = 0; i < 4; i++)
+        if (osd_fonts[i] != NULL && osd_font_sizes[i] == size)
+            return osd_fonts[i];
+    if (!TTF_WasInit()) {
+        if (TTF_Init() != 0)
+            return NULL;
+        osd_ttf_owned = true;
+    }
+    const char *path = getenv("VC_OSD_FONT");
+    if (path == NULL || path[0] == '\0')
+        path = "/customer/app/Exo-2-Bold-Italic.ttf";
+    for (int i = 0; i < 4; i++) {
+        if (osd_fonts[i] != NULL)
+            continue;
+        osd_fonts[i] = TTF_OpenFont(path, size);
+        if (osd_fonts[i] == NULL &&
+            strcmp(path, "/customer/app/Exo-2-Bold-Italic.ttf") != 0)
+            osd_fonts[i] = TTF_OpenFont(
+                "/customer/app/Exo-2-Bold-Italic.ttf", size);
+        osd_font_sizes[i] = size;
+        return osd_fonts[i];
+    }
+    return osd_fonts[0];
+}
+
+static SDL_Surface *osd_text(OsdTextCache *cache, const char *text,
+                             int size)
+{
+    if (cache == NULL || text == NULL)
+        return NULL;
+    if (cache->surface != NULL && cache->size == size &&
+        strcmp(cache->text, text) == 0)
+        return cache->surface;
+
+    SDL_FreeSurface(cache->surface);
+    cache->surface = NULL;
+    cache->text[0] = '\0';
+    cache->size = size;
+    TTF_Font *font = osd_font(size);
+    if (font == NULL)
+        return NULL;
+
+    int outline = size >= 22 ? 2 : 1;
+    SDL_Color black = {0, 0, 0, 255};
+    SDL_Color white = {255, 255, 255, 255};
+    TTF_SetFontOutline(font, outline);
+    SDL_Surface *shadow = TTF_RenderUTF8_Blended(font, text, black);
+    TTF_SetFontOutline(font, 0);
+    SDL_Surface *face = TTF_RenderUTF8_Blended(font, text, white);
+    if (shadow == NULL || face == NULL) {
+        SDL_FreeSurface(shadow);
+        SDL_FreeSurface(face);
+        return NULL;
+    }
+    cache->surface = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, shadow->w, shadow->h, 32, 0x00ff0000, 0x0000ff00,
+        0x000000ff, 0xff000000);
+    if (cache->surface != NULL) {
+        SDL_FillRect(cache->surface, NULL,
+                     SDL_MapRGBA(cache->surface->format, 0, 0, 0, 0));
+        bool lock_shadow = SDL_MUSTLOCK(shadow);
+        bool lock_face = SDL_MUSTLOCK(face);
+        bool lock_target = SDL_MUSTLOCK(cache->surface);
+        if ((!lock_shadow || SDL_LockSurface(shadow) == 0) &&
+            (!lock_face || SDL_LockSurface(face) == 0) &&
+            (!lock_target || SDL_LockSurface(cache->surface) == 0)) {
+            for (int y = 0; y < shadow->h; y++)
+                for (int x = 0; x < shadow->w; x++) {
+                    Uint32 pixel = *(Uint32 *)((Uint8 *)shadow->pixels +
+                                               y * shadow->pitch + x * 4);
+                    Uint8 r, g, b, a;
+                    SDL_GetRGBA(pixel, shadow->format, &r, &g, &b, &a);
+                    Uint32 *dst = (Uint32 *)((Uint8 *)cache->surface->pixels +
+                                             y * cache->surface->pitch) + x;
+                    *dst = SDL_MapRGBA(cache->surface->format, r, g, b, a);
+                }
+            for (int y = 0; y < face->h; y++)
+                for (int x = 0; x < face->w; x++) {
+                    Uint32 pixel = *(Uint32 *)((Uint8 *)face->pixels +
+                                               y * face->pitch + x * 4);
+                    Uint8 r, g, b, a;
+                    SDL_GetRGBA(pixel, face->format, &r, &g, &b, &a);
+                    if (a == 0)
+                        continue;
+                    int dx = x + outline;
+                    int dy = y + outline;
+                    if (dx >= cache->surface->w || dy >= cache->surface->h)
+                        continue;
+                    Uint32 *dst = (Uint32 *)((Uint8 *)cache->surface->pixels +
+                                             dy * cache->surface->pitch) + dx;
+                    *dst = SDL_MapRGBA(cache->surface->format, r, g, b, a);
+                }
+            if (lock_target)
+                SDL_UnlockSurface(cache->surface);
+            if (lock_face)
+                SDL_UnlockSurface(face);
+            if (lock_shadow)
+                SDL_UnlockSurface(shadow);
+        }
+        rotate_surface_180(cache->surface);
+        SDL_SetAlpha(cache->surface, SDL_SRCALPHA, 255);
+        snprintf(cache->text, sizeof(cache->text), "%s", text);
+    }
+    SDL_FreeSurface(shadow);
+    SDL_FreeSurface(face);
+    return cache->surface;
+}
+
+static void blit_osd_text(SDL_Surface *target, SDL_Surface *text,
+                          int logical_x, int logical_y)
+{
+    if (target == NULL || text == NULL)
+        return;
+    SDL_Rect position = {target->w - logical_x - text->w,
+                         target->h - logical_y - text->h, 0, 0};
+    SDL_BlitSurface(text, NULL, target, &position);
+}
+
+static void yuv_blit_osd_text(SDL_Overlay *overlay, SDL_Surface *text,
+                              int logical_x, int logical_y)
+{
+    if (overlay == NULL || text == NULL || text->format->BytesPerPixel != 4)
+        return;
+    bool locked = SDL_MUSTLOCK(text);
+    if (locked && SDL_LockSurface(text) != 0)
+        return;
+    int origin_x = overlay->w - logical_x - text->w;
+    int origin_y = overlay->h - logical_y - text->h;
+    for (int y = 0; y < text->h; y++) {
+        Uint32 *row = (Uint32 *)((Uint8 *)text->pixels + y * text->pitch);
+        for (int x = 0; x < text->w; x++) {
+            Uint8 r, g, b, a;
+            SDL_GetRGBA(row[x], text->format, &r, &g, &b, &a);
+            if (a < 24)
+                continue;
+            int px = origin_x + x;
+            int py = origin_y + y;
+            if (px < 0 || py < 0 || px >= overlay->w || py >= overlay->h)
+                continue;
+            Uint8 *dst = overlay->pixels[0] + py * overlay->pitches[0] + px;
+            int target_y = 16 + ((66 * r + 129 * g + 25 * b + 128) >> 8);
+            *dst = (Uint8)((target_y * a + *dst * (255 - a)) / 255);
+            if (a >= 128) {
+                Uint8 *u_plane = overlay->format == SDL_YV12_OVERLAY
+                                     ? overlay->pixels[2]
+                                     : overlay->pixels[1];
+                Uint8 *v_plane = overlay->format == SDL_YV12_OVERLAY
+                                     ? overlay->pixels[1]
+                                     : overlay->pixels[2];
+                int u_pitch = overlay->format == SDL_YV12_OVERLAY
+                                  ? overlay->pitches[2]
+                                  : overlay->pitches[1];
+                int v_pitch = overlay->format == SDL_YV12_OVERLAY
+                                  ? overlay->pitches[1]
+                                  : overlay->pitches[2];
+                Uint8 *u_dst = u_plane + (py / 2) * u_pitch + px / 2;
+                Uint8 *v_dst = v_plane + (py / 2) * v_pitch + px / 2;
+                int target_u = 128 + ((-38 * r - 74 * g + 112 * b + 128) >> 8);
+                int target_v = 128 + ((112 * r - 94 * g - 18 * b + 128) >> 8);
+                *u_dst = (Uint8)((clamp_color(target_u) * a +
+                                  *u_dst * (255 - a)) / 255);
+                *v_dst = (Uint8)((clamp_color(target_v) * a +
+                                  *v_dst * (255 - a)) / 255);
+            }
+        }
+    }
+    if (locked)
+        SDL_UnlockSurface(text);
 }
 
 static void load_audio_artwork(SDL_Surface *surface)
@@ -1170,15 +1524,23 @@ static void draw_progress_bar(SDL_Surface *surface)
     format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
     format_time(remaining, true, remaining_text, sizeof(remaining_text));
 
-    int scale = surface->w >= 600 ? 2 : 1;
-    int logical_y = surface->h - 39;
+    int font_size = osd_size_for_width(surface->w, 78);
+    SDL_Surface *elapsed_label = osd_text(&elapsed_text_cache, elapsed_text,
+                                          font_size);
+    SDL_Surface *remaining_label = osd_text(&remaining_text_cache,
+                                            remaining_text, font_size);
+    if (elapsed_label == NULL || remaining_label == NULL)
+        return;
+    int label_h = elapsed_label->h > remaining_label->h
+                      ? elapsed_label->h
+                      : remaining_label->h;
+    int logical_y = surface->h - 8 - label_h;
     int bar_y = surface->h - 28;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
-    Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
     Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
 
-    int elapsed_width = text_width(elapsed_text, scale);
-    int remaining_width = text_width(remaining_text, scale);
+    int elapsed_width = elapsed_label->w;
+    int remaining_width = remaining_label->w;
     int bar_x = 16 + elapsed_width + 16;
     int bar_right = surface->w - 16 - remaining_width - 16;
     int bar_w = bar_right - bar_x;
@@ -1187,59 +1549,45 @@ static void draw_progress_bar(SDL_Surface *surface)
         bar_w = surface->w - bar_x * 2;
     }
 
-    draw_rotated_text(surface, elapsed_text, 16, logical_y, scale, black,
-                      white);
-    draw_rotated_text(surface, remaining_text,
-                      surface->w - 16 - remaining_width, logical_y, scale,
-                      black, white);
+    blit_osd_text(surface, elapsed_label, 16, logical_y);
+    blit_osd_text(surface, remaining_label,
+                  surface->w - 16 - remaining_width, logical_y);
     draw_logical_rect(surface, bar_x, bar_y - 1, bar_w, 3, black);
     draw_logical_rect(surface, bar_x, bar_y, bar_w, 1, accent);
 
     int knob_x = bar_x + (int)((long long)bar_w * elapsed / duration_seconds);
     draw_progress_knob(surface, knob_x, bar_y, accent);
     if (audio_mode) {
-        snprintf(last_elapsed_text, sizeof(last_elapsed_text), "%s",
-                 elapsed_text);
-        snprintf(last_remaining_text, sizeof(last_remaining_text), "%s",
-                 remaining_text);
         last_progress_knob = knob_x;
+        last_progress_bar_x = bar_x;
+        last_progress_bar_w = bar_w;
         audio_progress_ready = true;
     }
 }
 
-static void update_changed_text(SDL_Surface *surface, const char *old_text,
-                                const char *new_text, int right_edge,
-                                int logical_y, int scale, Uint32 black,
-                                Uint32 white)
+static void update_changed_text(SDL_Surface *surface, const char *new_text,
+                                int right_edge,
+                                int logical_y, int font_size, Uint32 black,
+                                OsdTextCache *cache)
 {
-    int old_len = (int)strlen(old_text);
-    int new_len = (int)strlen(new_text);
-    int old_width = text_width(old_text, scale);
-    int new_width = text_width(new_text, scale);
+    SDL_Surface *old_label = cache->surface;
+    int old_width = old_label != NULL ? old_label->w : 0;
+    int old_height = old_label != NULL ? old_label->h : 0;
+    SDL_Surface *new_label = osd_text(cache, new_text, font_size);
+    if (new_label == NULL)
+        return;
+    int new_width = new_label->w;
+    int new_height = new_label->h;
     int old_x = right_edge >= 0 ? right_edge - old_width : 16;
     int new_x = right_edge >= 0 ? right_edge - new_width : 16;
-
-    if (old_len != new_len) {
-        int left = old_x < new_x ? old_x : new_x;
-        int right = old_x + old_width > new_x + new_width
-                        ? old_x + old_width
-                        : new_x + new_width;
-        draw_logical_rect(surface, left - 1, logical_y - 1,
-                          right - left + 2, 7 * scale + 2, black);
-        draw_rotated_text(surface, new_text, new_x, logical_y, scale, black,
-                          white);
-        return;
-    }
-
-    for (int i = 0; i < new_len; i++) {
-        if (old_text[i] == new_text[i])
-            continue;
-        int x = new_x + i * 6 * scale;
-        draw_logical_rect(surface, x - 1, logical_y - 1,
-                          6 * scale + 2, 7 * scale + 2, black);
-        char digit[2] = {new_text[i], '\0'};
-        draw_rotated_text(surface, digit, x, logical_y, scale, black, white);
-    }
+    int left = old_x < new_x ? old_x : new_x;
+    int right = old_x + old_width > new_x + new_width
+                    ? old_x + old_width
+                    : new_x + new_width;
+    int height = old_height > new_height ? old_height : new_height;
+    draw_logical_rect(surface, left - 2, logical_y - 2,
+                      right - left + 4, height + 4, black);
+    blit_osd_text(surface, new_label, new_x, logical_y);
 }
 
 static void draw_audio_progress_only(void)
@@ -1266,11 +1614,17 @@ static void draw_audio_progress_only(void)
     format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
     format_time(remaining, true, remaining_text, sizeof(remaining_text));
 
-    int scale = surface->w >= 600 ? 2 : 1;
-    int logical_y = surface->h - 39;
+    int font_size = osd_size_for_width(surface->w, 78);
+    int label_h = font_size + 4;
+    if (elapsed_text_cache.surface != NULL &&
+        elapsed_text_cache.surface->h > label_h)
+        label_h = elapsed_text_cache.surface->h;
+    if (remaining_text_cache.surface != NULL &&
+        remaining_text_cache.surface->h > label_h)
+        label_h = remaining_text_cache.surface->h;
+    int logical_y = surface->h - 8 - label_h;
     int bar_y = surface->h - 28;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
-    Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
     Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
 
     if (!audio_progress_ready) {
@@ -1279,13 +1633,17 @@ static void draw_audio_progress_only(void)
         return;
     }
 
-    update_changed_text(surface, last_elapsed_text, elapsed_text, -1,
-                        logical_y, scale, black, white);
-    update_changed_text(surface, last_remaining_text, remaining_text,
-                        surface->w - 16, logical_y, scale, black, white);
+    update_changed_text(surface, elapsed_text, -1, logical_y, font_size,
+                        black, &elapsed_text_cache);
+    update_changed_text(surface, remaining_text, surface->w - 16, logical_y,
+                        font_size, black, &remaining_text_cache);
 
-    int elapsed_width = text_width(elapsed_text, scale);
-    int remaining_width = text_width(remaining_text, scale);
+    int elapsed_width = elapsed_text_cache.surface != NULL
+                            ? elapsed_text_cache.surface->w
+                            : 0;
+    int remaining_width = remaining_text_cache.surface != NULL
+                              ? remaining_text_cache.surface->w
+                              : 0;
     int bar_x = 16 + elapsed_width + 16;
     int bar_right = surface->w - 16 - remaining_width - 16;
     int bar_w = bar_right - bar_x;
@@ -1294,44 +1652,29 @@ static void draw_audio_progress_only(void)
         bar_w = surface->w - bar_x * 2;
     }
     int knob_x = bar_x + (int)((long long)bar_w * elapsed / duration_seconds);
-    bool layout_changed = strlen(last_elapsed_text) != strlen(elapsed_text) ||
-                          strlen(last_remaining_text) != strlen(remaining_text);
-    if (layout_changed) {
-        int old_elapsed_width = text_width(last_elapsed_text, scale);
-        int old_remaining_width = text_width(last_remaining_text, scale);
-        int old_bar_x = 16 + old_elapsed_width + 16;
-        int old_bar_right = surface->w - 16 - old_remaining_width - 16;
-        int old_bar_w = old_bar_right - old_bar_x;
-        if (old_bar_w < surface->w / 4) {
-            old_bar_x = (int)(surface->w * 0.24);
-            old_bar_w = surface->w - old_bar_x * 2;
-        }
-        int clear_left = old_bar_x < bar_x ? old_bar_x : bar_x;
-        int clear_right = old_bar_x + old_bar_w > bar_x + bar_w
-                              ? old_bar_x + old_bar_w
-                              : bar_x + bar_w;
-        draw_logical_rect(surface, clear_left - 7, bar_y - 7,
-                          clear_right - clear_left + 14, 15, black);
-        draw_logical_rect(surface, bar_x, bar_y - 1, bar_w, 3, black);
-        draw_logical_rect(surface, bar_x, bar_y, bar_w, 1, accent);
-        draw_progress_knob(surface, knob_x, bar_y, accent);
+    int clear_left = bar_x - 7;
+    int clear_right = bar_x + bar_w + 7;
+    if (last_progress_bar_x >= 0) {
+        if (last_progress_bar_x - 7 < clear_left)
+            clear_left = last_progress_bar_x - 7;
+        if (last_progress_bar_x + last_progress_bar_w + 7 > clear_right)
+            clear_right = last_progress_bar_x + last_progress_bar_w + 7;
     }
-    else if (last_progress_knob >= 0 && knob_x != last_progress_knob) {
-        const int radius = 6;
-        draw_logical_rect(surface, last_progress_knob - radius,
-                          bar_y - radius, radius * 2 + 1,
-                          radius * 2 + 1, black);
-        draw_logical_rect(surface, last_progress_knob - radius,
-                          bar_y - 1, radius * 2 + 1, 3, black);
-        draw_logical_rect(surface, last_progress_knob - radius,
-                          bar_y, radius * 2 + 1, 1, accent);
-        draw_progress_knob(surface, knob_x, bar_y, accent);
+    if (last_progress_knob >= 0) {
+        if (last_progress_knob - 7 < clear_left)
+            clear_left = last_progress_knob - 7;
+        if (last_progress_knob + 7 > clear_right)
+            clear_right = last_progress_knob + 7;
     }
+    draw_logical_rect(surface, clear_left, bar_y - 7,
+                      clear_right - clear_left, 15, black);
+    draw_logical_rect(surface, bar_x, bar_y - 1, bar_w, 3, black);
+    draw_logical_rect(surface, bar_x, bar_y, bar_w, 1, accent);
+    draw_progress_knob(surface, knob_x, bar_y, accent);
     draw_seek_notice();
-    snprintf(last_elapsed_text, sizeof(last_elapsed_text), "%s", elapsed_text);
-    snprintf(last_remaining_text, sizeof(last_remaining_text), "%s",
-             remaining_text);
     last_progress_knob = knob_x;
+    last_progress_bar_x = bar_x;
+    last_progress_bar_w = bar_w;
     // Direct framebuffer writes are deliberately not followed by an SDL
     // refresh: the Miyoo driver can turn even a tiny update into a full-page
     // flip, which was the remaining source of random whole-screen flashes.
@@ -1344,15 +1687,9 @@ static void draw_seek_notice(void)
                                : SDL_GetVideoSurface();
     if (!surface)
         return;
-    Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
     int base_scale = surface->w / 320;
     if (base_scale < 1)
         base_scale = 1;
-    int scale = base_scale + (base_scale > 1 ? base_scale / 2 : 1);
-    int length = (int)strlen(seek_notice);
-    int width = length > 0 ? length * 6 * scale - scale : 0;
-    int x = seek_notice_forward ? 18 : surface->w - width - 18;
-    int y = 35 * base_scale;
     if (!seek_notice[0] || SDL_GetTicks() >= seek_notice_until) {
         clear_audio_seek_notice();
         seek_notice[0] = '\0';
@@ -1360,20 +1697,25 @@ static void draw_seek_notice(void)
     }
     if (audio_mode && seek_notice_drawn)
         return;
+    SDL_Surface *notice = osd_text(
+        &seek_text_cache, seek_notice,
+        osd_size_for_width(surface->w, 115));
+    if (notice == NULL)
+        return;
+    int width = notice->w;
+    int x = seek_notice_forward ? 18 : surface->w - width - 18;
+    int y = 35 * base_scale;
     // Coordinates are pre-rotated as well: logical top-left becomes the
     // physical bottom-right, and logical top-right becomes bottom-left.
     // Leave the lowest row free for the progress line and its time labels.
-    Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
-    for (int i = 0; i < length; i++)
-        draw_glyph(surface, seek_notice[length - 1 - i],
-                   x + i * 6 * scale, y, scale,
-                   black, white);
+    blit_osd_text(surface, notice, surface->w - x - width,
+                  surface->h - y - notice->h);
     seek_notice_drawn = true;
     if (audio_mode) {
         seek_notice_draw_x = x - 1;
         seek_notice_draw_y = y - 1;
         seek_notice_draw_w = width + 2;
-        seek_notice_draw_h = 7 * scale + 2;
+        seek_notice_draw_h = notice->h + 2;
     }
 }
 
@@ -1679,7 +2021,7 @@ static bool map_event(SDL_Event *event)
     if (in == SDLK_LALT && !menu_down) { /* Miyoo Y: battery */
         if (state == SDL_PRESSED && !battery_peek_down) {
             battery_peek_down = true;
-            battery_percentage = read_battery_percentage();
+            update_battery_status(now, true);
             if (audio_mode || paused) {
                 overlay_force_redraw = true;
                 draw_player_overlay();

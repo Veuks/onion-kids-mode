@@ -12,4 +12,4 @@ include ../common/recipes.mk
 
 libvcinput.so: vcinput.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -L../../lib -L/usr/local/lib \
-		-ldl -lSDL -lSDL_image
+		-ldl -lSDL -lSDL_image -lSDL_ttf

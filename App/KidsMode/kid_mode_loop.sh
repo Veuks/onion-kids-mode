@@ -1623,6 +1623,34 @@ play_video() {
     # reliably, so playback and its controls cannot continue during sleep.
     rm -f /tmp/stay_awake
     touch /tmp/kidsmode_media_playing
+    # Match the media OSD to the battery font selected by the active Onion
+    # theme. Fall back to Onion's standard Exo 2 face when a theme omits it.
+    osd_font="/customer/app/Exo-2-Bold-Italic.ttf"
+    osd_font_size=24
+    theme_path="$(jq -r '.theme // empty' /mnt/SDCARD/system.json \
+        2> /dev/null)"
+    [ "$theme_path" = "./" ] && theme_path="/mnt/SDCARD/miyoo/app/"
+    [ -d "$theme_path" ] || theme_path="/mnt/SDCARD/miyoo/app/"
+    theme_config="${theme_path%/}/config.json"
+    if [ -r "$theme_config" ]; then
+        theme_font="$(jq -r \
+            '.batteryPercentage.font // .hint.font // empty' \
+            "$theme_config" 2> /dev/null)"
+        theme_font_size="$(jq -r \
+            '.batteryPercentage.size // 24' "$theme_config" \
+            2> /dev/null)"
+        if [ -n "$theme_font" ]; then
+            case "$theme_font" in
+                /*) candidate_font="$theme_font" ;;
+                *) candidate_font="${theme_path%/}/$theme_font" ;;
+            esac
+            [ -r "$candidate_font" ] && osd_font="$candidate_font"
+        fi
+        case "$theme_font_size" in
+            '' | *[!0-9]*) ;;
+            *) osd_font_size="$theme_font_size" ;;
+        esac
+    fi
     if ! cd "$sysdir"; then
         rm -f /tmp/kidsmode_media_playing
         return 1
@@ -1644,6 +1672,8 @@ play_video() {
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
+            VC_OSD_FONT="$osd_font" VC_OSD_FONT_SIZE="$osd_font_size" \
+            VC_THEME_PATH="$theme_path" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
             "$ffplay" -vn -autoexit -i "$video" $seek_args \
                 2> "$duration_log" &
@@ -1655,6 +1685,8 @@ play_video() {
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
+            VC_OSD_FONT="$osd_font" VC_OSD_FONT_SIZE="$osd_font_size" \
+            VC_THEME_PATH="$theme_path" \
             LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
             "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" $seek_args \
             2> "$duration_log" &
