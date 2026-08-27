@@ -2376,7 +2376,38 @@ static bool batteryIsChargingFast(void)
     return battery_isCharging();
 }
 
+static int batteryPercentageFast(void)
+{
+    int percentage = battery_getPercentage();
+    if (percentage >= 0 && percentage <= 100) {
+        s_battery = percentage;
+        return percentage;
+    }
+
+    // Charging can temporarily expose Onion's sentinel value (500).
+    // Recover the real percentage from axp_test's cached JSON when possible.
+    FILE *fp = fopen("/tmp/.axp_result", "r");
+    if (fp != NULL) {
+        char buf[160] = "";
+        if (fgets(buf, sizeof(buf), fp) != NULL) {
+            char *field = strstr(buf, "\"battery\"");
+            char *separator = field != NULL ? strchr(field, ':') : NULL;
+            if (separator != NULL) {
+                int axp_percentage = atoi(separator + 1);
+                if (axp_percentage >= 0 && axp_percentage <= 100) {
+                    fclose(fp);
+                    s_battery = axp_percentage;
+                    return axp_percentage;
+                }
+            }
+        }
+        fclose(fp);
+    }
+    return s_battery >= 0 && s_battery <= 100 ? s_battery : 0;
+}
+
 static bool carousel_battery_charging;
+static int carousel_battery_percentage;
 
 // Onion deliberately hides the percentage when theme_batterySurface() is
 // called with its special charging value (500). Kids Mode keeps the charging
@@ -2388,9 +2419,7 @@ static void renderChargingBattery(void)
     TTF_Font *font = resource_getFont(BATTERY);
     SDL_Surface *text = NULL;
 
-    int pct = battery_getPercentage();
-    if (pct < 0 || pct > 100)
-        pct = 100;
+    int pct = carousel_battery_percentage;
 
     if (font != NULL) {
         char buffer[8];
@@ -2438,10 +2467,8 @@ static void renderTimeChip(int remaining)
         return;
 
     if (battery_peek) {
-        // Y held, or charging: show the theme's own battery gauge at
-        // the exact same coordinates Onion's own MainUI header uses
-        // (theme_renderHeaderBattery: centered at 596*scale, 30*scale) —
-        // not a guessed position — whether or not a timer is running.
+        // Y held, or charging: show the theme's battery gauge in Onion's
+        // header area whether or not a timer is running.
         // Read live rather than a cached value, since a play session can
         // run long enough for it to actually change. (Continued redraw
         // while held is re-armed in main()'s loop, same reasoning as the
@@ -2449,7 +2476,7 @@ static void renderTimeChip(int remaining)
         if (carousel_battery_charging)
             renderChargingBattery();
         else {
-            int pct = battery_getPercentage();
+            int pct = carousel_battery_percentage;
             SDL_Surface *batt = theme_batterySurface(pct);
             if (batt != NULL) {
                 SDL_Rect pos = {(int)(596.0 * g_scale) - batt->w / 2,
@@ -3335,6 +3362,7 @@ int main(int argc, char *argv[])
     uint32_t last_charging_poll = 0;
     uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
     carousel_battery_charging = batteryIsChargingFast();
+    carousel_battery_percentage = batteryPercentageFast();
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
@@ -3342,8 +3370,11 @@ int main(int argc, char *argv[])
         if (ticks - last_charging_poll >= 2000) {
             last_charging_poll = ticks;
             bool charging = batteryIsChargingFast();
-            if (charging != carousel_battery_charging) {
+            int percentage = batteryPercentageFast();
+            if (charging != carousel_battery_charging ||
+                percentage != carousel_battery_percentage) {
                 carousel_battery_charging = charging;
+                carousel_battery_percentage = percentage;
                 if (active_screen == SCREEN_CAROUSEL)
                     dirty = true;
             }

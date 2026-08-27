@@ -112,6 +112,9 @@ static TTF_Font *osd_fonts[4];
 static int osd_font_sizes[4];
 static bool osd_ttf_owned;
 static SDL_Surface *battery_icons[6];
+static SDL_Surface *scaled_battery_icon;
+static SDL_Surface *scaled_battery_source;
+static int scaled_battery_target_width;
 
 #define AUDIO_DIM_DELAY 15000
 #define AUDIO_OFF_DELAY 30000
@@ -143,6 +146,7 @@ static void blit_osd_text(SDL_Surface *target, SDL_Surface *text,
 static void yuv_blit_osd_text(SDL_Overlay *overlay, SDL_Surface *text,
                               int logical_x, int logical_y);
 static SDL_Surface *battery_icon(void);
+static SDL_Surface *battery_icon_for_width(int target_width);
 static void restore_video_overlay(SDL_Overlay *overlay);
 static int text_width(const char *text, int scale);
 static void format_time(long seconds, bool remaining, char *out,
@@ -152,11 +156,31 @@ static bool player_overlay_visible(void);
 static int read_battery_percentage(void)
 {
     long value = read_number_file("/tmp/percBat");
-    if (value < 0)
-        value = 0;
-    if (value > 100)
-        value = 100;
-    return (int)value;
+    if (value >= 0 && value <= 100)
+        return (int)value;
+
+    // Some Onion builds temporarily put the charging sentinel (500) in
+    // percBat. Try the real AXP percentage before falling back to the last
+    // valid value, so charging never turns into a misleading "100%".
+    FILE *fp = fopen("/tmp/.axp_result", "r");
+    if (fp != NULL) {
+        char buf[160] = "";
+        if (fgets(buf, sizeof(buf), fp) != NULL) {
+            char *field = strstr(buf, "\"battery\"");
+            char *separator = field != NULL ? strchr(field, ':') : NULL;
+            if (separator != NULL) {
+                long axp_value = strtol(separator + 1, NULL, 10);
+                if (axp_value >= 0 && axp_value <= 100)
+                    value = axp_value;
+            }
+        }
+        fclose(fp);
+    }
+    if (value >= 0 && value <= 100)
+        return (int)value;
+    return battery_percentage >= 0 && battery_percentage <= 100
+               ? battery_percentage
+               : 0;
 }
 
 static bool read_battery_charging(void)
@@ -463,6 +487,9 @@ __attribute__((destructor)) static void vcinput_unloaded(void)
             TTF_CloseFont(osd_fonts[i]);
         osd_fonts[i] = NULL;
     }
+    SDL_FreeSurface(scaled_battery_icon);
+    scaled_battery_icon = NULL;
+    scaled_battery_source = NULL;
     for (int i = 0; i < 6; i++) {
         SDL_FreeSurface(battery_icons[i]);
         battery_icons[i] = NULL;
@@ -845,7 +872,7 @@ static void yuv_battery_peek(SDL_Overlay *overlay)
 {
     if (!battery_peek_visible())
         return;
-    SDL_Surface *icon = battery_icon();
+    SDL_Surface *icon = battery_icon_for_width(overlay->w);
     char text[8];
     snprintf(text, sizeof(text), "%d%%", battery_percentage);
     SDL_Surface *label = osd_text(&battery_text_cache, text,
@@ -855,9 +882,9 @@ static void yuv_battery_peek(SDL_Overlay *overlay)
     int spacer = icon != NULL && label != NULL ? 5 * overlay->w / 640 : 0;
     int total_w = (icon != NULL ? icon->w : 0) + spacer +
                   (label != NULL ? label->w : 0);
-    int center_x = overlay->w * 596 / 640;
+    int right_edge = overlay->w * 620 / 640;
     int center_y = overlay->w * 30 / 640;
-    int x = center_x - total_w / 2;
+    int x = right_edge - total_w;
     if (icon != NULL) {
         yuv_blit_osd_text(overlay, icon, x, center_y - icon->h / 2);
         x += icon->w + spacer;
@@ -900,7 +927,7 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
     format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
     format_time(duration_seconds - elapsed, true, remaining_text,
                 sizeof(remaining_text));
-    int font_size = osd_size_for_width(overlay->w, 78);
+    int font_size = osd_size_for_width(overlay->w, 100);
     SDL_Surface *elapsed_label = osd_text(&elapsed_text_cache, elapsed_text,
                                           font_size);
     SDL_Surface *remaining_label = osd_text(&remaining_text_cache,
@@ -910,8 +937,8 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
     int label_h = elapsed_label->h > remaining_label->h
                       ? elapsed_label->h
                       : remaining_label->h;
-    int logical_y = overlay->h - 8 * scale - label_h;
     int bar_y = overlay->h - 14 * scale;
+    int logical_y = bar_y - label_h / 2;
     int margin = 8 * scale;
     int elapsed_width = elapsed_label->w;
     int remaining_width = remaining_label->w;
@@ -1044,7 +1071,7 @@ static void draw_battery_peek(SDL_Surface *surface)
 {
     if (surface == NULL || !battery_peek_visible())
         return;
-    SDL_Surface *icon = battery_icon();
+    SDL_Surface *icon = battery_icon_for_width(surface->w);
     char text[8];
     snprintf(text, sizeof(text), "%d%%", battery_percentage);
     SDL_Surface *label = osd_text(&battery_text_cache, text,
@@ -1054,9 +1081,9 @@ static void draw_battery_peek(SDL_Surface *surface)
     int spacer = icon != NULL && label != NULL ? 5 * surface->w / 640 : 0;
     int total_w = (icon != NULL ? icon->w : 0) + spacer +
                   (label != NULL ? label->w : 0);
-    int center_x = surface->w * 596 / 640;
-    int center_y = surface->h * 30 / 480;
-    int x = center_x - total_w / 2;
+    int right_edge = surface->w * 620 / 640;
+    int center_y = surface->w * 30 / 640;
+    int x = right_edge - total_w;
     if (icon != NULL) {
         blit_osd_text(surface, icon, x, center_y - icon->h / 2);
         x += icon->w + spacer;
@@ -1235,6 +1262,47 @@ static SDL_Surface *battery_icon(void)
         SDL_SetAlpha(battery_icons[index], SDL_SRCALPHA, 255);
     }
     return battery_icons[index];
+}
+
+static SDL_Surface *battery_icon_for_width(int target_width)
+{
+    SDL_Surface *source = battery_icon();
+    if (source == NULL || target_width <= 0)
+        return source;
+    if (target_width == 640)
+        return source;
+    if (scaled_battery_icon != NULL && scaled_battery_source == source &&
+        scaled_battery_target_width == target_width)
+        return scaled_battery_icon;
+
+    SDL_FreeSurface(scaled_battery_icon);
+    scaled_battery_icon = NULL;
+    scaled_battery_source = source;
+    scaled_battery_target_width = target_width;
+
+    int width = source->w * target_width / 640;
+    int height = source->h * target_width / 640;
+    if (width < 1)
+        width = 1;
+    if (height < 1)
+        height = 1;
+    scaled_battery_icon = SDL_CreateRGBSurface(
+        SDL_SWSURFACE, width, height, 32, 0x00ff0000, 0x0000ff00,
+        0x000000ff, 0xff000000);
+    if (scaled_battery_icon == NULL)
+        return source;
+    SDL_FillRect(scaled_battery_icon, NULL,
+                 SDL_MapRGBA(scaled_battery_icon->format, 0, 0, 0, 0));
+    SDL_SetAlpha(source, 0, 255);
+    if (SDL_SoftStretch(source, NULL, scaled_battery_icon, NULL) != 0) {
+        SDL_FreeSurface(scaled_battery_icon);
+        scaled_battery_icon = NULL;
+        SDL_SetAlpha(source, SDL_SRCALPHA, 255);
+        return source;
+    }
+    SDL_SetAlpha(source, SDL_SRCALPHA, 255);
+    SDL_SetAlpha(scaled_battery_icon, SDL_SRCALPHA, 255);
+    return scaled_battery_icon;
 }
 
 static TTF_Font *osd_font(int size)
@@ -1524,7 +1592,7 @@ static void draw_progress_bar(SDL_Surface *surface)
     format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
     format_time(remaining, true, remaining_text, sizeof(remaining_text));
 
-    int font_size = osd_size_for_width(surface->w, 78);
+    int font_size = osd_size_for_width(surface->w, 100);
     SDL_Surface *elapsed_label = osd_text(&elapsed_text_cache, elapsed_text,
                                           font_size);
     SDL_Surface *remaining_label = osd_text(&remaining_text_cache,
@@ -1534,8 +1602,11 @@ static void draw_progress_bar(SDL_Surface *surface)
     int label_h = elapsed_label->h > remaining_label->h
                       ? elapsed_label->h
                       : remaining_label->h;
-    int logical_y = surface->h - 8 - label_h;
-    int bar_y = surface->h - 28;
+    int base_scale = surface->w / 320;
+    if (base_scale < 1)
+        base_scale = 1;
+    int bar_y = surface->h - 14 * base_scale;
+    int logical_y = bar_y - label_h / 2;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
     Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
 
@@ -1614,7 +1685,7 @@ static void draw_audio_progress_only(void)
     format_time(elapsed, false, elapsed_text, sizeof(elapsed_text));
     format_time(remaining, true, remaining_text, sizeof(remaining_text));
 
-    int font_size = osd_size_for_width(surface->w, 78);
+    int font_size = osd_size_for_width(surface->w, 100);
     int label_h = font_size + 4;
     if (elapsed_text_cache.surface != NULL &&
         elapsed_text_cache.surface->h > label_h)
@@ -1622,8 +1693,11 @@ static void draw_audio_progress_only(void)
     if (remaining_text_cache.surface != NULL &&
         remaining_text_cache.surface->h > label_h)
         label_h = remaining_text_cache.surface->h;
-    int logical_y = surface->h - 8 - label_h;
-    int bar_y = surface->h - 28;
+    int base_scale = surface->w / 320;
+    if (base_scale < 1)
+        base_scale = 1;
+    int bar_y = surface->h - 14 * base_scale;
+    int logical_y = bar_y - label_h / 2;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
     Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
 
