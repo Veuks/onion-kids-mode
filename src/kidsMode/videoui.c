@@ -88,6 +88,7 @@
 #define CAROUSEL_DIM_DELAY_MS 5000
 #define CAROUSEL_OFF_DELAY_MS 15000
 #define CAROUSEL_DIM_RAW 3
+#define CAROUSEL_DIMMED_FLAG "/tmp/kidsmode_carousel_dimmed"
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
 #define RESULT_FILE "/tmp/kidsmode_ui_result"
 #define DEFAULT_VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode/Main"
@@ -163,12 +164,24 @@ static long carousel_saved_brightness = -1;
 static bool carousel_was_active;
 static bool carousel_system_screen_off;
 
+static void setCarouselDimmedFlag(bool enabled)
+{
+    if (!enabled) {
+        unlink(CAROUSEL_DIMMED_FLAG);
+        return;
+    }
+    FILE *fp = fopen(CAROUSEL_DIMMED_FLAG, "w");
+    if (fp != NULL)
+        fclose(fp);
+}
+
 static void restoreCarouselBacklight(void)
 {
     if (carousel_backlight_stage != 0 && carousel_saved_brightness > 0)
         display_setBrightnessRaw((uint32_t)carousel_saved_brightness);
     carousel_backlight_stage = 0;
     carousel_system_screen_off = false;
+    setCarouselDimmedFlag(false);
 }
 
 static void stopCarouselDimmer(void)
@@ -205,6 +218,7 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
             carousel_saved_brightness = current;
             carousel_backlight_stage = 0;
             carousel_system_screen_off = false;
+            setCarouselDimmedFlag(false);
         }
         carousel_last_activity = ticks;
     }
@@ -223,6 +237,7 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
                 carousel_backlight_stage = 0;
                 carousel_saved_brightness = current;
                 carousel_last_activity = ticks;
+                setCarouselDimmedFlag(false);
             }
             else {
                 carousel_last_activity = ticks;
@@ -246,12 +261,14 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
                 carousel_backlight_stage = 0;
                 carousel_saved_brightness = current;
                 carousel_last_activity = ticks;
+                setCarouselDimmedFlag(false);
             }
         }
         else if (carousel_backlight_stage == 2 && current > 0) {
             carousel_backlight_stage = 0;
             carousel_saved_brightness = current;
             carousel_last_activity = ticks;
+            setCarouselDimmedFlag(false);
         }
     }
 
@@ -265,10 +282,12 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
             carousel_saved_brightness = current;
         display_setBrightnessRaw(CAROUSEL_DIM_RAW);
         carousel_backlight_stage = 1;
+        setCarouselDimmedFlag(true);
     }
     if (carousel_backlight_stage == 1 && idle >= CAROUSEL_OFF_DELAY_MS) {
         display_setBrightnessRaw(0);
         carousel_backlight_stage = 2;
+        setCarouselDimmedFlag(true);
     }
 }
 
@@ -3239,7 +3258,8 @@ int main(int argc, char *argv[])
         // The POWER event itself continues untouched to Onion's keymon.
         if (key_changed && active_screen == SCREEN_CAROUSEL &&
             changed_key == SW_BTN_POWER &&
-            keystate[changed_key] == PRESSED) {
+            keystate[changed_key] == PRESSED &&
+            carousel_backlight_stage == 0) {
             long current = display_getBrightnessRaw();
             if (carousel_saved_brightness <= 0 && current > 0)
                 carousel_saved_brightness = current;

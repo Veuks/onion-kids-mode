@@ -1398,6 +1398,7 @@ parent_menu() {
 
 disarm() {
     rm -f "$flagfile"
+    rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed
     stop_ticker
     wait_for_game_environment
     restore_ra_lock
@@ -1695,6 +1696,7 @@ cmd_run() {
     fi
     chmod a+x "$kidui_bin" 2> /dev/null
     chmod a+x "$kids_keymon_bin" 2> /dev/null
+    rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed
     restart_keymon
 
     startup_started_at="$(date +%s)"
@@ -1999,6 +2001,7 @@ cmd_run() {
     restore_ra_lock
     restore_blf_lock
     restore_profile_isolation
+    rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed
     restore_keymap_override
     rm -f "$game_environment_marker"
     rm -f "$sysdir/cmd_to_run.sh"

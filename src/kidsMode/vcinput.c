@@ -95,6 +95,7 @@ static size_t yuv_backup_capacity[3];
 #define AUDIO_DIM_DELAY 10000
 #define AUDIO_OFF_DELAY 15000
 #define AUDIO_DIM_RAW 3
+#define MEDIA_DIMMED_FLAG "/tmp/kidsmode_media_dimmed"
 #define MIYOO_SCANCODE_VOLUMEDOWN 114
 #define MIYOO_SCANCODE_VOLUMEUP 115
 
@@ -301,6 +302,17 @@ static bool write_backlight(long value)
     return written;
 }
 
+static void set_media_dimmed_flag(bool enabled)
+{
+    if (!enabled) {
+        remove(MEDIA_DIMMED_FLAG);
+        return;
+    }
+    FILE *fp = fopen(MEDIA_DIMMED_FLAG, "w");
+    if (fp != NULL)
+        fclose(fp);
+}
+
 static void save_brightness_choice(long value)
 {
     if (value <= 0)
@@ -320,6 +332,8 @@ static void restore_backlight(void)
     if (backlight_stage != 0 && saved_brightness_raw > 0)
         write_backlight(saved_brightness_raw);
     backlight_stage = 0;
+    external_backlight_off = false;
+    set_media_dimmed_flag(false);
 }
 
 __attribute__((destructor)) static void vcinput_unloaded(void)
@@ -384,6 +398,7 @@ static void update_backlight(Uint32 now)
                 backlight_stage = 0;
                 save_brightness_choice(current);
                 last_activity = now;
+                set_media_dimmed_flag(false);
             }
             else {
                 last_activity = now;
@@ -406,12 +421,14 @@ static void update_backlight(Uint32 now)
                 backlight_stage = 0;
                 save_brightness_choice(current);
                 last_activity = now;
+                set_media_dimmed_flag(false);
             }
         }
         else if (backlight_stage == 2 && current > 0) {
             backlight_stage = 0;
             save_brightness_choice(current);
             last_activity = now;
+            set_media_dimmed_flag(false);
         }
     }
 
@@ -420,12 +437,16 @@ static void update_backlight(Uint32 now)
         long current = read_number_file(brightness_file);
         if (current > 0)
             save_brightness_choice(current);
-        if (write_backlight(AUDIO_DIM_RAW))
+        if (write_backlight(AUDIO_DIM_RAW)) {
             backlight_stage = 1;
+            set_media_dimmed_flag(true);
+        }
     }
     if (backlight_stage == 1 && idle >= AUDIO_OFF_DELAY) {
-        if (write_backlight(0))
+        if (write_backlight(0)) {
             backlight_stage = 2;
+            set_media_dimmed_flag(true);
+        }
     }
 }
 
@@ -470,6 +491,16 @@ static void update_clock(void)
     // responsive on the Miyoo's small CPU.
     if (clock_ready && now - last_clock_update < 100)
         return;
+    if (last_clock_update != 0 && now - last_clock_update > 1000 &&
+        (audio_mode || paused)) {
+        long current = read_number_file(brightness_file);
+        if (current > 0)
+            save_brightness_choice(current);
+        backlight_stage = 0;
+        external_backlight_off = false;
+        set_media_dimmed_flag(false);
+        last_activity = now;
+    }
     last_clock_update = now;
     long previous_second = position_seconds;
     load_player_config(now);
