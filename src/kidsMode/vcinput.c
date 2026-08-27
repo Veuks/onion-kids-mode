@@ -92,7 +92,7 @@ static Uint32 last_clock_update;
 static Uint8 *yuv_backup[3];
 static size_t yuv_backup_capacity[3];
 
-#define AUDIO_DIM_DELAY 10000
+#define AUDIO_DIM_DELAY 5000
 #define AUDIO_OFF_DELAY 15000
 #define AUDIO_DIM_RAW 3
 #define MEDIA_DIMMED_FLAG "/tmp/kidsmode_media_dimmed"

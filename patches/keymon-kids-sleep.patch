@@ -1,5 +1,5 @@
 diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
-index 64f22a18..d526bf70 100644
+index 64f22a1..1d9ac89 100644
 --- a/src/keymon/keymon.c
 +++ b/src/keymon/keymon.c
 @@ -49,9 +49,9 @@
@@ -27,13 +27,34 @@ index 64f22a18..d526bf70 100644
      // pause playActivity
      system("playActivity stop_all");
  
-@@ -275,6 +281,5 @@ void suspend_exec(int timeout)
+@@ -275,8 +281,9 @@ void suspend_exec(int timeout)
          setVolume(0);
      }
      rumble(0);
 -    display_setBrightnessRaw(0);
-     display_off();
+-    display_off();
++    // Keep the LCD controller initialized while the PWM is black. Toggling
++    // display_off()/display_on() saves and restores the framebuffer and can
++    // expose a brief flash with kidui's double-buffered SDL surface.
      system_powersave_on();
+ 
+     uint32_t repeat_power = 0;
+@@ -306,7 +313,6 @@ void suspend_exec(int timeout)
+                 if (ev.code == HW_BTN_MENU) {
+                     // screenshot
+                     system_powersave_off();
+-                    display_on();
+                     takeScreenshot();
+                     break;
+                 }
+@@ -329,7 +335,6 @@ void suspend_exec(int timeout)
+         suspend(2);
+         usleep(400000);
+     }
+-    display_on();
+     display_setBrightness(settings.brightness);
+     setVolume(settings.mute ? 0 : settings.volume);
+     if (!killexit) {
 @@ -467,6 +472,7 @@ int main(void)
      bool b_BTN_Not_Menu_Pressed = false;
      bool b_BTN_Menu_Pressed = false;
