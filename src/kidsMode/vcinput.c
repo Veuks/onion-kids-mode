@@ -270,6 +270,18 @@ static void clear_audio_seek_notice(void)
     seek_notice_draw_h = 0;
 }
 
+static void dismiss_seek_notice(void)
+{
+    // A is an explicit request for the neutral progress OSD. Remove any
+    // previous seek feedback immediately instead of extending it alongside
+    // the progress bar for another two seconds.
+    if (audio_mode)
+        clear_audio_seek_notice();
+    seek_notice[0] = '\0';
+    seek_notice_until = 0;
+    seek_notice_drawn = false;
+}
+
 static Uint8 clamp_color(int value)
 {
     if (value < 0)
@@ -2286,6 +2298,8 @@ static bool map_event(SDL_Event *event)
     }
 
     if (in == SDLK_SPACE) { /* Miyoo A: resume/show progress */
+        if (state == SDL_PRESSED)
+            dismiss_seek_notice();
         if (state == SDL_PRESSED && paused) {
             restore_backlight();
             last_activity = now;
