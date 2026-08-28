@@ -900,7 +900,7 @@ ticker_loop() {
             # Fresh game session: announce the budget once via RA's OSD
             if [ "$game_seen" != "1" ]; then
                 game_seen=1
-                [ "$rem" -gt 0 ] && notify_game "Play time: $rem_min minutes"
+                [ "$rem" -gt 0 ] && notify_game "$rem_min min"
             fi
 
             # In-game countdown via RetroArch OSD only. (imgpop overlays are
@@ -910,14 +910,10 @@ ticker_loop() {
             if [ "$rem" -gt 0 ]; then
                 if [ "$rem_min" -le 5 ]; then
                     # Last 5 minutes: countdown stays pinned on screen
-                    if [ "$rem_min" -eq 1 ]; then
-                        pin_message "1 minute left!"
-                    else
-                        pin_message "$rem_min minutes left"
-                    fi
+                    pin_message "$rem_min min"
                 elif [ "$rem_min" != "$last_notified_min" ] &&
                     [ $((rem_min % 5)) -eq 0 ]; then
-                    notify_game "$rem_min minutes left"
+                    notify_game "$rem_min min"
                 fi
                 last_notified_min="$rem_min"
             fi

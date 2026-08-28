@@ -54,8 +54,8 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - Le timer est partagé entre les jeux et les vidéos.
 - Pendant les cinq dernières minutes, le temps restant est affiché en rouge
   en haut à droite sur le carrousel et pendant la lecture audio/vidéo. Dans
-  un jeu, vérifier l'indication native de RetroArch et son changement à chaque
-  minute.
+  un jeu, vérifier l'indication native compacte de RetroArch (`5 min`,
+  `4 min`...) et son changement à chaque minute.
 - Depuis le menu parent du profil Main, **Switch to Guest profile** charge les
   favoris, médias, positions et sauvegardes Kids du profil Guest sans quitter
   Kids Mode. La bascule inverse restaure exactement l'environnement Main.

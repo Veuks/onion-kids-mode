@@ -71,7 +71,8 @@ videos share the same timer and parent PIN. When time expires, verify that the
 top band reads **Kids Mode** above the centred `Time's up!` message.
 
 Launch a RetroArch game with five minutes remaining. Verify that RetroArch's
-native countdown stays visible and changes once per minute.
+native compact countdown (`5 min`, `4 min`...) stays visible and changes once
+per minute.
 
 ## Build
 
