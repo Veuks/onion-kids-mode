@@ -462,10 +462,11 @@ apply_ra_lock() {
     # because RetroArch honours the last value found in the file.
     #
     #   kiosk_mode_enable true — locks down the in-game quick menu
-    #   video_font_* / video_message_* — timer countdown arrives via RA's
-    #     legacy OSD (SHOW_MSG), styled like the Kids Mode timer: compact,
-    #     red and at the top-right. Widgets must be disabled because their
-    #     hard-coded layout ignores the configured position and color.
+    #   video_font_enable true — timer countdown arrives via RA's OSD
+    #     (SHOW_MSG), so on-screen notifications must stay on. On Miyoo,
+    #     RetroArch's sdl_miyoomini driver fixes the bitmap font size and
+    #     position internally; the normal video_message settings do not
+    #     control this display.
     #   quick_menu_show_* false — hide options/cheats/shaders/record/stream
     #     from the (already locked-down) quick menu
     #   settings_show_* false — hide every settings category
@@ -481,9 +482,7 @@ apply_ra_lock() {
     #     these fire on a single un-combo'd press instead. MENU+VOLUME for
     #     brightness is handled outside RetroArch (by the system's button
     #     daemon) and is unaffected by any of this.
-    ra_keys="kiosk_mode_enable video_font_enable video_font_path
-        video_font_size video_message_pos_x video_message_pos_y
-        video_message_color menu_enable_widgets quick_menu_show_options
+    ra_keys="kiosk_mode_enable video_font_enable quick_menu_show_options
         quick_menu_show_cheats quick_menu_show_shaders
         quick_menu_show_start_recording quick_menu_show_start_streaming
         settings_show_configuration settings_show_core
@@ -524,14 +523,7 @@ apply_ra_lock() {
             i=$((i + 1))
             case "$k" in
                 kiosk_mode_enable | video_font_enable) v=true ;;
-                video_font_path) v=/customer/app/Exo-2-Bold-Italic.ttf ;;
-                video_font_size) v=24 ;;
-                video_message_pos_x) v=0.88 ;;
-                video_message_pos_y) v=0.94 ;;
-                video_message_color) v=ff4040 ;;
-                menu_enable_widgets | quick_menu_show_* | settings_show_*)
-                    v=false
-                    ;;
+                quick_menu_show_* | settings_show_*) v=false ;;
                 *) v=nul ;;
             esac
             printf '  order[%d]="%s"; val["%s"]="%s";\n' \
@@ -908,7 +900,7 @@ ticker_loop() {
             # Fresh game session: announce the budget once via RA's OSD
             if [ "$game_seen" != "1" ]; then
                 game_seen=1
-                [ "$rem" -gt 0 ] && notify_game "$rem_min min"
+                [ "$rem" -gt 0 ] && notify_game "Play time: $rem_min minutes"
             fi
 
             # In-game countdown via RetroArch OSD only. (imgpop overlays are
@@ -918,10 +910,14 @@ ticker_loop() {
             if [ "$rem" -gt 0 ]; then
                 if [ "$rem_min" -le 5 ]; then
                     # Last 5 minutes: countdown stays pinned on screen
-                    pin_message "$rem_min min"
+                    if [ "$rem_min" -eq 1 ]; then
+                        pin_message "1 minute left!"
+                    else
+                        pin_message "$rem_min minutes left"
+                    fi
                 elif [ "$rem_min" != "$last_notified_min" ] &&
                     [ $((rem_min % 5)) -eq 0 ]; then
-                    notify_game "$rem_min min"
+                    notify_game "$rem_min minutes left"
                 fi
                 last_notified_min="$rem_min"
             fi

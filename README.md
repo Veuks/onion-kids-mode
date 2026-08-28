@@ -314,10 +314,8 @@ if buttons were pressed or the parent screens were opened. Selecting `OFF` or
 adding more play time before that deadline cancels the automatic power-off.
 
 During the final five minutes, the remaining time stays visible in red at the
-top-right of the screen in games, on the carousel and during audio/video
-playback. While Kids Mode is active, RetroArch uses its classic notification
-display so the in-game warning can match this position and colour; the user's
-original RetroArch settings are restored when Kids Mode is closed.
+top-right on the carousel and during audio/video playback. Games use
+RetroArch's native countdown notification.
 
 The current floor, folder and selection are saved. Media playback is
 checkpointed approximately every five seconds. A file that reaches its natural
