@@ -104,7 +104,7 @@ static Uint8 *yuv_backup[3];
 static size_t yuv_backup_capacity[3];
 
 typedef struct {
-    char text[32];
+    char text[128];
     int size;
     SDL_Surface *surface;
 } OsdTextCache;
@@ -113,6 +113,7 @@ static OsdTextCache battery_text_cache;
 static OsdTextCache elapsed_text_cache;
 static OsdTextCache remaining_text_cache;
 static OsdTextCache seek_text_cache;
+static OsdTextCache audio_title_text_cache;
 static TTF_Font *osd_fonts[4];
 static int osd_font_sizes[4];
 static bool osd_ttf_owned;
@@ -496,8 +497,9 @@ __attribute__((destructor)) static void vcinput_unloaded(void)
         yuv_backup_capacity[i] = 0;
     }
     OsdTextCache *caches[] = {&battery_text_cache, &elapsed_text_cache,
-                              &remaining_text_cache, &seek_text_cache};
-    for (int i = 0; i < 4; i++) {
+                              &remaining_text_cache, &seek_text_cache,
+                              &audio_title_text_cache};
+    for (size_t i = 0; i < sizeof(caches) / sizeof(caches[0]); i++) {
         SDL_FreeSurface(caches[i]->surface);
         caches[i]->surface = NULL;
     }
@@ -1700,10 +1702,19 @@ static void draw_audio_background(SDL_Surface *surface)
     char title[128];
     make_audio_title(title, sizeof(title), max_chars);
     if (title[0] != '\0') {
-        int width = text_width(title, title_scale);
-        Uint32 white = SDL_MapRGB(surface->format, 255, 255, 255);
-        draw_rotated_text(surface, title, (surface->w - width) / 2,
-                          (int)(surface->h * 0.73), title_scale, black, white);
+        int font_size = osd_size_for_width(surface->w, 100);
+        SDL_Surface *label = osd_text(&audio_title_text_cache, title,
+                                      font_size);
+        while (label != NULL && label->w > surface->w - 32 &&
+               font_size > 10) {
+            font_size -= 2;
+            if (font_size < 10)
+                font_size = 10;
+            label = osd_text(&audio_title_text_cache, title, font_size);
+        }
+        if (label != NULL)
+            blit_osd_text(surface, label, (surface->w - label->w) / 2,
+                          (int)(surface->h * 0.73));
     }
 }
 
