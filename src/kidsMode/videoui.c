@@ -19,7 +19,7 @@
 //            "MENU" \n "NOTIMER"                (turn the play timer off)
 //            "MENU" \n "SWITCHPROFILE" \n Main|Guest
 //            "TIMER" \n <minutes>               (--pick-timer mode)
-//   exit 7:  "POWEROFF"  (Time's up screen sat idle for 5 minutes)
+//   exit 7:  "POWEROFF"  (5 minutes after the timer reached zero)
 //   exit 1:  canceled / error / nothing selected (result file removed)
 //
 // PIN screens: UP/DOWN changes the digit, LEFT/RIGHT moves, A confirms
@@ -60,6 +60,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -85,9 +86,10 @@
 #define PIN_IDLE_TIMEOUT_MS 30000
 #define REMAINING_POLL_MS 2000
 #define SELECTION_WRITE_DELAY_MS 300
-#define TIMESUP_OFF_MS (5 * 60 * 1000)
+#define TIMESUP_OFF_SECONDS (5 * 60)
+#define TIMESUP_SINCE_FILE "/tmp/kidsmode_timesup_since"
 #define CAROUSEL_DIM_DELAY_MS 30000
-#define CAROUSEL_OFF_DELAY_MS 60000
+#define CAROUSEL_OFF_DELAY_MS 45000
 #define CAROUSEL_DIM_RAW 3
 #define CAROUSEL_DIMMED_FLAG "/tmp/kidsmode_carousel_dimmed"
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
@@ -236,7 +238,7 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
 
     // Detect Onion's own display-off/display-on transition without touching
     // its POWER handling. While Onion reports zero, park our timer. Once it
-    // restores the configured brightness, begin a fresh 30/30-second cycle.
+    // restores the configured brightness, begin a fresh 30/15-second cycle.
     if (ticks - carousel_last_backlight_check >= 250) {
         carousel_last_backlight_check = ticks;
         long current = display_getBrightnessRaw();
@@ -2356,6 +2358,35 @@ static int readRemaining(void)
     return result;
 }
 
+static long readTimesUpSince(void)
+{
+    FILE *fp = fopen(TIMESUP_SINCE_FILE, "r");
+    if (fp == NULL)
+        return 0;
+    char buffer[32] = "";
+    bool valid = fgets(buffer, sizeof(buffer), fp) != NULL;
+    fclose(fp);
+    if (!valid)
+        return 0;
+    char *end = NULL;
+    long value = strtol(buffer, &end, 10);
+    return end != buffer && value > 0 ? value : 0;
+}
+
+static long ensureTimesUpSince(void)
+{
+    long started = readTimesUpSince();
+    if (started > 0)
+        return started;
+    started = (long)time(NULL);
+    FILE *fp = fopen(TIMESUP_SINCE_FILE, "w");
+    if (fp != NULL) {
+        fprintf(fp, "%ld\n", started);
+        fclose(fp);
+    }
+    return started;
+}
+
 static bool batteryIsChargingFast(void)
 {
     FILE *fp = fopen("/tmp/.axp_result", "r");
@@ -3378,6 +3409,7 @@ int main(int argc, char *argv[])
     }
     else if (menu_mode) {
         active_screen = SCREEN_MENU;
+        remaining = menu_remaining;
     }
     else if (pick_timer_mode) {
         active_screen = SCREEN_PICKTIMER;
@@ -3385,6 +3417,8 @@ int main(int argc, char *argv[])
         menu_timer_minutes = picker_no_off ? TIMER_STEP : 0;
         if (strlen(pin_title) == 0)
             strncpy(pin_title, "Play timer", STR_MAX - 1);
+        if (picker_no_off)
+            remaining = readRemaining();
     }
     else {
         loadPersistedFolderSelections();
@@ -3423,7 +3457,7 @@ int main(int argc, char *argv[])
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t last_charging_poll = 0;
-    uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
+    long timesup_since = remaining == 0 ? ensureTimesUpSince() : 0;
     carousel_battery_charging = batteryIsChargingFast();
     carousel_battery_percentage = batteryPercentageFast();
 
@@ -3831,20 +3865,36 @@ int main(int argc, char *argv[])
                 dirty = true;
         }
 
-        // Nobody turned the device off after "Time's up!": power off after
-        // 5 idle minutes so the battery isn't drained overnight. The
-        // SELECT+START parent gesture still interrupts this (PIN screen
-        // pauses the timer; it restarts fresh on return).
-        if (active_screen == SCREEN_TIMESUP) {
+        // Parent screens run in their own kidui process. Keep observing the
+        // shared timer there as well, otherwise entering the menu just before
+        // zero could postpone the absolute power-off deadline indefinitely.
+        if ((menu_mode || (pick_timer_mode && picker_no_off)) &&
+            ticks - last_remaining_poll > REMAINING_POLL_MS) {
+            last_remaining_poll = ticks;
+            int previous = remaining;
+            remaining = readRemaining();
+            if (menu_mode) {
+                menu_remaining = remaining;
+                if ((previous + 59) / 60 != (remaining + 59) / 60)
+                    dirty = true;
+            }
+        }
+
+        // Five minutes after the timer reaches zero, power off regardless of
+        // button activity or navigation through PIN/parent screens. Selecting
+        // OFF or adding time exits this UI first; the shell then removes the
+        // deadline together with the expired timer state.
+        if (!quit && remaining == 0) {
             if (timesup_since == 0)
-                timesup_since = ticks;
-            if (ticks - timesup_since >= TIMESUP_OFF_MS) {
+                timesup_since = ensureTimesUpSince();
+            long now = (long)time(NULL);
+            if (now >= timesup_since + TIMESUP_OFF_SECONDS) {
                 writeResult("POWEROFF", NULL, NULL);
                 exit_code = 7;
                 quit = true;
             }
         }
-        else {
+        else if (remaining != 0) {
             timesup_since = 0;
         }
 

@@ -129,7 +129,7 @@ static SDL_Surface *scaled_battery_source;
 static int scaled_battery_target_width;
 
 #define AUDIO_DIM_DELAY 30000
-#define AUDIO_OFF_DELAY 60000
+#define AUDIO_OFF_DELAY 45000
 #define AUDIO_DIM_RAW 3
 #define TIMER_REMAINING_FILE "/tmp/kidsmode_remaining"
 #define TIMER_WARNING_SECONDS 300

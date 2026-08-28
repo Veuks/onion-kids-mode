@@ -43,7 +43,7 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
   lancent comme les vidéos.
 - Pendant un fichier audio, la pochette correcte est affichée avec une ligne
   de progression, le temps écoulé à gauche et le temps restant à droite.
-- Après 30 secondes sans action, la luminosité passe au minimum. Trente secondes
+- Après 30 secondes sans action, la luminosité passe au minimum. Quinze secondes
   plus tard, le rétroéclairage s'éteint sans interrompre le son ni le timer.
 - Un premier appui sur A, B ou MENU rallume uniquement l'écran, sans reprendre,
   mettre en pause ni quitter le lecteur.
@@ -60,4 +60,7 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - Répéter Main → Guest → Main après avoir sauvegardé un jeu dans chaque profil :
   les deux sauvegardes doivent rester distinctes et le timer ne doit pas repartir.
 - À zéro, **Time's up!** et **See you next time** sont affichés.
+- Malgré des appuis ou l'ouverture du PIN/menu parent, la console s'éteint
+  cinq minutes après **Time's up!**. Passer le timer à `OFF` ou ajouter du
+  temps avant l'échéance annule cette extinction automatique.
 - SELECT + START pendant trois secondes ouvre le menu parent.

@@ -84,6 +84,7 @@ timer_state="$backupdir/timer_state.txt" # 3 lines: day / used seconds / bonus s
 # a lockout (see restore_pin_backup).
 pin_backup="$backupdir/pin_backup.json"
 remaining_file=/tmp/kidsmode_remaining
+timesup_since_file=/tmp/kidsmode_timesup_since
 timer_minutes_file=/tmp/kidsmode_timer_minutes
 ticker_pid_file=/tmp/kidmode_ticker.pid
 
@@ -771,12 +772,20 @@ state_write() { # $1 used, $2 bonus
 update_remaining_now() {
     budget=$(($(get_timer_minutes) * 60 + $(state_bonus)))
     if [ "$budget" -le 0 ]; then
-        rm -f "$remaining_file"
+        rm -f "$remaining_file" "$timesup_since_file"
         return 0
     fi
     rem=$((budget - $(state_used)))
     [ "$rem" -lt 0 ] && rem=0
     echo "$rem" > "$remaining_file"
+    if [ "$rem" -eq 0 ]; then
+        if [ ! -f "$timesup_since_file" ]; then
+            date +%s > "$timesup_since_file.tmp"
+            mv -f "$timesup_since_file.tmp" "$timesup_since_file"
+        fi
+    else
+        rm -f "$timesup_since_file"
+    fi
     return 0
 }
 
@@ -864,7 +873,7 @@ ticker_loop() {
 
         budget=$(($(get_timer_minutes) * 60 + $(state_bonus)))
         if [ "$budget" -le 0 ]; then
-            rm -f "$remaining_file"
+            rm -f "$remaining_file" "$timesup_since_file"
             continue
         fi
 
@@ -873,6 +882,14 @@ ticker_loop() {
         rem=$((budget - used))
         [ "$rem" -lt 0 ] && rem=0
         echo "$rem" > "$remaining_file"
+        if [ "$rem" -eq 0 ]; then
+            if [ ! -f "$timesup_since_file" ]; then
+                date +%s > "$timesup_since_file.tmp"
+                mv -f "$timesup_since_file.tmp" "$timesup_since_file"
+            fi
+        else
+            rm -f "$timesup_since_file"
+        fi
 
         if game_is_running; then
             rem_min=$(((rem + 59) / 60))
@@ -1559,7 +1576,7 @@ parent_menu() {
 disarm() {
     rm -f "$flagfile"
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
-        /tmp/kidsmode_media_playing
+        /tmp/kidsmode_media_playing "$timesup_since_file"
     stop_ticker
     wait_for_game_environment
     restore_ra_lock
@@ -2165,10 +2182,10 @@ cmd_run() {
                 state_save games carousel "$last_video" "$active_folder"
                 ui_fails=0
                 ;;
-            7) # "Time's up!" screen sat idle for 5 minutes: power off
-                # cleanly so the battery isn't drained (same path keymon's
-                # power button takes — checkoff scripts, save splash, off).
-                log "Times-up screen idle; powering off."
+            7) # Five minutes after "Time's up!": power off even if buttons
+                # were used, unless the parent explicitly turned the timer
+                # OFF or added more time before the deadline.
+                log "Times-up deadline reached; powering off."
                 touch /tmp/.offOrder
                 check_off_order "End"
                 ;;

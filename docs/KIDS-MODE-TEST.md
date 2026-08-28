@@ -46,11 +46,16 @@ Test MP3 and at least one other audio format. Verify that playback displays
 the exact file cover when present and otherwise inherits the nearest folder
 cover. The progress line must show elapsed time on the left and remaining time
 on the right. After 30 seconds without input, brightness must drop to minimum;
-after 30 more seconds the backlight must turn off without stopping playback or
+after 15 more seconds the backlight must turn off without stopping playback or
 the timer. Test A, B and MENU separately: the screen must return and the first
 press must not resume, pause, seek or leave the player. During video playback,
 verify that the progress line appears on pause and seek, then disappears on
 resume.
+
+When the timer reaches zero, press buttons and open the PIN/parent screens.
+The device must still power off five minutes after **Time's up!** first
+appeared. Selecting `OFF` or adding play time before the deadline must cancel
+that automatic power-off.
 
 Test at least three levels: open `Series`, open `Ulysses 31`, select an
 episode, then press B twice. Reopen both folders and verify that each level
