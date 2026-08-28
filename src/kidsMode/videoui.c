@@ -2518,7 +2518,7 @@ static void renderTimeChip(int remaining)
             SDL_Surface *batt =
                 chargingBatterySurface(carousel_battery_percentage);
             if (batt != NULL) {
-                SDL_Rect pos = {(int)(596.0 * g_scale) - batt->w / 2,
+                SDL_Rect pos = {(int)(590.0 * g_scale) - batt->w / 2,
                                 (int)(30.0 * g_scale) - batt->h / 2};
                 SDL_BlitSurface(batt, NULL, screen, &pos);
                 SDL_FreeSurface(batt);
@@ -2528,7 +2528,7 @@ static void renderTimeChip(int remaining)
             int pct = carousel_battery_percentage;
             SDL_Surface *batt = theme_batterySurface(pct);
             if (batt != NULL) {
-                SDL_Rect pos = {(int)(596.0 * g_scale) - batt->w / 2,
+                SDL_Rect pos = {(int)(590.0 * g_scale) - batt->w / 2,
                                 (int)(30.0 * g_scale) - batt->h / 2};
                 SDL_BlitSurface(batt, NULL, screen, &pos);
                 SDL_FreeSurface(batt);

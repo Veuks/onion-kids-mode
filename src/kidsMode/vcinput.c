@@ -988,7 +988,7 @@ static void yuv_battery_peek(SDL_Overlay *overlay)
     int spacer = icon != NULL && label != NULL
                      ? yuv_from_screen_x(overlay, 5)
                      : 0;
-    int header_center = yuv_from_screen_x(overlay, 596);
+    int header_center = yuv_from_screen_x(overlay, 590);
     int center_y = yuv_from_screen_y(overlay, 30);
     int icon_x = icon != NULL ? header_center - icon->w / 2 : header_center;
     int label_x = icon_x;
@@ -1038,17 +1038,20 @@ static void format_timer_warning(char *text, size_t text_size)
 
 static void yuv_timer_warning(SDL_Overlay *overlay)
 {
-    if (overlay == NULL || !timer_warning_visible())
+    if (overlay == NULL || !timer_warning_visible() ||
+        battery_peek_visible())
         return;
     char text[16];
     format_timer_warning(text, sizeof(text));
     SDL_Color red = {255, 64, 64, 255};
     SDL_Surface *label = osd_text_color(
         &timer_text_cache, text, yuv_osd_font_size(overlay), red);
-    if (label != NULL)
-        yuv_blit_osd_text(overlay, label,
-                          yuv_from_screen_x(overlay, 18),
-                          yuv_from_screen_y(overlay, 18));
+    if (label != NULL) {
+        int right = yuv_from_screen_x(overlay, 620);
+        int center_y = yuv_from_screen_y(overlay, 30);
+        yuv_blit_osd_text(overlay, label, right - label->w,
+                          center_y - label->h / 2);
+    }
 }
 
 static void yuv_progress_knob(SDL_Overlay *overlay, int logical_x,
@@ -1255,7 +1258,7 @@ static void draw_battery_peek(SDL_Surface *surface)
     if (icon == NULL && label == NULL)
         return;
     int spacer = icon != NULL && label != NULL ? 5 * surface->w / 640 : 0;
-    int header_center = surface->w * 596 / 640;
+    int header_center = surface->w * 590 / 640;
     int center_y = surface->w * 30 / 640;
     int icon_x = icon != NULL ? header_center - icon->w / 2 : header_center;
     int label_x = icon_x;
@@ -1288,16 +1291,20 @@ static void draw_battery_peek(SDL_Surface *surface)
 
 static void draw_timer_warning(SDL_Surface *surface)
 {
-    if (surface == NULL || !timer_warning_visible())
+    if (surface == NULL || !timer_warning_visible() ||
+        battery_peek_visible())
         return;
     char text[16];
     format_timer_warning(text, sizeof(text));
     SDL_Color red = {255, 64, 64, 255};
     SDL_Surface *label = osd_text_color(
         &timer_text_cache, text, osd_size_for_width(surface->w, 100), red);
-    if (label != NULL)
-        blit_osd_text(surface, label, 18 * surface->w / 640,
-                      18 * surface->w / 640);
+    if (label != NULL) {
+        int right = surface->w * 620 / 640;
+        int center_y = surface->w * 30 / 640;
+        blit_osd_text(surface, label, right - label->w,
+                      center_y - label->h / 2);
+    }
 }
 
 static void make_audio_title(char *out, size_t out_size, int max_chars)
@@ -1810,7 +1817,7 @@ static void draw_audio_background(SDL_Surface *surface)
 
 static void draw_audio_timer_only(void)
 {
-    if (!audio_mode || backlight_stage == 2)
+    if (!audio_mode || backlight_stage == 2 || battery_peek_visible())
         return;
     SDL_Surface *surface = hardware_surface != NULL
                                ? hardware_surface
@@ -1818,11 +1825,12 @@ static void draw_audio_timer_only(void)
     if (surface == NULL)
         return;
     Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
-    int scale = surface->w / 640;
-    if (scale < 1)
-        scale = 1;
-    draw_logical_rect(surface, 12 * scale, 12 * scale,
-                      150 * scale, 48 * scale, black);
+    int region_x = surface->w * 440 / 640;
+    int region_y = surface->h * 12 / 480;
+    int region_w = surface->w * 188 / 640;
+    int region_h = surface->h * 48 / 480;
+    draw_logical_rect(surface, region_x, region_y, region_w, region_h,
+                      black);
     draw_timer_warning(surface);
 }
 
