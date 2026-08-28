@@ -30,6 +30,8 @@ the parent menus and timer controls.
 - Fixed the timer status text overlapping the last parent-menu row.
 - Pressing **A** after seeking now clears the seek value and displays only the
   progress bar with elapsed and remaining time.
+- MP3 and other audio titles shown below the artwork now use the active Onion
+  theme font, matching the battery, time and seek indicators.
 
 ## Updating
 
