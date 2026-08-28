@@ -53,7 +53,9 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - Une extinction depuis le carrousel restaure seulement la sélection.
 - Le timer est partagé entre les jeux et les vidéos.
 - Pendant les cinq dernières minutes, le temps restant est affiché en rouge
-  sur le carrousel et pendant la lecture audio/vidéo.
+  en haut à droite dans les jeux RetroArch, sur le carrousel et pendant la
+  lecture audio/vidéo. Dans un jeu, vérifier `5 min`, puis le changement à
+  chaque minute.
 - Depuis le menu parent du profil Main, **Switch to Guest profile** charge les
   favoris, médias, positions et sauvegardes Kids du profil Guest sans quitter
   Kids Mode. La bascule inverse restaure exactement l'environnement Main.

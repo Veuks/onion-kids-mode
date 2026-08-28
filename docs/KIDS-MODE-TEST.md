@@ -70,6 +70,11 @@ from a carousel restores the last section, folder and selection. Games and
 videos share the same timer and parent PIN. When time expires, verify that the
 top band reads **Kids Mode** above the centred `Time's up!` message.
 
+Launch a RetroArch game with five minutes remaining. Verify that a compact red
+`5 min` warning stays visible at the top-right and changes once per minute.
+Close Kids Mode through the parent menu and verify that the original RetroArch
+OSD configuration is restored.
+
 ## Build
 
 The workflow builds `src/kidsMode`, places `kidui` and `libvcinput.so`
