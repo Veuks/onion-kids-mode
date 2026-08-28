@@ -86,8 +86,8 @@
 #define REMAINING_POLL_MS 2000
 #define SELECTION_WRITE_DELAY_MS 300
 #define TIMESUP_OFF_MS (5 * 60 * 1000)
-#define CAROUSEL_DIM_DELAY_MS 15000
-#define CAROUSEL_OFF_DELAY_MS 30000
+#define CAROUSEL_DIM_DELAY_MS 30000
+#define CAROUSEL_OFF_DELAY_MS 60000
 #define CAROUSEL_DIM_RAW 3
 #define CAROUSEL_DIMMED_FLAG "/tmp/kidsmode_carousel_dimmed"
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
@@ -236,7 +236,7 @@ static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
 
     // Detect Onion's own display-off/display-on transition without touching
     // its POWER handling. While Onion reports zero, park our timer. Once it
-    // restores the configured brightness, begin a fresh 5/15-second cycle.
+    // restores the configured brightness, begin a fresh 30/30-second cycle.
     if (ticks - carousel_last_backlight_check >= 250) {
         carousel_last_backlight_check = ticks;
         long current = display_getBrightnessRaw();
@@ -2498,7 +2498,7 @@ static SDL_Surface *chargingBatterySurface(int percentage)
 }
 
 // Small "12 min" chip in the top-right corner (where MainUI keeps its
-// battery), switching to the accent color for the last 5 minutes
+// battery), switching to warning red for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
     bool battery_peek = keystate[SW_BTN_Y] != RELEASED ||
@@ -2540,7 +2540,8 @@ static void renderTimeChip(int remaining)
     int mins = (remaining + 59) / 60;
     char chip[32];
     snprintf(chip, sizeof(chip), "%d min", mins);
-    SDL_Color color = mins <= 5 ? accentColor() : theme()->hint.color;
+    SDL_Color warning_red = {255, 64, 64, 255};
+    SDL_Color color = mins <= 5 ? warning_red : theme()->hint.color;
     drawTextAlign(chip, (int)(620.0 * g_scale), (int)(30.0 * g_scale),
                   resource_getFont(HINT), color, 0, TEXT_RIGHT);
 }

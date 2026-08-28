@@ -45,8 +45,8 @@ MENU + X while playback is running must not create a capture.
 Test MP3 and at least one other audio format. Verify that playback displays
 the exact file cover when present and otherwise inherits the nearest folder
 cover. The progress line must show elapsed time on the left and remaining time
-on the right. After 10 seconds without input, brightness must drop to minimum;
-after 5 more seconds the backlight must turn off without stopping playback or
+on the right. After 30 seconds without input, brightness must drop to minimum;
+after 30 more seconds the backlight must turn off without stopping playback or
 the timer. Test A, B and MENU separately: the screen must return and the first
 press must not resume, pause, seek or leave the player. During video playback,
 verify that the progress line appears on pause and seek, then disappears on

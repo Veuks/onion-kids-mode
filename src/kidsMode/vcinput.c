@@ -76,6 +76,8 @@ static const char *brightness_file;
 static const char *brightness_state_file;
 static long duration_seconds;
 static Uint32 last_duration_check;
+static long timer_remaining_seconds = -1;
+static Uint32 last_timer_check;
 static Uint32 progress_until;
 static bool progress_waiting_for_video;
 static Uint32 last_activity;
@@ -106,6 +108,9 @@ static size_t yuv_backup_capacity[3];
 typedef struct {
     char text[128];
     int size;
+    Uint8 red;
+    Uint8 green;
+    Uint8 blue;
     SDL_Surface *surface;
 } OsdTextCache;
 
@@ -114,6 +119,7 @@ static OsdTextCache elapsed_text_cache;
 static OsdTextCache remaining_text_cache;
 static OsdTextCache seek_text_cache;
 static OsdTextCache audio_title_text_cache;
+static OsdTextCache timer_text_cache;
 static TTF_Font *osd_fonts[4];
 static int osd_font_sizes[4];
 static bool osd_ttf_owned;
@@ -122,9 +128,11 @@ static SDL_Surface *scaled_battery_icon;
 static SDL_Surface *scaled_battery_source;
 static int scaled_battery_target_width;
 
-#define AUDIO_DIM_DELAY 15000
-#define AUDIO_OFF_DELAY 30000
+#define AUDIO_DIM_DELAY 30000
+#define AUDIO_OFF_DELAY 60000
 #define AUDIO_DIM_RAW 3
+#define TIMER_REMAINING_FILE "/tmp/kidsmode_remaining"
+#define TIMER_WARNING_SECONDS 300
 #define MEDIA_DIMMED_FLAG "/tmp/kidsmode_media_dimmed"
 #define MEDIA_PLAYING_FLAG "/tmp/kidsmode_media_playing"
 #define MIYOO_SCANCODE_VOLUMEDOWN 114
@@ -145,10 +153,15 @@ static void update_clock(void);
 static long read_number_file(const char *path);
 static void draw_player_overlay(void);
 static void draw_audio_progress_only(void);
+static void draw_audio_timer_only(void);
 static void draw_seek_notice(void);
 static void draw_battery_peek(SDL_Surface *surface);
+static void draw_timer_warning(SDL_Surface *surface);
+static void yuv_timer_warning(SDL_Overlay *overlay);
 static SDL_Surface *osd_text(OsdTextCache *cache, const char *text,
                              int size);
+static SDL_Surface *osd_text_color(OsdTextCache *cache, const char *text,
+                                   int size, SDL_Color color);
 static void blit_osd_text(SDL_Surface *target, SDL_Surface *text,
                           int logical_x, int logical_y);
 static void yuv_blit_osd_text(SDL_Overlay *overlay, SDL_Surface *text,
@@ -498,7 +511,7 @@ __attribute__((destructor)) static void vcinput_unloaded(void)
     }
     OsdTextCache *caches[] = {&battery_text_cache, &elapsed_text_cache,
                               &remaining_text_cache, &seek_text_cache,
-                              &audio_title_text_cache};
+                              &audio_title_text_cache, &timer_text_cache};
     for (size_t i = 0; i < sizeof(caches) / sizeof(caches[0]); i++) {
         SDL_FreeSurface(caches[i]->surface);
         caches[i]->surface = NULL;
@@ -562,6 +575,30 @@ static void update_duration(Uint32 now)
     long value = read_number_file(duration_file);
     if (value > 0)
         duration_seconds = value;
+}
+
+static bool timer_warning_visible(void)
+{
+    return timer_remaining_seconds > 0 &&
+           timer_remaining_seconds <= TIMER_WARNING_SECONDS &&
+           backlight_stage != 2;
+}
+
+static bool update_timer_status(Uint32 now, bool force)
+{
+    if (!force && now - last_timer_check < 1000)
+        return false;
+    last_timer_check = now;
+    bool was_visible = timer_remaining_seconds > 0 &&
+                       timer_remaining_seconds <= TIMER_WARNING_SECONDS;
+    long old_minutes = (timer_remaining_seconds + 59) / 60;
+    long remaining = read_number_file(TIMER_REMAINING_FILE);
+    bool is_visible = remaining > 0 && remaining <= TIMER_WARNING_SECONDS;
+    long new_minutes = (remaining + 59) / 60;
+    bool changed = was_visible != is_visible ||
+                   (is_visible && old_minutes != new_minutes);
+    timer_remaining_seconds = remaining;
+    return changed;
 }
 
 static void update_backlight(Uint32 now)
@@ -695,6 +732,7 @@ static void update_clock(void)
     update_duration(now);
     update_backlight(now);
     bool battery_changed = update_battery_status(now, false);
+    bool timer_changed = update_timer_status(now, false);
     if (!clock_ready) {
         const char *start = getenv("VC_START_SECONDS");
         position_seconds = start ? strtol(start, NULL, 10) : 0;
@@ -722,8 +760,12 @@ static void update_clock(void)
             save_checkpoint();
         last_save = now;
     }
-    if (battery_changed) {
-        if (audio_mode && !inside_present) {
+    if (battery_changed || timer_changed) {
+        if (audio_mode && !inside_present && timer_changed &&
+            !battery_changed) {
+            draw_audio_timer_only();
+        }
+        else if (audio_mode && !inside_present) {
             overlay_force_redraw = true;
             draw_player_overlay();
         }
@@ -988,6 +1030,27 @@ static void yuv_battery_peek(SDL_Overlay *overlay)
                           center_y - label->h / 2 + scaled_offset_y);
 }
 
+static void format_timer_warning(char *text, size_t text_size)
+{
+    long minutes = (timer_remaining_seconds + 59) / 60;
+    snprintf(text, text_size, "%ld min", minutes);
+}
+
+static void yuv_timer_warning(SDL_Overlay *overlay)
+{
+    if (overlay == NULL || !timer_warning_visible())
+        return;
+    char text[16];
+    format_timer_warning(text, sizeof(text));
+    SDL_Color red = {255, 64, 64, 255};
+    SDL_Surface *label = osd_text_color(
+        &timer_text_cache, text, yuv_osd_font_size(overlay), red);
+    if (label != NULL)
+        yuv_blit_osd_text(overlay, label,
+                          yuv_from_screen_x(overlay, 18),
+                          yuv_from_screen_y(overlay, 18));
+}
+
 static void yuv_progress_knob(SDL_Overlay *overlay, int logical_x,
                               int logical_y, int radius)
 {
@@ -1018,6 +1081,7 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
         (paused || progress_waiting_for_video || now < progress_until ||
          (seek_notice[0] != '\0' && now < seek_notice_until));
     if (!controls_visible) {
+        yuv_timer_warning(overlay);
         yuv_battery_peek(overlay);
         return;
     }
@@ -1086,6 +1150,7 @@ static void paint_video_yuv_overlay(SDL_Overlay *overlay)
                         (notice != NULL ? notice->h : 0);
         yuv_blit_osd_text(overlay, notice, logical_x, logical_y);
     }
+    yuv_timer_warning(overlay);
     yuv_battery_peek(overlay);
 }
 
@@ -1219,6 +1284,20 @@ static void draw_battery_peek(SDL_Surface *surface)
     if (label != NULL)
         blit_osd_text(surface, label, label_x,
                       center_y - label->h / 2 + label_offset_y);
+}
+
+static void draw_timer_warning(SDL_Surface *surface)
+{
+    if (surface == NULL || !timer_warning_visible())
+        return;
+    char text[16];
+    format_timer_warning(text, sizeof(text));
+    SDL_Color red = {255, 64, 64, 255};
+    SDL_Surface *label = osd_text_color(
+        &timer_text_cache, text, osd_size_for_width(surface->w, 100), red);
+    if (label != NULL)
+        blit_osd_text(surface, label, 18 * surface->w / 640,
+                      18 * surface->w / 640);
 }
 
 static void make_audio_title(char *out, size_t out_size, int max_chars)
@@ -1486,12 +1565,14 @@ static TTF_Font *osd_font(int size)
     return osd_fonts[0];
 }
 
-static SDL_Surface *osd_text(OsdTextCache *cache, const char *text,
-                             int size)
+static SDL_Surface *osd_text_color(OsdTextCache *cache, const char *text,
+                                   int size, SDL_Color color)
 {
     if (cache == NULL || text == NULL)
         return NULL;
     if (cache->surface != NULL && cache->size == size &&
+        cache->red == color.r && cache->green == color.g &&
+        cache->blue == color.b &&
         strcmp(cache->text, text) == 0)
         return cache->surface;
 
@@ -1499,17 +1580,19 @@ static SDL_Surface *osd_text(OsdTextCache *cache, const char *text,
     cache->surface = NULL;
     cache->text[0] = '\0';
     cache->size = size;
+    cache->red = color.r;
+    cache->green = color.g;
+    cache->blue = color.b;
     TTF_Font *font = osd_font(size);
     if (font == NULL)
         return NULL;
 
     int outline = size >= 22 ? 2 : 1;
     SDL_Color black = {0, 0, 0, 255};
-    SDL_Color white = {255, 255, 255, 255};
     TTF_SetFontOutline(font, outline);
     SDL_Surface *shadow = TTF_RenderUTF8_Blended(font, text, black);
     TTF_SetFontOutline(font, 0);
-    SDL_Surface *face = TTF_RenderUTF8_Blended(font, text, white);
+    SDL_Surface *face = TTF_RenderUTF8_Blended(font, text, color);
     if (shadow == NULL || face == NULL) {
         SDL_FreeSurface(shadow);
         SDL_FreeSurface(face);
@@ -1567,6 +1650,13 @@ static SDL_Surface *osd_text(OsdTextCache *cache, const char *text,
     SDL_FreeSurface(shadow);
     SDL_FreeSurface(face);
     return cache->surface;
+}
+
+static SDL_Surface *osd_text(OsdTextCache *cache, const char *text,
+                             int size)
+{
+    SDL_Color white = {255, 255, 255, 255};
+    return osd_text_color(cache, text, size, white);
 }
 
 static void blit_osd_text(SDL_Surface *target, SDL_Surface *text,
@@ -1716,6 +1806,24 @@ static void draw_audio_background(SDL_Surface *surface)
             blit_osd_text(surface, label, (surface->w - label->w) / 2,
                           (int)(surface->h * 0.73));
     }
+}
+
+static void draw_audio_timer_only(void)
+{
+    if (!audio_mode || backlight_stage == 2)
+        return;
+    SDL_Surface *surface = hardware_surface != NULL
+                               ? hardware_surface
+                               : SDL_GetVideoSurface();
+    if (surface == NULL)
+        return;
+    Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
+    int scale = surface->w / 640;
+    if (scale < 1)
+        scale = 1;
+    draw_logical_rect(surface, 12 * scale, 12 * scale,
+                      150 * scale, 48 * scale, black);
+    draw_timer_warning(surface);
 }
 
 static void draw_progress_knob(SDL_Surface *surface, int knob_x, int bar_y,
@@ -1997,6 +2105,7 @@ static void paint_player_overlay(SDL_Surface *surface)
     draw_audio_background(surface);
     draw_progress_bar(surface);
     draw_seek_notice();
+    draw_timer_warning(surface);
     draw_battery_peek(surface);
 }
 
@@ -2006,6 +2115,8 @@ static bool player_overlay_visible(void)
     if (backlight_stage == 2)
         return false;
     if (battery_peek_visible())
+        return true;
+    if (timer_warning_visible())
         return true;
     if (audio_mode)
         return true;

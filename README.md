@@ -269,7 +269,7 @@ rewinding and at the bottom-right when moving forward.
 
 Audio playback shows the selected file's artwork, or the nearest inherited
 folder artwork, with a thin progress line and elapsed/remaining time. After
-15 seconds without input the display changes to minimum brightness; 15
+30 seconds without input the display changes to minimum brightness; 30
 seconds later the backlight turns off while playback and the timer continue.
 Press A, B, X, Y, a direction, START, SELECT, MENU, POWER or either volume
 button to restore the display. That first press is consumed: it only wakes the
@@ -311,6 +311,9 @@ The same timer is shared by games, video, audio and both carousels. When it reac
 zero, the running content closes and the child sees **Time's up!** and
 **See you next time**. If that screen is left untouched for five minutes, the
 device powers off cleanly.
+
+During the final five minutes, the remaining time stays visible in red on the
+carousel and during audio/video playback.
 
 The current floor, folder and selection are saved. Media playback is
 checkpointed approximately every five seconds. A file that reaches its natural

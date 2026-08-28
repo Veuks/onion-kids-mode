@@ -43,7 +43,7 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
   lancent comme les vidéos.
 - Pendant un fichier audio, la pochette correcte est affichée avec une ligne
   de progression, le temps écoulé à gauche et le temps restant à droite.
-- Après 15 secondes sans action, la luminosité passe au minimum. Quinze secondes
+- Après 30 secondes sans action, la luminosité passe au minimum. Trente secondes
   plus tard, le rétroéclairage s'éteint sans interrompre le son ni le timer.
 - Un premier appui sur A, B ou MENU rallume uniquement l'écran, sans reprendre,
   mettre en pause ni quitter le lecteur.
@@ -52,6 +52,8 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
 - Une extinction pendant un jeu ou une vidéo reprend le contenu.
 - Une extinction depuis le carrousel restaure seulement la sélection.
 - Le timer est partagé entre les jeux et les vidéos.
+- Pendant les cinq dernières minutes, le temps restant est affiché en rouge
+  sur le carrousel et pendant la lecture audio/vidéo.
 - Depuis le menu parent du profil Main, **Switch to Guest profile** charge les
   favoris, médias, positions et sauvegardes Kids du profil Guest sans quitter
   Kids Mode. La bascule inverse restaure exactement l'environnement Main.
