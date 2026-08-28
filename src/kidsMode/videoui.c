@@ -486,6 +486,7 @@ static TTF_Font *getFontInfo(void)
 // Fixed dark slate so white text stays readable on any theme.
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
 static const SDL_Color COLOR_RESTART_RED = {235, 64, 64};
+static const SDL_Color COLOR_TIMESUP_GREEN = {76, 217, 100};
 static const uint32_t FALLBACK_BG = 0x1A1B26; // if the theme background fails
 static const uint32_t PIN_BOX_COLOR = 0x2E3350;
 static const uint32_t PIN_BOX_ACTIVE = 0x4A5480;
@@ -2892,7 +2893,7 @@ static void renderTimesUp(void)
     drawText("Time's up!", cx, (int)(g_display.height * 0.4),
              getFontBigValue(), accentColor(), g_display.width - 40);
     drawText("See you next time.", cx, (int)(g_display.height * 0.55),
-             getFontInfo(), theme()->list.color, g_display.width - 40);
+             getFontInfo(), COLOR_TIMESUP_GREEN, g_display.width - 40);
 
     theme_renderFooter(screen);
 }

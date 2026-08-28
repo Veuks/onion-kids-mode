@@ -69,6 +69,8 @@ A shutdown while a game or video is running resumes that content. A shutdown
 from a carousel restores the last section, folder and selection. Games and
 videos share the same timer and parent PIN. When time expires, verify that the
 top band reads **Kids Mode** above the centred `Time's up!` message.
+`Time's up!` must remain white with the current theme, while
+`See you next time.` is green.
 
 Launch a RetroArch game with five minutes remaining. Verify that RetroArch's
 native compact countdown (`5 min`, `4 min`...) stays visible and changes once

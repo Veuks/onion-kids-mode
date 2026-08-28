@@ -61,7 +61,8 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
   Kids Mode. La bascule inverse restaure exactement l'environnement Main.
 - Répéter Main → Guest → Main après avoir sauvegardé un jeu dans chaque profil :
   les deux sauvegardes doivent rester distinctes et le timer ne doit pas repartir.
-- À zéro, **Time's up!** et **See you next time** sont affichés.
+- À zéro, **Time's up!** reste blanc et **See you next time** est affiché en
+  vert.
 - Malgré des appuis ou l'ouverture du PIN/menu parent, la console s'éteint
   cinq minutes après **Time's up!**. Passer le timer à `OFF` ou ajouter du
   temps avant l'échéance annule cette extinction automatique.
