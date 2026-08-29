@@ -71,6 +71,10 @@ blfscript=/mnt/SDCARD/.tmp_update/script/blue_light.sh
 blfbackup="$backupdir/blue_light.sh.backup"
 current_profile=/mnt/SDCARD/Saves/CurrentProfile
 kids_profile="/mnt/SDCARD/Saves/KidsProfile/$source_profile"
+gambatte_remap_dir="$current_profile/config/remaps/Gambatte"
+gambatte_remap_backup="$backupdir/gambatte-remaps.backup"
+gambatte_remap_absent="$backupdir/gambatte-remaps.was-absent"
+gambatte_remap_active="$backupdir/gambatte-remaps.active"
 isolated_subdirs="saves states romScreens"
 profile_isolation_marker="$backupdir/profile_isolation_active"
 game_environment_marker="$backupdir/game_environment_ready"
@@ -569,6 +573,76 @@ restore_ra_lock() {
     fi
 }
 
+# Gambatte implements its own R2 fast-forward action inside the core, after
+# RetroArch has processed global hotkey binds and controller autoconfiguration.
+# A core remap is therefore the only reliable place to hide this action. Keep
+# an exact backup of all existing Gambatte remaps and restore it on unlock.
+patch_gambatte_remap_file() { # $1 = .rmp file
+    remap_file="$1"
+    remap_tmp="$remap_file.tmp.$$"
+    awk '
+        BEGIN { key = "input_player1_btn_r2" }
+        {
+            equals = index($0, "=")
+            setting = equals ? substr($0, 1, equals - 1) : ""
+            sub(/^[ \t]*/, "", setting)
+            sub(/[ \t]*$/, "", setting)
+            if (setting == key) {
+                if (!seen) print key " = \"-1\""
+                seen = 1
+                next
+            }
+            print
+        }
+        END { if (!seen) print key " = \"-1\"" }
+    ' "$remap_file" > "$remap_tmp" && mv -f "$remap_tmp" "$remap_file"
+    rm -f "$remap_tmp"
+}
+
+apply_gambatte_remap_lock() {
+    [ -f "$gambatte_remap_active" ] && return 0
+    rm -rf "$gambatte_remap_backup"
+    rm -f "$gambatte_remap_absent"
+    if [ -d "$gambatte_remap_dir" ]; then
+        cp -R "$gambatte_remap_dir" "$gambatte_remap_backup" || return 1
+    else
+        touch "$gambatte_remap_absent"
+    fi
+
+    mkdir -p "$gambatte_remap_dir" || return 1
+    # Mark the transaction active before touching a remap. If writing any
+    # file fails, restore the exact pre-Kids-Mode directory immediately.
+    touch "$gambatte_remap_active" || return 1
+    found_remap=0
+    for remap_file in "$gambatte_remap_dir"/*.rmp; do
+        [ -f "$remap_file" ] || continue
+        if ! patch_gambatte_remap_file "$remap_file"; then
+            restore_gambatte_remap_lock
+            return 1
+        fi
+        found_remap=1
+    done
+    if [ "$found_remap" -eq 0 ]; then
+        if ! printf '%s\n' 'input_player1_btn_r2 = "-1"' > \
+            "$gambatte_remap_dir/Gambatte.rmp"; then
+            restore_gambatte_remap_lock
+            return 1
+        fi
+    fi
+    log "Gambatte R2 core fast-forward disabled."
+}
+
+restore_gambatte_remap_lock() {
+    [ -f "$gambatte_remap_active" ] || return 0
+    rm -rf "$gambatte_remap_dir"
+    if [ -d "$gambatte_remap_backup" ]; then
+        mkdir -p "$(dirname "$gambatte_remap_dir")"
+        mv "$gambatte_remap_backup" "$gambatte_remap_dir"
+    fi
+    rm -f "$gambatte_remap_absent" "$gambatte_remap_active"
+    log "Gambatte remaps restored."
+}
+
 # ------------------------ Blue-light-filter lock ----------------------------
 # MENU+B is a system-level shortcut (handled by keymon, outside RetroArch)
 # that toggles the blue-light filter by calling this script with "enable" or
@@ -1008,19 +1082,11 @@ EOM
 # mechanism Onion's runtime.sh uses for its reset-game flag. In-game saves
 # (battery saves etc.) are untouched — only the resume snapshot is skipped.
 reset_cfg=/tmp/kidmode_reset.cfg
-gambatte_lock_cfg=/tmp/kidmode_gambatte_lock.cfg
 
 strip_reset_appendconfig() { # $1 = emulator launch script
     [ -n "$1" ] && [ -w "$1" ] || return 0
     if grep -q "$reset_cfg" "$1" 2> /dev/null; then
         sed -i "s| --appendconfig \"$reset_cfg\"||g" "$1"
-    fi
-}
-
-strip_gambatte_appendconfig() { # $1 = emulator launch script
-    [ -n "$1" ] && [ -w "$1" ] || return 0
-    if grep -q "$gambatte_lock_cfg" "$1" 2> /dev/null; then
-        sed -i "s| --appendconfig \"$gambatte_lock_cfg\"||g" "$1"
     fi
 }
 
@@ -1036,9 +1102,8 @@ build_game_cmd() {
         game_rompath="$(realpath "$game_rompath")"
     fi
 
-    # Never leave a stale injection behind from an interrupted launch.
+    # Never leave a stale injection behind from an interrupted fresh launch.
     strip_reset_appendconfig "$game_launch"
-    strip_gambatte_appendconfig "$game_launch"
 
     if [ "$game_fresh" = "fresh" ]; then
         printf 'savestate_auto_load = "false"\nconfig_save_on_exit = "false"\n' > "$reset_cfg"
@@ -1050,25 +1115,15 @@ build_game_cmd() {
     game_cfg="$(dirname "$game_rompath")/.game_config/$(basename "$game_rompath" ".$game_ext").cfg"
 
     game_direct=0
-    game_is_gambatte=0
-    if [ -f "$game_launch" ] &&
-        grep -q 'gambatte_libretro\.so' "$game_launch" 2> /dev/null; then
-        game_is_gambatte=1
-    fi
     if [ -f "$game_cfg" ] && [ -f "$game_launch" ] &&
         grep -q '.retroarch/cores' "$game_launch"; then
         game_core=$(grep "core\b" "$game_cfg" | awk '{split($0,a,"="); print a[2]}' | awk -F'"' '{print $2}' | tr -d '\n')
         if [ -n "$game_core" ] && [ -f "/mnt/SDCARD/RetroArch/.retroarch/cores/$game_core.so" ]; then
-            case "$game_core" in
-                gambatte_libretro) game_is_gambatte=1 ;;
-                *) game_is_gambatte=0 ;;
-            esac
-            append_args=""
-            [ "$game_fresh" = "fresh" ] &&
-                append_args="$append_args --appendconfig \"$reset_cfg\""
-            [ "$game_is_gambatte" -eq 1 ] &&
-                append_args="$append_args --appendconfig \"$gambatte_lock_cfg\""
-            echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v$append_args -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
+            if [ "$game_fresh" = "fresh" ]; then
+                echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v --appendconfig \"$reset_cfg\" -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
+            else
+                echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
+            fi
             game_direct=1
         fi
     fi
@@ -1078,23 +1133,6 @@ build_game_cmd() {
     if [ "$game_fresh" = "fresh" ] && [ "$game_direct" -eq 0 ] &&
         [ -f "$game_launch" ] && grep -q './retroarch -v' "$game_launch"; then
         sed -i "s|./retroarch -v|& --appendconfig \"$reset_cfg\"|g" "$game_launch"
-    fi
-
-    # Gambatte handles R2 as a core-level fast-forward button, independently
-    # of RetroArch's normal hotkey binds. Hide only R2 from this core while
-    # Kids Mode launches it; other systems keep their normal R2 control.
-    if [ "$game_is_gambatte" -eq 1 ]; then
-        printf '%s\n' \
-            'input_player1_r2 = "nul"' \
-            'input_player1_r2_axis = "nul"' \
-            'input_player1_r2_btn = "nul"' \
-            'input_player1_r2_mbtn = "nul"' > "$gambatte_lock_cfg"
-        if [ "$game_direct" -eq 0 ] && [ -f "$game_launch" ] &&
-            grep -q './retroarch -v' "$game_launch"; then
-            sed -i "s|./retroarch -v|& --appendconfig \"$gambatte_lock_cfg\"|g" "$game_launch"
-        fi
-    else
-        rm -f "$gambatte_lock_cfg"
     fi
 
     # Escape dollar signs in rom filenames, like runtime.sh does
@@ -1114,6 +1152,7 @@ prepare_game_environment() {
     # the first game launches without an extra setup pause.
     [ -f "$game_environment_marker" ] && return 0
     apply_ra_lock
+    apply_gambatte_remap_lock
     apply_profile_isolation
     apply_keymap_override
     touch "$game_environment_marker"
@@ -1200,8 +1239,7 @@ run_game_cmd() {
 
     # Remove any fresh-launch injection from the emulator's launch script
     strip_reset_appendconfig "$run_launch"
-    strip_gambatte_appendconfig "$run_launch"
-    rm -f "$reset_cfg" "$gambatte_lock_cfg"
+    rm -f "$reset_cfg"
 
     rm -f "$sysdir/cmd_to_run.sh"
     cd "$appdir" 2> /dev/null
@@ -1373,6 +1411,7 @@ switch_kids_profile() {
 
     # Save the current Kids environment, then restore the current Onion
     # profile completely before asking Onion's profile folders to trade places.
+    restore_gambatte_remap_lock
     restore_profile_isolation
     rm -f "$game_environment_marker" "$game_prepare_pid_file"
 
@@ -1381,6 +1420,7 @@ switch_kids_profile() {
         [ -f "$onion_list" ] || continue
         cp -f "$onion_list" "$current_profile/lists/" || {
             log "Profile switch aborted: could not save Onion lists."
+            apply_gambatte_remap_lock
             apply_profile_isolation
             start_ticker
             return 1
@@ -1401,6 +1441,7 @@ switch_kids_profile() {
     # one back immediately so CurrentProfile is never left missing.
     if ! mv "$current_profile" "$parked_profile"; then
         log "Profile switch aborted: could not park CurrentProfile."
+        apply_gambatte_remap_lock
         apply_profile_isolation
         start_ticker
         return 1
@@ -1408,6 +1449,7 @@ switch_kids_profile() {
     if ! mv "$incoming_profile" "$current_profile"; then
         mv "$parked_profile" "$current_profile" 2> /dev/null
         log "Profile switch rolled back: could not activate $target_profile."
+        apply_gambatte_remap_lock
         apply_profile_isolation
         start_ticker
         return 1
@@ -1422,6 +1464,7 @@ switch_kids_profile() {
         mv "$current_profile" "$incoming_profile" 2> /dev/null
         mv "$parked_profile" "$current_profile" 2> /dev/null
         log "Profile switch rolled back: could not save the active profile."
+        apply_gambatte_remap_lock
         apply_profile_isolation
         start_ticker
         return 1
@@ -1616,6 +1659,7 @@ disarm() {
     stop_ticker
     wait_for_game_environment
     restore_ra_lock
+    restore_gambatte_remap_lock
     restore_blf_lock
     restore_profile_isolation
     restore_keymap_override
@@ -2281,6 +2325,7 @@ cmd_run() {
     stop_ticker
     wait_for_game_environment
     restore_ra_lock
+    restore_gambatte_remap_lock
     restore_blf_lock
     restore_profile_isolation
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
