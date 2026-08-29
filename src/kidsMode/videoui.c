@@ -3330,6 +3330,10 @@ int main(int argc, char *argv[])
 
     if (!SDL_InitDefault())
         return 1;
+    // SDL 1.2 does not generate held-key events unless repetition is enabled.
+    // Repeats are accepted below only for LEFT/RIGHT on timer values, so this
+    // cannot accelerate carousel navigation, PIN entry or ordinary menus.
+    SDL_EnableKeyRepeat(350, 100);
     writeFloorState();
 
     Screen active_screen = SCREEN_CAROUSEL;
@@ -3509,7 +3513,14 @@ int main(int argc, char *argv[])
         }
         if (key_changed && changed_key == SW_BTN_Y)
             dirty = true;
-        if (key_changed && keystate[changed_key] == PRESSED) {
+        bool timer_value_repeat =
+            key_changed && keystate[changed_key] == REPEATING &&
+            (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT) &&
+            (active_screen == SCREEN_PICKTIMER ||
+             (active_screen == SCREEN_MENU &&
+              menu_list.active_pos == MENU_ADDTIME));
+        if (key_changed &&
+            (keystate[changed_key] == PRESSED || timer_value_repeat)) {
             pin_last_input = ticks;
             if (active_screen == SCREEN_CAROUSEL)
                 carousel_last_activity = ticks;
