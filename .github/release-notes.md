@@ -32,6 +32,18 @@ the parent menus and timer controls.
   progress bar with elapsed and remaining time.
 - MP3 and other audio titles shown below the artwork now use the active Onion
   theme font, matching the battery, time and seek indicators.
+- The inactivity dimmer now waits 30 seconds before reducing brightness and
+  another 15 seconds before switching off the backlight.
+- During the final five minutes of a play timer, the remaining time stays
+  visible in red at the top-right on the carousel and during audio/video
+  playback. Games keep RetroArch's native countdown notification.
+- Five minutes after **Time's up!**, the console now powers off even if buttons
+  are pressed or parent screens are opened. Turning the timer `OFF` or adding
+  time before the deadline cancels the shutdown.
+- Disabled Gambatte's core-level R2 fast-forward shortcut in Game Boy and Game
+  Boy Color games without changing R2 controls on other systems.
+- **See you next time.** is now shown in green on the Time's up screen, while
+  **Time's up!** keeps the theme's normal white appearance.
 
 ## Updating
 
