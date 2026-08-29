@@ -244,6 +244,8 @@ and selection.
 The game itself keeps its normal controls. A single press of MENU saves and
 returns directly to the Kids Mode carousel. RetroArch configuration and
 dangerous hotkeys are hidden while the mode is active and restored on exit.
+Gambatte's built-in R2 fast-forward shortcut is also disabled for Game Boy and
+Game Boy Color games; R2 remains available normally on other systems.
 
 Restarting with X skips Onion's automatic resume state but does not erase
 normal in-game save data.

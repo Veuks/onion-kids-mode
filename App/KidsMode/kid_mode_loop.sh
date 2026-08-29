@@ -1008,11 +1008,19 @@ EOM
 # mechanism Onion's runtime.sh uses for its reset-game flag. In-game saves
 # (battery saves etc.) are untouched — only the resume snapshot is skipped.
 reset_cfg=/tmp/kidmode_reset.cfg
+gambatte_lock_cfg=/tmp/kidmode_gambatte_lock.cfg
 
 strip_reset_appendconfig() { # $1 = emulator launch script
     [ -n "$1" ] && [ -w "$1" ] || return 0
     if grep -q "$reset_cfg" "$1" 2> /dev/null; then
         sed -i "s| --appendconfig \"$reset_cfg\"||g" "$1"
+    fi
+}
+
+strip_gambatte_appendconfig() { # $1 = emulator launch script
+    [ -n "$1" ] && [ -w "$1" ] || return 0
+    if grep -q "$gambatte_lock_cfg" "$1" 2> /dev/null; then
+        sed -i "s| --appendconfig \"$gambatte_lock_cfg\"||g" "$1"
     fi
 }
 
@@ -1028,8 +1036,9 @@ build_game_cmd() {
         game_rompath="$(realpath "$game_rompath")"
     fi
 
-    # Never leave a stale injection behind from an interrupted fresh launch
+    # Never leave a stale injection behind from an interrupted launch.
     strip_reset_appendconfig "$game_launch"
+    strip_gambatte_appendconfig "$game_launch"
 
     if [ "$game_fresh" = "fresh" ]; then
         printf 'savestate_auto_load = "false"\nconfig_save_on_exit = "false"\n' > "$reset_cfg"
@@ -1041,15 +1050,25 @@ build_game_cmd() {
     game_cfg="$(dirname "$game_rompath")/.game_config/$(basename "$game_rompath" ".$game_ext").cfg"
 
     game_direct=0
+    game_is_gambatte=0
+    if [ -f "$game_launch" ] &&
+        grep -q 'gambatte_libretro\.so' "$game_launch" 2> /dev/null; then
+        game_is_gambatte=1
+    fi
     if [ -f "$game_cfg" ] && [ -f "$game_launch" ] &&
         grep -q '.retroarch/cores' "$game_launch"; then
         game_core=$(grep "core\b" "$game_cfg" | awk '{split($0,a,"="); print a[2]}' | awk -F'"' '{print $2}' | tr -d '\n')
         if [ -n "$game_core" ] && [ -f "/mnt/SDCARD/RetroArch/.retroarch/cores/$game_core.so" ]; then
-            if [ "$game_fresh" = "fresh" ]; then
-                echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v --appendconfig \"$reset_cfg\" -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
-            else
-                echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
-            fi
+            case "$game_core" in
+                gambatte_libretro) game_is_gambatte=1 ;;
+                *) game_is_gambatte=0 ;;
+            esac
+            append_args=""
+            [ "$game_fresh" = "fresh" ] &&
+                append_args="$append_args --appendconfig \"$reset_cfg\""
+            [ "$game_is_gambatte" -eq 1 ] &&
+                append_args="$append_args --appendconfig \"$gambatte_lock_cfg\""
+            echo "LD_PRELOAD=$miyoodir/lib/libpadsp.so ./retroarch -v$append_args -L \".retroarch/cores/$game_core.so\" \"$game_rompath\"" > "$sysdir/cmd_to_run.sh"
             game_direct=1
         fi
     fi
@@ -1059,6 +1078,23 @@ build_game_cmd() {
     if [ "$game_fresh" = "fresh" ] && [ "$game_direct" -eq 0 ] &&
         [ -f "$game_launch" ] && grep -q './retroarch -v' "$game_launch"; then
         sed -i "s|./retroarch -v|& --appendconfig \"$reset_cfg\"|g" "$game_launch"
+    fi
+
+    # Gambatte handles R2 as a core-level fast-forward button, independently
+    # of RetroArch's normal hotkey binds. Hide only R2 from this core while
+    # Kids Mode launches it; other systems keep their normal R2 control.
+    if [ "$game_is_gambatte" -eq 1 ]; then
+        printf '%s\n' \
+            'input_player1_r2 = "nul"' \
+            'input_player1_r2_axis = "nul"' \
+            'input_player1_r2_btn = "nul"' \
+            'input_player1_r2_mbtn = "nul"' > "$gambatte_lock_cfg"
+        if [ "$game_direct" -eq 0 ] && [ -f "$game_launch" ] &&
+            grep -q './retroarch -v' "$game_launch"; then
+            sed -i "s|./retroarch -v|& --appendconfig \"$gambatte_lock_cfg\"|g" "$game_launch"
+        fi
+    else
+        rm -f "$gambatte_lock_cfg"
     fi
 
     # Escape dollar signs in rom filenames, like runtime.sh does
@@ -1164,7 +1200,8 @@ run_game_cmd() {
 
     # Remove any fresh-launch injection from the emulator's launch script
     strip_reset_appendconfig "$run_launch"
-    rm -f "$reset_cfg"
+    strip_gambatte_appendconfig "$run_launch"
+    rm -f "$reset_cfg" "$gambatte_lock_cfg"
 
     rm -f "$sysdir/cmd_to_run.sh"
     cd "$appdir" 2> /dev/null

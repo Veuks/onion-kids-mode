@@ -56,6 +56,9 @@ manuellement les vidéos et dossiers dans `Media/KidsMode`.
   en haut à droite sur le carrousel et pendant la lecture audio/vidéo. Dans
   un jeu, vérifier l'indication native compacte de RetroArch (`5 min`,
   `4 min`...) et son changement à chaque minute.
+- Dans un jeu Game Boy ou Game Boy Color utilisant Gambatte, R2 ne doit plus
+  activer l'avance rapide. Sur les autres systèmes, R2 reste disponible comme
+  touche de jeu normale.
 - Depuis le menu parent du profil Main, **Switch to Guest profile** charge les
   favoris, médias, positions et sauvegardes Kids du profil Guest sans quitter
   Kids Mode. La bascule inverse restaure exactement l'environnement Main.

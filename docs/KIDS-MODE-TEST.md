@@ -76,6 +76,10 @@ Launch a RetroArch game with five minutes remaining. Verify that RetroArch's
 native compact countdown (`5 min`, `4 min`...) stays visible and changes once
 per minute.
 
+Launch a Game Boy or Game Boy Color title using Gambatte. Holding R2 must not
+enable fast-forward. Launch a system that uses R2 as a normal gameplay button
+and verify that its control remains available.
+
 ## Build
 
 The workflow builds `src/kidsMode`, places `kidui` and `libvcinput.so`
