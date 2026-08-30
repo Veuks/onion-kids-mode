@@ -3,20 +3,12 @@
 #include <SDL/SDL_image.h>
 #include <SDL/SDL_ttf.h>
 #include <dlfcn.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <linux/fb.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
-
-#ifndef FBIO_WAITFORVSYNC
-#define FBIO_WAITFORVSYNC _IOW('F', 0x20, unsigned int)
-#endif
 
 typedef int (*poll_fn)(SDL_Event *);
 typedef int (*wait_fn)(SDL_Event *);
@@ -112,61 +104,6 @@ static int seek_notice_draw_h;
 static Uint32 last_clock_update;
 static Uint8 *yuv_backup[3];
 static size_t yuv_backup_capacity[3];
-static int vsync_fb_fd = -2;
-static bool vsync_available = true;
-static bool vsync_first_attempt = true;
-
-#define VSYNC_LOG_FILE "/mnt/SDCARD/.tmp_update/logs/kidsmode-vsync.log"
-
-static void log_vsync_result(const char *status, int error_number,
-                             Uint32 wait_ms)
-{
-    FILE *log_file = fopen(VSYNC_LOG_FILE,
-                           vsync_first_attempt ? "w" : "a");
-    if (log_file == NULL)
-        return;
-
-    fprintf(log_file,
-            "status=%s\nfb_device=/dev/fb0\nwait_ms=%u\nerrno=%d\nerror=%s\n",
-            status, (unsigned int)wait_ms, error_number,
-            error_number != 0 ? strerror(error_number) : "none");
-    fclose(log_file);
-}
-
-static void wait_for_display_vsync(void)
-{
-    if (!vsync_available)
-        return;
-
-    if (vsync_fb_fd == -2) {
-        vsync_fb_fd = open("/dev/fb0", O_RDWR | O_CLOEXEC);
-        if (vsync_fb_fd < 0) {
-            int open_error = errno;
-            log_vsync_result("framebuffer-open-failed", open_error, 0);
-            vsync_first_attempt = false;
-            vsync_available = false;
-            return;
-        }
-    }
-
-    unsigned int crtc = 0;
-    Uint32 wait_started = SDL_GetTicks();
-    int wait_result = ioctl(vsync_fb_fd, FBIO_WAITFORVSYNC, &crtc);
-    Uint32 wait_ms = SDL_GetTicks() - wait_started;
-    if (wait_result < 0) {
-        int wait_error = errno;
-        log_vsync_result(vsync_first_attempt ? "vsync-not-supported"
-                                             : "vsync-runtime-error",
-                         wait_error, wait_ms);
-        close(vsync_fb_fd);
-        vsync_fb_fd = -1;
-        vsync_available = false;
-    }
-    else if (vsync_first_attempt) {
-        log_vsync_result("vsync-supported", 0, wait_ms);
-    }
-    vsync_first_attempt = false;
-}
 
 typedef struct {
     char text[128];
@@ -2698,11 +2635,6 @@ int SDL_DisplayYUVOverlay(SDL_Overlay *overlay, SDL_Rect *dstrect)
     // the OSD alternate between visible and missing frames on the Miyoo.
     bool painted = player_overlay_visible() &&
                    backup_and_paint_video_overlay(overlay);
-    // Present immediately after a display refresh when the Miyoo framebuffer
-    // exposes vertical-sync waiting. If the vendor driver does not implement
-    // this ioctl, wait_for_display_vsync() disables itself after the first
-    // failed call and playback continues through the original SDL path.
-    wait_for_display_vsync();
     int result = real_overlay(overlay, dstrect);
     // Do not restore immediately: the Miyoo overlay is scanned out
     // asynchronously, so changing its pixels here produces striped text.
