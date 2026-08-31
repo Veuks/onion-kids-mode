@@ -47,7 +47,7 @@ sections use the active Onion theme and slide smoothly between each other.
 - Miyoo Mini or Miyoo Mini Plus.
 - Onion OS 4.3 or newer.
 - At least one game marked as a Favorite in Onion.
-- Onion's FFplay binary, included with normal Onion installations.
+- No separate media player is required: KidsPlay is included with Kids Mode.
 
 The current version was tested on real Miyoo Mini Plus hardware. Mini and Mini
 V4 display sizes are supported in the code, but feedback is welcome.
@@ -347,9 +347,9 @@ To uninstall, exit through the parent menu first, then remove
 ## Building from source
 
 Every push starts the GitHub Actions workflow. It cross-compiles
-`src/kidsMode`, places `kidui` and `libvcinput.so` inside
-`App/KidsMode/bin`, and uploads the green artifact named
-`Kids-Mode-build`.
+`src/kidsMode`, places `kidui` and the patched `keymon` inside
+`App/KidsMode/bin`, and packages them with the included SDL2 KidsPlay engine.
+The green artifact is named `Kids-Mode-build`.
 
 Tagged builds additionally create `Kids-Mode.zip` and attach it to the
 GitHub Release.

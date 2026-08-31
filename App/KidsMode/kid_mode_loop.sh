@@ -105,10 +105,12 @@ uilog=/tmp/kidmode_ui_log
 videosdir="/mnt/SDCARD/Media/KidsMode/$source_profile"
 statefile="$profile_state_dir/state.json"
 positions="$profile_state_dir/video_positions"
-ffplay=/mnt/SDCARD/.tmp_update/bin/ffplay
+kidsplay="$appdir/bin/kidsplay"
+kidsplay_lib="$appdir/lib"
+kidsplay_vsync="$kidsplay_lib/libminivsync.so"
+kidsplay_fb_reset="$appdir/bin/fb_reset"
 player_pid=/tmp/kidsmode_player.pid
 menu_exit_marker=/tmp/kidsmode_video_menu_exit
-libvcinput="$appdir/bin/libvcinput.so"
 brightness_pwm=/sys/devices/soc0/soc/1f003400.pwm/pwm/pwmchip0/pwm0/duty_cycle
 game_selection_file="$profile_state_dir/game_selection.txt"
 video_selection_file="$profile_state_dir/video_selection.txt"
@@ -129,7 +131,6 @@ export KIDSMODE_ARTWORK_CACHE_DIR="$artwork_cache_dir"
 
 mkdir -p "$backupdir" "$profile_state_dir" "$positions" \
     "$folder_selections_dir" "$artwork_cache_dir" "$videosdir/Imgs"
-[ -x "$ffplay" ] || ffplay="$(command -v ffplay)"
 timer_state_date="$(date +%Y-%m-%d)"
 
 cfg_pin_hash=""
@@ -1778,24 +1779,6 @@ ensure_audio_server() {
     done
 }
 
-restore_ffplay_state() {
-    for backup in /mnt/SDCARD/App/FFplay/pos.cfg.kidsmode-backup \
-        "$sysdir/pos.cfg.kidsmode-backup"; do
-        [ -f "$backup" ] || continue
-        original="${backup%.kidsmode-backup}"
-        rm -f "$original"
-        mv -f "$backup" "$original"
-    done
-}
-
-hide_ffplay_state() {
-    restore_ffplay_state
-    for original in /mnt/SDCARD/App/FFplay/pos.cfg "$sysdir/pos.cfg"; do
-        [ -f "$original" ] || continue
-        mv -f "$original" "$original.kidsmode-backup"
-    done
-}
-
 watch_media_duration() {
     duration_log="$1" duration_output="$2" watched_pid="$3"
     tries=0
@@ -1840,7 +1823,7 @@ play_video() {
     posfile="$positions/$key.pos"
     runtime_pos="/tmp/kidsmode_position.$$"
     duration_file="/tmp/kidsmode_duration.$$"
-    duration_log="/tmp/kidsmode_ffplay.$$"
+    duration_log="/tmp/kidsmode_kidsplay.$$"
     brightness_state="/tmp/kidsmode_brightness.$$"
     rm -f "$duration_file" "$duration_log" "$brightness_state"
     brightness_restore=""
@@ -1860,11 +1843,10 @@ play_video() {
     [ "$fresh" = yes ] && printf '0\n' > "$posfile"
     printf '%s\n' "$start" > "$runtime_pos"
     state_save videos running "$video" "$active_folder"
-    hide_ffplay_state
     rm -f "$menu_exit_marker"
     ensure_audio_server
     # POWER uses the same genuine Onion suspend path for media and carousel.
-    # The Kids Mode keymon has enough PID slots to stop and resume FFplay
+    # The Kids Mode keymon has enough PID slots to stop and resume KidsPlay
     # reliably, so playback and its controls cannot continue during sleep.
     rm -f /tmp/stay_awake
     touch /tmp/kidsmode_media_playing
@@ -1922,15 +1904,33 @@ play_video() {
         rm -f /tmp/kidsmode_media_playing
         return 1
     fi
-    # A true restart must not ask FFplay to seek, even to zero. Apart from
+    # A true restart must not ask KidsPlay to seek, even to zero. Apart from
     # avoiding unnecessary decoder preroll, this keeps 0:00 distinct from a
     # normal resume position.
     seek_args=""
     [ "$start" -gt 0 ] && seek_args="-ss $start"
+
+    # KidsPlay owns the Miyoo audio device directly. Onion's audioserver is
+    # restarted immediately after playback; keeping both open at once causes
+    # intermittent silence and ALSA buffer conflicts.
+    audio_server_was_running=no
+    if pgrep audioserver > /dev/null 2>&1; then
+        audio_server_was_running=yes
+        killall audioserver 2> /dev/null
+        audio_wait=0
+        while pgrep audioserver > /dev/null 2>&1 &&
+              [ "$audio_wait" -lt 20 ]; do
+            sleep 0.1
+            audio_wait=$((audio_wait + 1))
+        done
+    fi
+
+    player_library_path="$kidsplay_lib:/config/lib:/customer/lib:$sysdir/lib"
+    unset SDL_AUDIODRIVER
     if [ "$media_kind" = audio ]; then
-        # An MP3 can contain an attached cover exposed by FFplay as a video
-        # stream. Never send that stream to the Miyoo hardware overlay: the
-        # stable audio screen is drawn by libvcinput.
+        # An MP3 can contain an attached cover exposed as a video stream.
+        # -vn guarantees that KidsPlay's stable artwork screen remains the
+        # only rendered image.
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" VC_SCREENSHOT_FILE="" \
             VC_MEDIA_KIND=audio VC_ARTWORK_FILE="$artwork_file" \
@@ -1945,8 +1945,10 @@ play_video() {
             VC_BATTERY_OFFSET_X="$battery_offset_x" \
             VC_BATTERY_OFFSET_Y="$battery_offset_y" \
             VC_THEME_PATH="$theme_path" \
-            LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -vn -autoexit -i "$video" $seek_args \
+            LD_LIBRARY_PATH="$player_library_path" \
+            LD_PRELOAD="$kidsplay_vsync" SDL_VIDEODRIVER=mini \
+            "$kidsplay" -hide_banner -loglevel info -framedrop \
+                -vn -autoexit $seek_args -i "$video" \
                 2> "$duration_log" &
     else
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
@@ -1962,8 +1964,11 @@ play_video() {
             VC_BATTERY_OFFSET_X="$battery_offset_x" \
             VC_BATTERY_OFFSET_Y="$battery_offset_y" \
             VC_THEME_PATH="$theme_path" \
-            LD_PRELOAD="$libvcinput:$miyoodir/lib/libpadsp.so${LD_PRELOAD:+:$LD_PRELOAD}" \
-            "$ffplay" -autoexit -vf "hflip,vflip" -i "$video" $seek_args \
+            LD_LIBRARY_PATH="$player_library_path" \
+            LD_PRELOAD="$kidsplay_vsync" SDL_VIDEODRIVER=mini \
+            "$kidsplay" -hide_banner -loglevel info -framedrop -autoexit \
+                -vf "scale=640:480:force_original_aspect_ratio=decrease,pad=640:480:(ow-iw)/2:(oh-ih)/2" \
+                $seek_args -i "$video" \
             2> "$duration_log" &
     fi
     pid=$!
@@ -1972,14 +1977,18 @@ play_video() {
     duration_watcher=$!
     wait "$pid"
     player_status=$?
+    "$kidsplay_fb_reset" 2> /dev/null
+    if [ "$audio_server_was_running" = yes ]; then
+        ensure_audio_server
+    fi
     kill "$duration_watcher" 2> /dev/null
     wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
     # The next kidui instance primes both framebuffer pages with its first
-    # complete frame. Do not call bootScreen or flip FFplay's dying surface
+    # complete frame. Do not call bootScreen or flip KidsPlay's dying surface
     # here: either can expose a foreign or inverted page during transition.
     # Restore the latest brightness selected during playback, not the value
-    # captured when FFplay started. This also recovers cleanly if playback
+    # captured when KidsPlay started. This also recovers cleanly if playback
     # ended while Kids Mode's own dim/off state was active.
     if [ ! -f /tmp/.offOrder ] && [ ! -f /tmp/shutting_down ] &&
         [ -r "$brightness_state" ] && [ -w "$brightness_pwm" ]; then
@@ -1989,8 +1998,8 @@ play_video() {
             *) printf '%s\n' "$brightness_restore" > "$brightness_pwm" ;;
         esac
     fi
-    # Keep libvcinput's two-second safety checkpoint after MENU and during
-    # shutdown. FFplay may continue decoding briefly after POWER; its later
+    # Keep KidsPlay's two-second safety checkpoint after MENU and during
+    # shutdown. The decoder may continue briefly after POWER; its later
     # runtime value must not replace the last point the child actually saw.
     # Other exits still retain their exact runtime value.
     if [ ! -f /tmp/.offOrder ] && [ ! -f "$menu_exit_marker" ] &&
@@ -2000,8 +2009,6 @@ play_video() {
     rm -f "$runtime_pos" "$duration_file" "$duration_log" \
         "$brightness_state" "$player_pid" \
         /tmp/stay_awake /tmp/kidsmode_media_playing
-    rm -f /mnt/SDCARD/App/FFplay/pos.cfg "$sysdir/pos.cfg"
-    restore_ffplay_state
     check_off_order "End_Save"
     rem="$(timer_remaining)"
     if [ "$player_status" -eq 0 ] && [ ! -f "$menu_exit_marker" ] && \
@@ -2013,19 +2020,27 @@ play_video() {
 }
 
 cmd_run() {
-    if [ ! -f "$kidui_bin" ]; then
-        log "kidui binary missing; disarming."
+    if [ ! -f "$kidui_bin" ] || [ ! -f "$kidsplay" ] ||
+       [ ! -f "$kidsplay_vsync" ] || [ ! -f "$kidsplay_fb_reset" ]; then
+        log "Kids Mode runtime incomplete; disarming."
         rm -f "$flagfile"
         sync
         return 1
     fi
     chmod a+x "$kidui_bin" 2> /dev/null
     chmod a+x "$kids_keymon_bin" 2> /dev/null
+    chmod a+x "$kidsplay" "$kidsplay_fb_reset" 2> /dev/null
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
         /tmp/kidsmode_media_playing
     restart_keymon
 
     startup_started_at="$(date +%s)"
+    # This lock was added after some installations were already armed. Their
+    # persistent game_environment_ready marker legitimately skips the older
+    # preparation work, but must never skip a newly introduced safety lock.
+    # The operation is idempotent and only writes on the first run, so checking
+    # it here also covers app updates performed while Kids Mode stays active.
+    apply_gambatte_remap_lock
     prepare_game_environment_async
     repair_onion_favorites_if_needed
 
@@ -2338,8 +2353,9 @@ cmd_run() {
 }
 
 cmd_arm() {
-    if [ ! -f "$kidui_bin" ]; then
-        infoPanel -t "Kids Mode" -m "kidui binary is missing.\nReinstall Kids Mode." --auto
+    if [ ! -f "$kidui_bin" ] || [ ! -f "$kidsplay" ] ||
+       [ ! -f "$kidsplay_vsync" ] || [ ! -f "$kidsplay_fb_reset" ]; then
+        infoPanel -t "Kids Mode" -m "Kids Mode is incomplete.\nReinstall Kids Mode." --auto
         return 1
     fi
 

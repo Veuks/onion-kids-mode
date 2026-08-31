@@ -1,3 +1,4 @@
-The GitHub Actions build places the ARM executables `kidui` and
-`libvcinput.so` in this directory. Do not install this source folder directly;
-install the compiled `KidsMode` folder from the green build artifact.
+The GitHub Actions build places `kidui` and the patched Kids Mode `keymon` in
+this directory. The repository already contains the ARM `kidsplay` and
+`fb_reset` executables required by the SDL2 media engine. Install the complete
+`KidsMode` folder from the green build artifact.
