@@ -36,10 +36,18 @@ jobs:
           cp -r src/kidsMode onion/src/
           cd onion/src/kidsMode
           make
-          file kidui libvcinput.so "$GITHUB_WORKSPACE/App/KidsMode/bin/keymon"
-          cp kidui libvcinput.so "$GITHUB_WORKSPACE/App/KidsMode/bin/"
+          arm-linux-gnueabihf-strip \
+            "$GITHUB_WORKSPACE/App/KidsMode/bin/kidsplay" \
+            "$GITHUB_WORKSPACE/App/KidsMode/bin/fb_reset" \
+            "$GITHUB_WORKSPACE/App/KidsMode/lib/libminivsync.so"
+          file kidui "$GITHUB_WORKSPACE/App/KidsMode/bin/keymon" \
+            "$GITHUB_WORKSPACE/App/KidsMode/bin/kidsplay" \
+            "$GITHUB_WORKSPACE/App/KidsMode/bin/fb_reset"
+          cp kidui "$GITHUB_WORKSPACE/App/KidsMode/bin/"
           chmod +x "$GITHUB_WORKSPACE/App/KidsMode/bin/kidui" \
             "$GITHUB_WORKSPACE/App/KidsMode/bin/keymon" \
+            "$GITHUB_WORKSPACE/App/KidsMode/bin/kidsplay" \
+            "$GITHUB_WORKSPACE/App/KidsMode/bin/fb_reset" \
             "$GITHUB_WORKSPACE/App/KidsMode/"*.sh
       - name: Upload complete artifact
         uses: actions/upload-artifact@v4
@@ -65,6 +73,7 @@ jobs:
       - name: Assemble zip
         run: |
           chmod +x App/KidsMode/bin/kidui App/KidsMode/bin/keymon \
+            App/KidsMode/bin/kidsplay App/KidsMode/bin/fb_reset \
             App/KidsMode/*.sh
           cp README.md App/KidsMode/
           zip -r Kids-Mode.zip App/KidsMode \
