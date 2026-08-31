@@ -34,6 +34,8 @@ favfile=/mnt/SDCARD/Roms/favourite.json
 # App/KidsMode during an update can never delete them.
 backupdir=/mnt/SDCARD/Saves/KidsMode
 source_profile_file="$backupdir/source_profile.txt"
+reopen_parent_menu_requested="${KIDSMODE_REOPEN_PARENT:-0}"
+unset KIDSMODE_REOPEN_PARENT
 
 # Main and Guest each get an entirely separate kid environment. When Kids
 # Mode is already armed (including after a reboot), the persisted origin is
@@ -89,6 +91,7 @@ timer_state="$backupdir/timer_state.txt" # 3 lines: day / used seconds / bonus s
 pin_backup="$backupdir/pin_backup.json"
 remaining_file=/tmp/kidsmode_remaining
 timesup_since_file=/tmp/kidsmode_timesup_since
+timesup_resume_file="$profile_state_dir/timesup_resume.txt"
 timer_minutes_file=/tmp/kidsmode_timer_minutes
 ticker_pid_file=/tmp/kidmode_ticker.pid
 
@@ -914,15 +917,24 @@ game_is_running() {
         { [ -f "$player_pid" ] && kill -0 "$(cat "$player_pid")" 2> /dev/null; }
 }
 
+mark_timesup_resume() { # $1 = video | game
+    resume_kind="$1"
+    [ -f "$timesup_resume_file" ] && return 0
+    printf '%s\n' "$resume_kind" > "$timesup_resume_file.tmp" &&
+        mv -f "$timesup_resume_file.tmp" "$timesup_resume_file"
+}
+
 # Ask the running game to stop gracefully. RetroArch first (network QUIT →
 # normal exit path → Onion auto-save state); escalate only if needed.
 # Non-RetroArch games (ports, standalone) get a plain TERM — best effort.
 save_quit_game() {
     if [ -f "$player_pid" ]; then
+        mark_timesup_resume video
         kill "$(cat "$player_pid")" 2> /dev/null
         log "Play time over; video stopped."
         return
     fi
+    mark_timesup_resume game
     notify_game "Time's up! Saving your game..."
     sleep 2
     if pgrep retroarch > /dev/null 2>&1; then
@@ -1400,7 +1412,7 @@ switch_kids_profile() {
             ;;
     esac
 
-    if [ ! -d "$incoming_profile" ] || [ -e "$parked_profile" ]; then
+    if [ ! -d "$incoming_profile" ]; then
         log "Profile switch unavailable: $source_profile -> $target_profile"
         infoPanel -t "Kids Mode" -m "The requested Onion profile is unavailable." --auto
         return 1
@@ -1438,9 +1450,32 @@ switch_kids_profile() {
     fi
     sync
 
+    # A previous interrupted profile switch, or Onion itself, can leave both
+    # parked profile folders present. Never delete that unexpected copy: move
+    # it to a timestamped recovery folder immediately before the directory
+    # swap. Every failure below restores it to its original location.
+    stale_profile_recovery=""
+    if [ -e "$parked_profile" ]; then
+        recovery_root="$backupdir/profile-recovery"
+        recovery_name="${parked_profile##*/}-$(date +%Y%m%d-%H%M%S)-$$"
+        stale_profile_recovery="$recovery_root/$recovery_name"
+        mkdir -p "$recovery_root"
+        if ! mv "$parked_profile" "$stale_profile_recovery"; then
+            log "Profile switch unavailable: could not preserve stale ${parked_profile##*/}."
+            apply_gambatte_remap_lock
+            apply_profile_isolation
+            start_ticker
+            infoPanel -t "Kids Mode" -m "The requested Onion profile is unavailable." --auto
+            return 1
+        fi
+        log "Preserved stale ${parked_profile##*/} as profile-recovery/$recovery_name."
+    fi
+
     # The second rename can still fail on a damaged/full card. Roll the first
     # one back immediately so CurrentProfile is never left missing.
     if ! mv "$current_profile" "$parked_profile"; then
+        [ -n "$stale_profile_recovery" ] &&
+            mv "$stale_profile_recovery" "$parked_profile" 2> /dev/null
         log "Profile switch aborted: could not park CurrentProfile."
         apply_gambatte_remap_lock
         apply_profile_isolation
@@ -1449,6 +1484,8 @@ switch_kids_profile() {
     fi
     if ! mv "$incoming_profile" "$current_profile"; then
         mv "$parked_profile" "$current_profile" 2> /dev/null
+        [ -n "$stale_profile_recovery" ] &&
+            mv "$stale_profile_recovery" "$parked_profile" 2> /dev/null
         log "Profile switch rolled back: could not activate $target_profile."
         apply_gambatte_remap_lock
         apply_profile_isolation
@@ -1464,6 +1501,8 @@ switch_kids_profile() {
         rm -f "$source_profile_file.tmp"
         mv "$current_profile" "$incoming_profile" 2> /dev/null
         mv "$parked_profile" "$current_profile" 2> /dev/null
+        [ -n "$stale_profile_recovery" ] &&
+            mv "$stale_profile_recovery" "$parked_profile" 2> /dev/null
         log "Profile switch rolled back: could not save the active profile."
         apply_gambatte_remap_lock
         apply_profile_isolation
@@ -1506,6 +1545,10 @@ switch_kids_profile() {
     log "Kids Mode profile switched to $target_profile."
 
     # Re-exec rather than mutating dozens of cached profile paths in place.
+    # The one-exec environment flag bypasses a second PIN request and returns
+    # the authenticated parent directly to the same menu. Unlike a file, it
+    # cannot survive a crash or a later app launch and bypass authentication.
+    export KIDSMODE_REOPEN_PARENT=1
     exec /bin/sh "$appdir/kid_mode_loop.sh" run
 }
 
@@ -1611,8 +1654,9 @@ parent_menu() {
                 set_timer_minutes 0
                 state_write 0 0
                 update_remaining_now
+                rm -f "$timesup_resume_file" "$timesup_resume_file.tmp"
                 log "Play timer turned off from the parent menu."
-                return 1
+                continue
                 ;;
             ADDTIME)
                 case "$menu_arg" in
@@ -1634,9 +1678,10 @@ parent_menu() {
                     *)
                         [ "$menu_arg" -gt 120 ] && menu_arg=120
                         add_bonus $((menu_arg * 60))
-                        # Straight back to the kid so they can play (the menu
-                        # already previewed the new remaining time)
-                        return 1
+                        rm -f "$timesup_resume_file" "$timesup_resume_file.tmp"
+                        # Refresh the displayed remaining time without
+                        # dropping the authenticated parent back to carousel.
+                        continue
                         ;;
                 esac
                 ;;
@@ -1669,7 +1714,8 @@ restore_configured_brightness() {
 disarm() {
     rm -f "$flagfile"
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
-        /tmp/kidsmode_media_playing "$timesup_since_file"
+        /tmp/kidsmode_media_playing "$timesup_since_file" \
+        "$timesup_resume_file" "$timesup_resume_file.tmp"
     stop_ticker
     wait_for_game_environment
     restore_ra_lock
@@ -2029,6 +2075,53 @@ play_video() {
     state_save videos carousel "$video" "$active_folder"
 }
 
+disable_timer_and_resume_timesup() {
+    resume_kind=""
+    [ -f "$timesup_resume_file" ] &&
+        resume_kind="$(sed -n 1p "$timesup_resume_file" 2> /dev/null)"
+    rm -f "$timesup_resume_file" "$timesup_resume_file.tmp" \
+        "$timesup_since_file"
+
+    # Stop the zero-budget ticker before changing both persistent values, then
+    # restart it in timer-off mode so a later parent-menu change still works.
+    stop_ticker
+    set_timer_minutes 0
+    state_write 0 0
+    update_remaining_now
+    start_ticker
+    log "Time's-up PIN accepted; timer disabled and resuming $resume_kind."
+
+    case "$resume_kind" in
+        video)
+            if [ -f "$last_video" ]; then
+                active_floor=videos
+                resume_artwork="$(sed -n 1p "$last_artwork_file" 2> /dev/null)"
+                play_video "$last_video" no "$resume_artwork"
+            else
+                log "Time's-up video resume skipped: media file is unavailable."
+            fi
+            ;;
+        game)
+            lg_launch="$(sed -n 1p "$last_game_file" 2> /dev/null)"
+            lg_rompath="$(sed -n 2p "$last_game_file" 2> /dev/null)"
+            if [ -f "$lg_launch" ] && [ -f "$lg_rompath" ]; then
+                active_floor=games
+                build_game_cmd "$lg_launch" "$lg_rompath"
+                state_save games running "$last_video" "$active_folder"
+                run_game_cmd
+                state_save games carousel "$last_video" "$active_folder"
+            else
+                log "Time's-up game resume skipped: launch files are unavailable."
+            fi
+            ;;
+        *)
+            # No running-content marker means the timer expired in carousel.
+            # Its floor, folder and selections were already captured from
+            # kidui before the PIN result was processed.
+            ;;
+    esac
+}
+
 cmd_run() {
     if [ ! -f "$kidui_bin" ] || [ ! -f "$kidsplay" ] ||
        [ ! -f "$kidsplay_vsync" ] || [ ! -f "$kidsplay_fb_reset" ]; then
@@ -2115,6 +2208,15 @@ cmd_run() {
 
     while [ -f "$flagfile" ]; do
         check_off_order "End"
+
+        if [ "$reopen_parent_menu_requested" = 1 ]; then
+            reopen_parent_menu_requested=0
+            if parent_menu; then
+                disarm
+                return 0
+            fi
+            continue
+        fi
 
         # Defensive cleanup: nothing may divert the loop into GameSwitcher
         rm -f "$sysdir/.runGameSwitcher" 2> /dev/null
@@ -2307,6 +2409,10 @@ cmd_run() {
                     if [ -n "$confirm_pin" ] && [ "$confirm_pin" = "$entered_pin" ]; then
                         store_pin "$entered_pin"
                         pin_fails=0
+                        if [ "$(timer_remaining)" = 0 ]; then
+                            disable_timer_and_resume_timesup
+                            continue
+                        fi
                         if parent_menu; then
                             disarm
                             return 0
@@ -2316,6 +2422,10 @@ cmd_run() {
                     fi
                 elif verify_pin "$entered_pin"; then
                     pin_fails=0
+                    if [ "$(timer_remaining)" = 0 ]; then
+                        disable_timer_and_resume_timesup
+                        continue
+                    fi
                     if parent_menu; then
                         disarm
                         return 0
@@ -2387,6 +2497,7 @@ cmd_arm() {
     fi
 
     pick_session_timer
+    rm -f "$timesup_resume_file" "$timesup_resume_file.tmp"
 
     apply_blf_lock
     ensure_fav_shortcut
