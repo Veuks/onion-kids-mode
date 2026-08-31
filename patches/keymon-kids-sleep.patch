@@ -1,5 +1,5 @@
 diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
-index 64f22a1..1d9ac89 100644
+index 64f22a18..a72f8ed9 100644
 --- a/src/keymon/keymon.c
 +++ b/src/keymon/keymon.c
 @@ -49,9 +49,9 @@
@@ -79,8 +79,13 @@ index 64f22a1..1d9ac89 100644
                  if (!comboKey_menu && val == REPEAT) {
                      repeat_power++;
                      if (repeat_power == 7) {
-@@ -565,6 +577,14 @@ int main(void)
+@@ -563,8 +575,19 @@ int main(void)
+                     // suspend
+                     if (power_pressed && repeat_power < 7) {
                          if (comboKey_menu) {
++                            // Tell KidsPlay to consume MENU's release. The
++                            // screenshot itself stays Onion's normal one.
++                            temp_flag_set("kidsmode_power_screenshot", true);
                              takeScreenshot();
                          }
 +                        else if (kidsmode_dimmed_at_power_press) {
@@ -94,7 +99,7 @@ index 64f22a1..1d9ac89 100644
                          else {
                              if (settings.disable_standby) {
                                  deepsleep();
-@@ -575,6 +595,7 @@ int main(void)
+@@ -575,6 +598,7 @@ int main(void)
                          }
                      }
                      power_pressed = false;
@@ -102,7 +107,7 @@ index 64f22a1..1d9ac89 100644
                  }
                  repeat_power = 0;
                  break;
-@@ -914,7 +935,13 @@ int main(void)
+@@ -914,7 +938,13 @@ int main(void)
          else
              hibernate_time = settings.sleep_timer;
  

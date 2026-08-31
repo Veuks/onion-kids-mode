@@ -2730,13 +2730,13 @@ static void renderCarousel(int remaining)
     loadArtwork();
 
     int cx = g_display.width / 2;
-    // The media tile and its caption form one vertical block. Lift that
-    // block slightly to give the lower floor arrow a clear gap below a
-    // two-line title, while keeping games on their original layout.
-    int media_lift = current_floor == FLOOR_VIDEOS ? (int)(12.0 * g_scale) : 0;
+    // The artwork and its caption form one vertical block. Lift both floors
+    // by the same amount to keep a clear gap above the lower floor arrow,
+    // without changing the artwork format used by the games carousel.
+    int content_lift = (int)(12.0 * g_scale);
     int art_cy = (int)(g_display.height * 0.40) + content_offset_y -
-                 media_lift;
-    int fixed_art_cy = (int)(g_display.height * 0.40) - media_lift;
+                 content_lift;
+    int fixed_art_cy = (int)(g_display.height * 0.40) - content_lift;
 
     if (artwork != NULL) {
         SDL_Rect pos = {cx - artwork->w / 2, art_cy - artwork->h / 2};
@@ -2812,7 +2812,7 @@ static void renderCarousel(int remaining)
     // unchanged) instead of scrolling or truncating.
     if (!(current_floor == FLOOR_VIDEOS && games[current].hide_label)) {
         int avail_w = g_display.width - (int)(90.0 * g_scale);
-        int bottom_y = (int)(400.0 * g_scale) + content_offset_y - media_lift;
+        int bottom_y = (int)(400.0 * g_scale) + content_offset_y - content_lift;
         int line_h = TTF_FontLineSkip(getFontGameLabel());
         int top_y = bottom_y - line_h;
         // Folder captions use only the folder name. Files always keep their

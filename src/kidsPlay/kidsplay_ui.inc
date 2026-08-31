@@ -22,6 +22,7 @@ extern SDL_Surface *IMG_Load(const char *);
 #define KP_DIM_RAW 3
 #define KP_TIMER_FILE "/tmp/kidsmode_remaining"
 #define KP_MENU_MARKER "/tmp/kidsmode_video_menu_exit"
+#define KP_POWER_SCREENSHOT "/tmp/kidsmode_power_screenshot"
 #define KP_MEDIA_DIMMED "/tmp/kidsmode_media_dimmed"
 #define KP_MEDIA_PLAYING "/tmp/kidsmode_media_playing"
 
@@ -810,6 +811,13 @@ static int kp_handle_key(VideoState *is, SDL_KeyboardEvent *key)
             long brightness = kp_read_number(kp.brightness_file);
             kp.menu_down = 0;
             kp.seek_key = 0;
+            // Onion's MENU + POWER screenshot is completed when POWER is
+            // released, before MENU reaches this release event. Consume that
+            // one MENU release so it never becomes a "leave video" action.
+            if (access(KP_POWER_SCREENSHOT, F_OK) == 0) {
+                unlink(KP_POWER_SCREENSHOT);
+                return 1;
+            }
             if (brightness > 0 && kp.menu_brightness >= 0 && brightness != kp.menu_brightness) {
                 kp.menu_used = 1;
                 kp_save_brightness(brightness);
