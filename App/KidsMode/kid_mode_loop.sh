@@ -1653,6 +1653,19 @@ parent_menu() {
 
 # ------------------------------ unlock -------------------------------------
 
+restore_configured_brightness() {
+    # kidui and KidsPlay may temporarily dim the backlight.  Before returning
+    # to Onion, always restore the brightness chosen in Onion's settings so
+    # the launcher never inherits a transient dim/off value.
+    configured_brightness=$(/customer/app/jsonval brightness 2> /dev/null)
+    case "$configured_brightness" in
+        '' | *[!0-9]*) return 0 ;;
+    esac
+    configured_raw=$(awk -v level="$configured_brightness" \
+        'BEGIN { printf "%d", 3 * exp(0.350656 * level) + 0.5 }')
+    [ -w "$brightness_pwm" ] && printf '%s\n' "$configured_raw" > "$brightness_pwm"
+}
+
 disarm() {
     rm -f "$flagfile"
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
@@ -1664,6 +1677,7 @@ disarm() {
     restore_blf_lock
     restore_profile_isolation
     restore_keymap_override
+    restore_configured_brightness
     rm -f "$game_environment_marker"
     ensure_fav_shortcut
     rm -f "$sysdir/cmd_to_run.sh" "$uiresult"
@@ -1823,7 +1837,10 @@ play_video() {
     posfile="$positions/$key.pos"
     runtime_pos="/tmp/kidsmode_position.$$"
     duration_file="/tmp/kidsmode_duration.$$"
-    duration_log="/tmp/kidsmode_kidsplay.$$"
+    # Keep KidsPlay's last startup output on the SD card.  This is tiny in
+    # normal use and makes a failed media launch diagnosable after returning
+    # to the carousel.
+    duration_log="/mnt/SDCARD/.tmp_update/logs/kidsplay.log"
     brightness_state="/tmp/kidsmode_brightness.$$"
     rm -f "$duration_file" "$duration_log" "$brightness_state"
     brightness_restore=""
@@ -1916,6 +1933,10 @@ play_video() {
     audio_server_was_running=no
     if pgrep audioserver > /dev/null 2>&1; then
         audio_server_was_running=yes
+        # Mute the codec before changing its owner. Closing/opening ALSA with
+        # a live speaker otherwise produces an audible click on the Miyoo.
+        "$kidsplay_fb_reset" --mute 2> /dev/null
+        sleep 0.05
         killall audioserver 2> /dev/null
         audio_wait=0
         while pgrep audioserver > /dev/null 2>&1 &&
@@ -1931,7 +1952,7 @@ play_video() {
         # An MP3 can contain an attached cover exposed as a video stream.
         # -vn guarantees that KidsPlay's stable artwork screen remains the
         # only rendered image.
-        VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
+        VC_AUDIO_GUARD=1 VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" VC_SCREENSHOT_FILE="" \
             VC_MEDIA_KIND=audio VC_ARTWORK_FILE="$artwork_file" \
             VC_MEDIA_TITLE="$video_base" \
@@ -1951,7 +1972,7 @@ play_video() {
                 -vn -autoexit $seek_args -i "$video" \
                 2> "$duration_log" &
     else
-        VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
+        VC_AUDIO_GUARD=1 VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" \
             VC_SCREENSHOT_FILE="$screenshot_file" VC_MEDIA_KIND=video \
             VC_DURATION_FILE="$duration_file" \
@@ -1972,15 +1993,20 @@ play_video() {
             2> "$duration_log" &
     fi
     pid=$!
+    log "Starting KidsPlay ($media_kind): $video"
     printf '%s\n' "$pid" > "$player_pid"
     watch_media_duration "$duration_log" "$duration_file" "$pid" &
     duration_watcher=$!
     wait "$pid"
     player_status=$?
+    if [ "$player_status" -ne 0 ]; then
+        log "KidsPlay stopped with status $player_status; see $duration_log"
+    fi
     "$kidsplay_fb_reset" 2> /dev/null
     if [ "$audio_server_was_running" = yes ]; then
         ensure_audio_server
     fi
+    "$kidsplay_fb_reset" --unmute 2> /dev/null
     kill "$duration_watcher" 2> /dev/null
     wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
@@ -2006,7 +2032,7 @@ play_video() {
         [ -f "$runtime_pos" ]; then
         cp -f "$runtime_pos" "$posfile"
     fi
-    rm -f "$runtime_pos" "$duration_file" "$duration_log" \
+    rm -f "$runtime_pos" "$duration_file" \
         "$brightness_state" "$player_pid" \
         /tmp/stay_awake /tmp/kidsmode_media_playing
     check_off_order "End_Save"

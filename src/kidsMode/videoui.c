@@ -54,6 +54,7 @@
 #include <SDL/SDL_rotozoom.h>
 #include <SDL/SDL_ttf.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -63,6 +64,7 @@
 #include <time.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "components/JsonGameEntry.h"
@@ -132,6 +134,8 @@ typedef enum { SCREEN_CAROUSEL,
 #define DEFAULT_VIDEO_THUMBNAIL_CACHE_DIR \
     "/mnt/SDCARD/Saves/KidsMode/Main/artwork_cache"
 #define VIDEO_THUMBNAIL_RENDER_VERSION 1
+#define KIDSPLAY_PATH "/mnt/SDCARD/App/KidsMode/bin/kidsplay"
+#define KIDSPLAY_LIB_DIR "/mnt/SDCARD/App/KidsMode/lib"
 #define TIMER_STEP 5
 #define TIMER_MAX 120
 
@@ -388,6 +392,8 @@ typedef struct {
 static VideoArtworkCacheEntry video_artwork_cache[VIDEO_ARTWORK_CACHE_SIZE];
 static unsigned long video_artwork_cache_age;
 static bool thumbnail_cache_dir_ready;
+static char duration_probe_path[STR_MAX] = "";
+static uint32_t duration_probe_last_poll;
 static SDL_Surface *crt_fallback = NULL;
 static SDL_Surface *screen_reflection = NULL;
 static bool screen_reflection_checked = false;
@@ -2162,6 +2168,115 @@ static void saveVideoThumbnail(SDL_Surface *surface, const char *path,
     }
 }
 
+// KidsPlay already contains FFmpeg's demuxers, so use its lightweight
+// duration-only mode rather than starting a second FFprobe build. Durations
+// are cached beside the artwork cache and discovered in the background: a
+// long movie never makes left/right navigation wait.
+static bool videoDurationCachePath(const char *source, char *cache,
+                                   size_t cache_size)
+{
+    struct stat state;
+    if (source == NULL || stat(source, &state) != 0)
+        return false;
+    ensureVideoThumbnailCacheDir();
+    int written = snprintf(cache, cache_size,
+                           "%s/duration-%08lx-%lld-%lld.txt",
+                           video_thumbnail_cache_dir, artworkPathHash(source),
+                           (long long)state.st_size,
+                           (long long)state.st_mtime);
+    return written >= 0 && written < (int)cache_size;
+}
+
+static int readCachedVideoDuration(const char *source)
+{
+    char cache[STR_MAX];
+    if (!videoDurationCachePath(source, cache, sizeof(cache)))
+        return -1;
+    FILE *fp = fopen(cache, "r");
+    if (fp == NULL)
+        return -1;
+    int seconds = -1;
+    if (fscanf(fp, "%d", &seconds) != 1 || seconds < 0)
+        seconds = -1;
+    fclose(fp);
+    return seconds;
+}
+
+static void startVideoDurationProbe(const char *source)
+{
+    char cache[STR_MAX];
+    if (!videoDurationCachePath(source, cache, sizeof(cache)) ||
+        strcmp(duration_probe_path, cache) == 0)
+        return;
+
+    pid_t pid = fork();
+    if (pid < 0)
+        return;
+    if (pid == 0) {
+        int output = open(cache, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        int nullout = open("/dev/null", O_WRONLY);
+        if (output < 0)
+            _exit(127);
+        dup2(output, STDOUT_FILENO);
+        if (nullout >= 0)
+            dup2(nullout, STDERR_FILENO);
+        close(output);
+        if (nullout >= 0)
+            close(nullout);
+        setenv("LD_LIBRARY_PATH", KIDSPLAY_LIB_DIR ":/config/lib:/customer/lib",
+               1);
+        execl(KIDSPLAY_PATH, "kidsplay", "-kidsplay-duration", source,
+              (char *)NULL);
+        _exit(127);
+    }
+    snprintf(duration_probe_path, sizeof(duration_probe_path), "%s", cache);
+    duration_probe_last_poll = SDL_GetTicks();
+}
+
+static int videoDurationSeconds(const char *source)
+{
+    int seconds = readCachedVideoDuration(source);
+    if (seconds >= 0) {
+        duration_probe_path[0] = '\0';
+        return seconds;
+    }
+    startVideoDurationProbe(source);
+    return -1;
+}
+
+static void drawOutlinedTextRight(const char *text, int right_x, int center_y,
+                                  TTF_Font *font, SDL_Color color)
+{
+    SDL_Color outline_color = {0, 0, 0, 255};
+    int outline = (int)(1.0 * g_scale + 0.5);
+    if (outline < 1)
+        outline = 1;
+    const int directions[][2] = {{-1, 0}, {1, 0},  {0, -1}, {0, 1},
+                                  {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+    for (size_t i = 0; i < sizeof(directions) / sizeof(directions[0]); i++)
+        drawTextAlign(text, right_x + directions[i][0] * outline,
+                      center_y + directions[i][1] * outline, font,
+                      outline_color, 0, TEXT_RIGHT);
+    drawTextAlign(text, right_x, center_y, font, color, 0, TEXT_RIGHT);
+}
+
+static void drawVideoDurationOnCard(const char *source, int right_x,
+                                    int bottom_y)
+{
+    int seconds = videoDurationSeconds(source);
+    if (seconds < 0)
+        return;
+    char duration[24];
+    if (seconds >= 3600)
+        snprintf(duration, sizeof(duration), "%d:%02d:%02d", seconds / 3600,
+                 (seconds / 60) % 60, seconds % 60);
+    else
+        snprintf(duration, sizeof(duration), "%d:%02d", seconds / 60,
+                 seconds % 60);
+    drawOutlinedTextRight(duration, right_x, bottom_y, resource_getFont(HINT),
+                          theme()->hint.color);
+}
+
 static void loadArtwork(void)
 {
     if (artwork_index == current && artwork != NULL)
@@ -2615,8 +2730,13 @@ static void renderCarousel(int remaining)
     loadArtwork();
 
     int cx = g_display.width / 2;
-    int art_cy = (int)(g_display.height * 0.40) + content_offset_y;
-    int fixed_art_cy = (int)(g_display.height * 0.40);
+    // The media tile and its caption form one vertical block. Lift that
+    // block slightly to give the lower floor arrow a clear gap below a
+    // two-line title, while keeping games on their original layout.
+    int media_lift = current_floor == FLOOR_VIDEOS ? (int)(12.0 * g_scale) : 0;
+    int art_cy = (int)(g_display.height * 0.40) + content_offset_y -
+                 media_lift;
+    int fixed_art_cy = (int)(g_display.height * 0.40) - media_lift;
 
     if (artwork != NULL) {
         SDL_Rect pos = {cx - artwork->w / 2, art_cy - artwork->h / 2};
@@ -2672,13 +2792,27 @@ static void renderCarousel(int remaining)
         // untouched. The selected file or folder name is shown below it.
     }
 
+    // A media duration is read once in the background by KidsPlay, then
+    // cached. It appears on the lower-right corner of the selected artwork
+    // using the active theme's own hint font, without delaying navigation.
+    if (current_floor == FLOOR_VIDEOS && !games[current].is_folder) {
+        int card_height = artwork != NULL ? artwork->h
+                                          : (int)(g_display.height * 0.58);
+        int card_width = artwork != NULL ? artwork->w
+                                         : (int)(g_display.height * 0.58);
+        drawVideoDurationOnCard(games[current].item.rompath,
+                                cx + card_width / 2 - (int)(10.0 * g_scale),
+                                art_cy + card_height / 2 -
+                                    (int)(15.0 * g_scale));
+    }
+
     // Game title in the theme's list font (big + bold). Short titles now
     // sit on the top line instead of the bottom one; a title too long to
     // fit still splits into two balanced-width lines (top + bottom,
     // unchanged) instead of scrolling or truncating.
     if (!(current_floor == FLOOR_VIDEOS && games[current].hide_label)) {
         int avail_w = g_display.width - (int)(90.0 * g_scale);
-        int bottom_y = (int)(400.0 * g_scale) + content_offset_y;
+        int bottom_y = (int)(400.0 * g_scale) + content_offset_y - media_lift;
         int line_h = TTF_FontLineSkip(getFontGameLabel());
         int top_y = bottom_y - line_h;
         // Folder captions use only the folder name. Files always keep their
@@ -3252,6 +3386,9 @@ static bool switchFloor(ContentFloor target, int remaining)
 
 int main(int argc, char *argv[])
 {
+    // Duration probes are intentionally fire-and-forget. Do not retain a
+    // zombie process after a cover's duration has been cached.
+    signal(SIGCHLD, SIG_IGN);
     loadRuntimePaths();
     bool set_pin_mode = false;
     bool menu_mode = false;
@@ -3875,6 +4012,15 @@ int main(int argc, char *argv[])
             if (active_screen == SCREEN_CAROUSEL &&
                 (prev_remaining + 59) / 60 != (remaining + 59) / 60)
                 dirty = true;
+        }
+
+        // A duration probe is a one-shot child process. Poll its tiny cache
+        // file a few times per second so the duration appears on the card as
+        // soon as it is known, without forcing continuous carousel redraws.
+        if (active_screen == SCREEN_CAROUSEL && duration_probe_path[0] != '\0' &&
+            ticks - duration_probe_last_poll >= 250) {
+            duration_probe_last_poll = ticks;
+            dirty = true;
         }
 
         // Parent screens run in their own kidui process. Keep observing the

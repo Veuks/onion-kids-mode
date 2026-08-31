@@ -29,6 +29,8 @@
 #include <limits.h>
 #include <signal.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #include "libavutil/avstring.h"
@@ -329,6 +331,23 @@ static int borderless;
 static int alwaysontop;
 static int startup_volume = 100;
 static int show_status = -1;
+static int kidsplay_duration_only;
+static int kidsplay_audio_guard;
+
+#define MI_AO_SETMUTE 0x4008690d
+
+static void kidsplay_set_audio_mute(int mute)
+{
+    if (!kidsplay_audio_guard)
+        return;
+    int fd = open("/dev/mi_ao", O_RDWR);
+    if (fd < 0)
+        return;
+    int payload[] = {0, mute ? 1 : 0};
+    uint64_t request[] = {sizeof(payload), (uintptr_t)payload};
+    ioctl(fd, MI_AO_SETMUTE, request);
+    close(fd);
+}
 static int av_sync_type = AV_SYNC_AUDIO_MASTER;
 static int64_t start_time = AV_NOPTS_VALUE;
 static int64_t duration = AV_NOPTS_VALUE;
@@ -1406,6 +1425,9 @@ static void stream_close(VideoState *is)
 
 static void do_exit(VideoState *is)
 {
+    // Keep the DAC muted while SDL releases the device. This avoids the
+    // speaker pop caused by switching back to Onion's audioserver.
+    kidsplay_set_audio_mute(1);
     kp_shutdown(is);
     if (is) {
         stream_close(is);
@@ -1428,6 +1450,7 @@ static void do_exit(VideoState *is)
 
 static void sigterm_handler(int sig)
 {
+    kidsplay_set_audio_mute(1);
     exit(123);
 }
 
@@ -3679,6 +3702,33 @@ static void opt_input_file(void *optctx, const char *filename)
     input_filename = filename;
 }
 
+static int kidsplay_print_duration(const char *filename)
+{
+    AVFormatContext *format = NULL;
+    int ret = avformat_open_input(&format, filename, file_iformat, NULL);
+    if (ret < 0)
+        return 1;
+    avformat_find_stream_info(format, NULL);
+    int64_t duration_us = format->duration;
+    if (duration_us == AV_NOPTS_VALUE || duration_us < 0) {
+        duration_us = 0;
+        for (unsigned int i = 0; i < format->nb_streams; i++) {
+            AVStream *stream = format->streams[i];
+            if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0) {
+                int64_t value = av_rescale_q(stream->duration,
+                                             stream->time_base, AV_TIME_BASE_Q);
+                if (value > duration_us)
+                    duration_us = value;
+            }
+        }
+    }
+    avformat_close_input(&format);
+    if (duration_us <= 0)
+        return 1;
+    printf("%" PRId64 "\n", duration_us / AV_TIME_BASE);
+    return 0;
+}
+
 static int opt_codec(void *optctx, const char *opt, const char *arg)
 {
    const char *spec = strchr(opt, ':');
@@ -3726,6 +3776,8 @@ static const OptionDef options[] = {
     { "f", HAS_ARG, { .func_arg = opt_format }, "force format", "fmt" },
     { "pix_fmt", HAS_ARG | OPT_EXPERT | OPT_VIDEO, { .func_arg = opt_frame_pix_fmt }, "set pixel format", "format" },
     { "stats", OPT_BOOL | OPT_EXPERT, { &show_status }, "show status", "" },
+    { "kidsplay-duration", OPT_BOOL | OPT_EXPERT, { &kidsplay_duration_only },
+      "print media duration in seconds and exit", "" },
     { "fast", OPT_BOOL | OPT_EXPERT, { &fast }, "non spec compliant optimizations", "" },
     { "genpts", OPT_BOOL | OPT_EXPERT, { &genpts }, "generate pts", "" },
     { "drp", OPT_INT | HAS_ARG | OPT_EXPERT, { &decoder_reorder_pts }, "let decoder reorder pts 0=off 1=on -1=auto", ""},
@@ -3827,6 +3879,8 @@ int main(int argc, char **argv)
 
     parse_options(NULL, argc, argv, options, opt_input_file);
 
+    kidsplay_audio_guard = getenv("VC_AUDIO_GUARD") != NULL;
+
     if (!input_filename) {
         show_usage();
         av_log(NULL, AV_LOG_FATAL, "An input file must be specified\n");
@@ -3834,6 +3888,9 @@ int main(int argc, char **argv)
                "Use -h to get full help or, even better, run 'man %s'\n", program_name);
         exit(1);
     }
+
+    if (kidsplay_duration_only)
+        return kidsplay_print_duration(input_filename);
 
     if (display_disable) {
         video_disable = 1;
@@ -3884,6 +3941,14 @@ int main(int argc, char **argv)
     if (!is) {
         av_log(NULL, AV_LOG_FATAL, "Failed to initialize VideoState!\n");
         do_exit(NULL);
+    }
+
+    // audioserver was muted by the launcher before it handed the hardware to
+    // KidsPlay. Give SDL a moment to open its stream, then fade-in starts
+    // from a quiet, stable device rather than producing a relay click.
+    if (kidsplay_audio_guard) {
+        av_usleep(80000);
+        kidsplay_set_audio_mute(0);
     }
 
     event_loop(is);
