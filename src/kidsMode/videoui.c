@@ -2812,7 +2812,10 @@ static void renderCarousel(int remaining)
     // unchanged) instead of scrolling or truncating.
     if (!(current_floor == FLOOR_VIDEOS && games[current].hide_label)) {
         int avail_w = g_display.width - (int)(90.0 * g_scale);
-        int bottom_y = (int)(400.0 * g_scale) + content_offset_y - content_lift;
+        // Keep the caption visually attached to the card. Its baseline is
+        // lifted a little more than the artwork, leaving the larger safety
+        // gap on the lower floor arrow side.
+        int bottom_y = (int)(394.0 * g_scale) + content_offset_y - content_lift;
         int line_h = TTF_FontLineSkip(getFontGameLabel());
         int top_y = bottom_y - line_h;
         // Folder captions use only the folder name. Files always keep their
