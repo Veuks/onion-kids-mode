@@ -333,13 +333,42 @@ static int startup_volume = 100;
 static int show_status = -1;
 static int kidsplay_duration_only;
 static int kidsplay_audio_guard;
+static int kidsplay_audio_raw = -60;
 
+#define MI_AO_SETVOLUME 0x4008690b
+#define MI_AO_GETVOLUME 0xc008690c
 #define MI_AO_SETMUTE 0x4008690d
+
+static int kidsplay_get_audio_volume(void)
+{
+    int fd = open("/dev/mi_ao", O_RDWR);
+    if (fd < 0)
+        return -60;
+    int payload[] = {0, -60};
+    uint64_t request[] = {sizeof(payload), (uintptr_t)payload};
+    if (ioctl(fd, MI_AO_GETVOLUME, request) < 0)
+        payload[1] = -60;
+    close(fd);
+    return payload[1];
+}
+
+static void kidsplay_set_audio_volume(int raw)
+{
+    if (raw < -60)
+        raw = -60;
+    if (raw > 30)
+        raw = 30;
+    int fd = open("/dev/mi_ao", O_RDWR);
+    if (fd < 0)
+        return;
+    int payload[] = {0, raw};
+    uint64_t request[] = {sizeof(payload), (uintptr_t)payload};
+    ioctl(fd, MI_AO_SETVOLUME, request);
+    close(fd);
+}
 
 static void kidsplay_set_audio_mute(int mute)
 {
-    if (!kidsplay_audio_guard)
-        return;
     int fd = open("/dev/mi_ao", O_RDWR);
     if (fd < 0)
         return;
@@ -347,6 +376,18 @@ static void kidsplay_set_audio_mute(int mute)
     uint64_t request[] = {sizeof(payload), (uintptr_t)payload};
     ioctl(fd, MI_AO_SETMUTE, request);
     close(fd);
+}
+
+static void kidsplay_fade_audio_to(int target)
+{
+    if (!kidsplay_audio_guard)
+        return;
+    int start = kidsplay_get_audio_volume();
+    for (int i = 1; i <= 8; i++) {
+        int value = start + (target - start) * i / 8;
+        kidsplay_set_audio_volume(value);
+        av_usleep(15000);
+    }
 }
 static int av_sync_type = AV_SYNC_AUDIO_MASTER;
 static int64_t start_time = AV_NOPTS_VALUE;
@@ -1425,9 +1466,11 @@ static void stream_close(VideoState *is)
 
 static void do_exit(VideoState *is)
 {
-    // Keep the DAC muted while SDL releases the device. This avoids the
-    // speaker pop caused by switching back to Onion's audioserver.
-    kidsplay_set_audio_mute(1);
+    // Fade the DAC to silence before SDL releases the device. This avoids
+    // the speaker pop caused by switching back to Onion's audioserver.
+    kidsplay_fade_audio_to(-60);
+    if (kidsplay_audio_guard)
+        kidsplay_set_audio_mute(1);
     kp_shutdown(is);
     if (is) {
         stream_close(is);
@@ -1450,7 +1493,9 @@ static void do_exit(VideoState *is)
 
 static void sigterm_handler(int sig)
 {
-    kidsplay_set_audio_mute(1);
+    kidsplay_fade_audio_to(-60);
+    if (kidsplay_audio_guard)
+        kidsplay_set_audio_mute(1);
     exit(123);
 }
 
@@ -3880,6 +3925,9 @@ int main(int argc, char **argv)
     parse_options(NULL, argc, argv, options, opt_input_file);
 
     kidsplay_audio_guard = getenv("VC_AUDIO_GUARD") != NULL;
+    const char *audio_raw_env = getenv("VC_AUDIO_RAW");
+    if (audio_raw_env != NULL)
+        kidsplay_audio_raw = atoi(audio_raw_env);
 
     if (!input_filename) {
         show_usage();
@@ -3943,12 +3991,15 @@ int main(int argc, char **argv)
         do_exit(NULL);
     }
 
-    // audioserver was muted by the launcher before it handed the hardware to
-    // KidsPlay. Give SDL a moment to open its stream, then fade-in starts
-    // from a quiet, stable device rather than producing a relay click.
+    // audioserver faded down before it handed the hardware to KidsPlay. Give
+    // SDL a moment to open its stream, then fade-in from silence.
     if (kidsplay_audio_guard) {
         av_usleep(80000);
+        // The device was opened while the codec was muted. Unmute only at
+        // the minimum hardware level, then perform the audible fade-in.
+        kidsplay_set_audio_volume(-60);
         kidsplay_set_audio_mute(0);
+        kidsplay_fade_audio_to(kidsplay_audio_raw);
     }
 
     event_loop(is);

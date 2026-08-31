@@ -2733,7 +2733,7 @@ static void renderCarousel(int remaining)
     // The artwork and its caption form one vertical block. Lift both floors
     // by the same amount to keep a clear gap above the lower floor arrow,
     // without changing the artwork format used by the games carousel.
-    int content_lift = (int)(12.0 * g_scale);
+    int content_lift = (int)(6.0 * g_scale);
     int art_cy = (int)(g_display.height * 0.40) + content_offset_y -
                  content_lift;
     int fixed_art_cy = (int)(g_display.height * 0.40) - content_lift;

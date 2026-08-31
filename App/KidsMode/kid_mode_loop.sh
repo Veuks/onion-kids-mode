@@ -1793,6 +1793,17 @@ ensure_audio_server() {
     done
 }
 
+ensure_audio_server_raw() {
+    raw_volume="$1"
+    pgrep audioserver > /dev/null 2>&1 && return 0
+    "$miyoodir/app/audioserver" "$raw_volume" > /dev/null 2>&1 &
+    n=0
+    while ! pgrep audioserver > /dev/null 2>&1 && [ "$n" -lt 8 ]; do
+        sleep 1
+        n=$((n + 1))
+    done
+}
+
 watch_media_duration() {
     duration_log="$1" duration_output="$2" watched_pid="$3"
     tries=0
@@ -1931,12 +1942,17 @@ play_video() {
     # restarted immediately after playback; keeping both open at once causes
     # intermittent silence and ALSA buffer conflicts.
     audio_server_was_running=no
+    media_volume="$(/customer/app/jsonval vol 2> /dev/null)"
+    case "$media_volume" in '' | *[!0-9]*) media_volume=20 ;; esac
+    media_audio_raw="$(awk -v v="$media_volume" \
+        'BEGIN { printf "%.0f\n", 48 * (log(1 + v) / log(10)) - 60 }')"
     if pgrep audioserver > /dev/null 2>&1; then
         audio_server_was_running=yes
-        # Mute the codec before changing its owner. Closing/opening ALSA with
-        # a live speaker otherwise produces an audible click on the Miyoo.
+        # Fade the codec down before changing its owner. Closing/opening ALSA
+        # at an audible level produces the two-stage speaker click heard on
+        # the Miyoo.
+        "$kidsplay_fb_reset" --fade-to -60 2> /dev/null
         "$kidsplay_fb_reset" --mute 2> /dev/null
-        sleep 0.05
         killall audioserver 2> /dev/null
         audio_wait=0
         while pgrep audioserver > /dev/null 2>&1 &&
@@ -1952,7 +1968,8 @@ play_video() {
         # An MP3 can contain an attached cover exposed as a video stream.
         # -vn guarantees that KidsPlay's stable artwork screen remains the
         # only rendered image.
-        VC_AUDIO_GUARD=1 VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
+        VC_AUDIO_GUARD=1 VC_AUDIO_RAW="$media_audio_raw" \
+            VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" VC_SCREENSHOT_FILE="" \
             VC_MEDIA_KIND=audio VC_ARTWORK_FILE="$artwork_file" \
             VC_MEDIA_TITLE="$video_base" \
@@ -1972,7 +1989,8 @@ play_video() {
                 -vn -autoexit $seek_args -i "$video" \
                 2> "$duration_log" &
     else
-        VC_AUDIO_GUARD=1 VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
+        VC_AUDIO_GUARD=1 VC_AUDIO_RAW="$media_audio_raw" \
+            VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" \
             VC_SCREENSHOT_FILE="$screenshot_file" VC_MEDIA_KIND=video \
             VC_DURATION_FILE="$duration_file" \
@@ -2004,9 +2022,13 @@ play_video() {
     fi
     "$kidsplay_fb_reset" 2> /dev/null
     if [ "$audio_server_was_running" = yes ]; then
-        ensure_audio_server
+        ensure_audio_server_raw -60
+        # Its device is now open at the minimum level. Unmute there, before
+        # restoring the user's volume, so neither transition reaches the
+        # speaker as a DC step.
+        "$kidsplay_fb_reset" --unmute 2> /dev/null
+        "$kidsplay_fb_reset" --fade-to "$media_audio_raw" 2> /dev/null
     fi
-    "$kidsplay_fb_reset" --unmute 2> /dev/null
     kill "$duration_watcher" 2> /dev/null
     wait "$duration_watcher" 2> /dev/null
     cd "$appdir" 2> /dev/null
