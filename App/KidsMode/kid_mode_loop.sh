@@ -1838,16 +1838,26 @@ last_folder_selection() {
 }
 
 ensure_audio_server() {
-    pgrep audioserver > /dev/null 2>&1 && return 0
-    volume="$(/customer/app/jsonval vol 2> /dev/null)"
-    case "$volume" in '' | *[!0-9]*) volume=20 ;; esac
-    defvol="$(awk -v v="$volume" 'BEGIN { printf "%.0f\n", 48 * (log(1 + v) / log(10)) - 60 }')"
-    "$miyoodir/app/audioserver" "$defvol" > /dev/null 2>&1 &
+    audio_fifo=/tmp/audio_fifo_server
+    if ! pgrep audioserver > /dev/null 2>&1; then
+        volume="$(/customer/app/jsonval vol 2> /dev/null)"
+        case "$volume" in '' | *[!0-9]*) volume=20 ;; esac
+        defvol="$(awk -v v="$volume" 'BEGIN { printf "%.0f\n", 48 * (log(1 + v) / log(10)) - 60 }')"
+        "$miyoodir/app/audioserver" "$defvol" > /dev/null 2>&1 &
+    fi
+
+    # A running process is not sufficient: audioserver creates its transport
+    # FIFO slightly later. Starting KidsPlay in that interval makes libpadsp
+    # reject /dev/dsp and leaves the media silent. Wait for the real readiness
+    # signal, with a short bounded delay so a broken server cannot hang Kids
+    # Mode indefinitely.
     n=0
-    while ! pgrep audioserver > /dev/null 2>&1 && [ "$n" -lt 8 ]; do
-        sleep 1
+    while { ! pgrep audioserver > /dev/null 2>&1 ||
+            [ ! -e "$audio_fifo" ]; } && [ "$n" -lt 50 ]; do
+        sleep 0.1
         n=$((n + 1))
     done
+    [ -e "$audio_fifo" ]
 }
 
 watch_media_duration() {
@@ -2008,6 +2018,9 @@ play_video() {
 
     player_library_path="$kidsplay_lib:/config/lib:/customer/lib:$sysdir/lib"
     player_preload="$kidsplay_vsync:$miyoodir/lib/libpadsp.so"
+    # This variable tells libpadsp to bypass /dev/dsp interception. It may be
+    # inherited from another Onion launcher and must never leak into KidsPlay.
+    unset PADSP_NO_DSP
     if [ "$media_kind" = audio ]; then
         # An MP3 can contain an attached cover exposed as a video stream.
         # -vn guarantees that KidsPlay's stable artwork screen remains the
