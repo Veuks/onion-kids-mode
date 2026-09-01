@@ -22,6 +22,10 @@ sections use the active Onion theme and slide smoothly between each other.
   once and sorts the resulting carousel automatically from A to Z.
 - Videos, audio files and nested folders for movies, series, cartoons, music
   or stories are supported.
+- Built-in KidsPlay media engine with synchronized frame presentation for
+  tear-free video playback on the Miyoo Mini Plus.
+- Video and audio durations are prepared in the background and displayed on
+  carousel artwork without slowing down navigation.
 - Automatic resume follows the real shutdown state:
   - shut down while playing and that game or video resumes;
   - shut down from a carousel and the same section and selection return;
@@ -221,6 +225,22 @@ folder remembers its own last selected video or subfolder, including after a
 reboot. Folder nesting is supported up to sixteen levels, which is effectively
 unlimited for normal use.
 
+### Recommended video encoding
+
+For the best balance of compatibility, image quality and decoding performance
+on the Miyoo Mini and Miyoo Mini Plus, use:
+
+- MP4 container;
+- H.264/x264 video, 8-bit 4:2:0;
+- a maximum resolution of 640 x 480 (or 640 x 360 for widescreen content);
+- a constant frame rate identical to the source;
+- RF 20 and the Medium encoder preset;
+- limited colour range;
+- AAC audio.
+
+An accepted filename extension does not guarantee that every codec inside the
+file can be decoded. MP4 with H.264 and AAC remains the safest combination.
+
 ## Carousel controls
 
 | Button | Action |
@@ -251,6 +271,12 @@ Restarting with X skips Onion's automatic resume state but does not erase
 normal in-game save data.
 
 ## Media player controls
+
+KidsPlay is included in the application and replaces the normal FFplay user
+interface. Its video frames are presented in sync with the Miyoo display to
+prevent the horizontal tearing that is especially visible during camera pans,
+flashes and other fast changes. The child-facing controls, OSD, audio artwork,
+screenshots and power-saving behaviour are handled directly by the player.
 
 | Button | Action |
 | --- | --- |
