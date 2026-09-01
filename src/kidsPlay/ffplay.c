@@ -2746,6 +2746,8 @@ static int kids_oss_audio_open(void *opaque, SDL_AudioSpec *wanted,
     int channels = FFMIN(wanted->channels, 2);
     int frequency = wanted->freq;
     int fragment;
+    int formats;
+    int flags;
     int tries;
     const char *enabled = getenv("KIDSPLAY_OSS_AUDIO");
 
@@ -2755,9 +2757,10 @@ static int kids_oss_audio_open(void *opaque, SDL_AudioSpec *wanted,
         channels = 1;
 
     /* libpadsp exposes /dev/dsp only after audioserver has created its FIFO.
-     * Retry briefly to cover the normal process-start/readiness gap. */
+     * Use the exact OSS open mode used by SDL: audioserver treats the
+     * non-blocking handshake differently from a plain blocking open. */
     for (tries = 0; tries < 40; tries++) {
-        kids_oss_fd = open("/dev/dsp", O_WRONLY);
+        kids_oss_fd = open("/dev/dsp", O_WRONLY | O_NONBLOCK, 0);
         if (kids_oss_fd >= 0)
             break;
         av_usleep(50000);
@@ -2769,14 +2772,24 @@ static int kids_oss_audio_open(void *opaque, SDL_AudioSpec *wanted,
         return -1;
     }
 
-    fragment = 0;
-    while ((1 << fragment) < wanted->samples * channels * 2)
-        fragment++;
-    fragment |= 0x00020000;
-    if (ioctl(kids_oss_fd, SNDCTL_DSP_SETFRAGMENT, &fragment) < 0)
-        av_log(NULL, AV_LOG_WARNING,
-               "KidsPlay Onion audio: fragment request ignored: %s\n",
+    flags = fcntl(kids_oss_fd, F_GETFL);
+    if (flags < 0 || fcntl(kids_oss_fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+        av_log(NULL, AV_LOG_ERROR,
+               "KidsPlay Onion audio: cannot enable blocking writes: %s\n",
                strerror(errno));
+        close(kids_oss_fd);
+        kids_oss_fd = -1;
+        return -1;
+    }
+    if (ioctl(kids_oss_fd, SNDCTL_DSP_GETFMTS, &formats) < 0 ||
+        !(formats & AFMT_S16_LE)) {
+        av_log(NULL, AV_LOG_ERROR,
+               "KidsPlay Onion audio: 16-bit PCM is unavailable: %s\n",
+               strerror(errno));
+        close(kids_oss_fd);
+        kids_oss_fd = -1;
+        return -1;
+    }
     if (ioctl(kids_oss_fd, SNDCTL_DSP_SETFMT, &format) < 0) {
         av_log(NULL, AV_LOG_ERROR,
                "KidsPlay Onion audio: sample format rejected: %s\n",
@@ -2819,6 +2832,14 @@ static int kids_oss_audio_open(void *opaque, SDL_AudioSpec *wanted,
                                            SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
     obtained->size = obtained->samples * obtained->channels *
                      (SDL_AUDIO_BITSIZE(obtained->format) / 8);
+    fragment = 0;
+    while ((1 << fragment) < (int)obtained->size)
+        fragment++;
+    fragment |= 0x00020000;
+    if (ioctl(kids_oss_fd, SNDCTL_DSP_SETFRAGMENT, &fragment) < 0)
+        av_log(NULL, AV_LOG_WARNING,
+               "KidsPlay Onion audio: fragment request ignored: %s\n",
+               strerror(errno));
     kids_oss_buffer = av_malloc(obtained->size);
     if (!kids_oss_buffer) {
         close(kids_oss_fd);
