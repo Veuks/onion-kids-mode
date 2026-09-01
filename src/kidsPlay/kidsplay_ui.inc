@@ -652,9 +652,14 @@ static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
                     398);
     }
     if (kp.battery_down) {
-        // With an active timer, show the most useful information first when
-        // Y is pressed, then alternate with the battery every second.
-        if (kp.timer_remaining > 0 && kp.battery_cycle_phase == 0)
+        // Normally Y shows the timer first. During the final five minutes the
+        // red timer is already permanently visible, so Y shows the battery
+        // immediately instead, then continues alternating every second.
+        int show_timer_first = kp.timer_remaining > 300;
+        int show_timer = show_timer_first
+                             ? kp.battery_cycle_phase == 0
+                             : kp.battery_cycle_phase == 1;
+        if (kp.timer_remaining > 0 && show_timer)
             kp_draw_timer(surface);
         else
             kp_draw_battery(surface);

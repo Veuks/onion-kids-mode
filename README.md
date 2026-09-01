@@ -312,6 +312,8 @@ While Y is held during media playback, the top-right indicator shows the
 remaining play-timer value first, then alternates every second with the
 battery level. If no timer is active, only the battery level is displayed.
 During the final five minutes, the timer value is displayed in red.
+Because it is already visible, pressing Y then shows the battery immediately
+before continuing the one-second alternation.
 
 Volume and brightness shortcuts remain usable. Releasing MENU after using a
 combination does not accidentally leave the video.
