@@ -308,10 +308,10 @@ During video playback, the same progress line appears while paused, while
 seeking and for two seconds after seeking or resuming. Pressing A while the
 video is already playing also shows it for two seconds.
 
-While Y is held during media playback, the top-right indicator alternates
-every second between the battery level and the remaining play-timer value. If
-no timer is active, only the battery level is displayed. During the final five
-minutes, the timer value is displayed in red.
+While Y is held during media playback, the top-right indicator shows the
+remaining play-timer value first, then alternates every second with the
+battery level. If no timer is active, only the battery level is displayed.
+During the final five minutes, the timer value is displayed in red.
 
 Volume and brightness shortcuts remain usable. Releasing MENU after using a
 combination does not accidentally leave the video.
