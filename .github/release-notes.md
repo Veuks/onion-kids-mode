@@ -1,49 +1,44 @@
-# Kids Mode v1.3.0
+# Kids Mode v1.4.0
 
-This release makes it possible to switch safely between the Main and Guest
-Kids Mode environments without returning to Onion first. It also simplifies
-the parent menus and timer controls.
+This release introduces tear-free video playback on the Miyoo Mini Plus and
+completes the migration to the built-in KidsPlay media engine. It also improves
+display stability, carousel presentation and media playback transitions.
 
 ## What's new
 
-- Added **Switch to Main profile** and **Switch to Guest profile** to the
-  PIN-protected parent menu.
-- Switching profiles keeps Kids Mode open and automatically loads the selected
-  profile's favorites, media library, game saves, playback positions, carousel
-  selections, artwork cache and preferences.
-- Main and Guest game saves remain fully separate under
-  `Saves/KidsProfile/Main` and `Saves/KidsProfile/Guest`.
-- The parent PIN and active play timer remain shared and are not reset during
-  a profile switch.
-- The switch option appears only when the other Onion profile is available.
-- Onion remains on the selected profile after leaving Kids Mode.
+- Replaced the previous video presentation path with the integrated KidsPlay
+  engine and synchronized display output.
+- Eliminated horizontal screen tearing during video playback on the Miyoo Mini
+  Plus, including during camera pans, flashes and fast scene changes.
+- Kept the child-safe playback controls, theme OSD, progress bar, elapsed and
+  remaining time, progressive seeking and paused-frame carousel capture.
+- Audio-only files continue to display their artwork and title while playing.
+- Added media duration to carousel artwork. Durations are cached in the
+  background so long files do not slow down folder navigation.
+- Improved media startup and shutdown transitions, including cleaner audio and
+  stable brightness when entering or leaving playback.
+- Improved framebuffer cleanup around the carousel and parent menu to prevent
+  stale, inverted or ghosted screens from reappearing.
+- Corrected cached artwork orientation after returning from media playback.
+- Refined carousel artwork and title spacing while keeping the navigation
+  arrows clear.
+- Parent-menu timer and profile operations now return to the appropriate Kids
+  Mode screen instead of forcing an unnecessary carousel restart.
+- After **Time's up!** is unlocked with the parent PIN, the timer is disabled
+  and Kids Mode returns to the previous carousel position or parent menu.
 
-## Parent menu improvements
+## Included features
 
-- Removed the redundant **Back** rows from the main parent menu and the
-  **Media folders** submenu. Press **B** to return from either screen.
-- Removed the separate **Turn off timer** row.
-- The **Add play time** selector now contains `OFF`, followed by `+5 min` to
-  `+120 min`. Selecting `OFF` removes the current time limit.
-- Fixed the Main/Guest switch labels displaying as blank text or an invalid
-  rectangle on the Miyoo Mini.
-- Fixed the timer status text overlapping the last parent-menu row.
-- Pressing **A** after seeking now clears the seek value and displays only the
-  progress bar with elapsed and remaining time.
-- MP3 and other audio titles shown below the artwork now use the active Onion
-  theme font, matching the battery, time and seek indicators.
-- The inactivity dimmer now waits 30 seconds before reducing brightness and
-  another 15 seconds before switching off the backlight.
-- During the final five minutes of a play timer, the remaining time stays
-  visible in red at the top-right on the carousel and during audio/video
-  playback. Games keep RetroArch's native countdown notification.
-- Five minutes after **Time's up!**, the console now powers off even if buttons
-  are pressed or parent screens are opened. Turning the timer `OFF` or adding
-  time before the deadline cancels the shutdown.
-- Disabled Gambatte's core-level R2 fast-forward shortcut in Game Boy and Game
-  Boy Color games without changing R2 controls on other systems.
-- **See you next time.** is now shown in green on the Time's up screen, while
-  **Time's up!** keeps the theme's normal white appearance.
+- Separate Main and Guest environments for favorites, media, game saves,
+  playback positions, carousel selections and artwork caches.
+- Direct Main/Guest profile switching from the PIN-protected parent menu.
+- Shared parent PIN and play timer across both environments.
+- Optional Games-only or Videos-only access and independent media-category
+  visibility controls.
+- Nested media folders, inherited artwork, automatic thumbnail caching and
+  paused-frame screenshots.
+- Inactivity dimmer, battery display, final-five-minute warning and automatic
+  shutdown after the Time's up screen.
 
 ## Updating
 
@@ -56,9 +51,5 @@ the parent menus and timer controls.
    playback history and save data.
 5. Reboot or refresh the Apps list, then launch **Kids Mode**.
 
-The first Main/Guest switch may take a few seconds while Onion safely stores
-the current profile and loads the other one. Do not power off the console
-during this operation.
-
 Requires Onion OS 4.3 or newer. Read the included README for the full controls,
-media-folder structure and PIN recovery instructions.
+media-folder structure, recommended video encoding and PIN recovery instructions.
