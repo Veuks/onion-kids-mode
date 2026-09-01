@@ -245,7 +245,7 @@ file can be decoded. MP4 with H.264 and AAC remains the safest combination.
 
 | Button | Action |
 | --- | --- |
-| LEFT / RIGHT | Browse the current section; hold to auto-scroll through media, then faster after 1.6 seconds |
+| LEFT / RIGHT | Browse the current section; hold to auto-scroll through media, then three times faster after 2.5 seconds |
 | UP | Move from Games to Videos |
 | DOWN | Move from Videos to Games |
 | A | Launch/resume a game, play/resume a video, or open a folder |
@@ -311,7 +311,7 @@ video is already playing also shows it for two seconds.
 While Y is held during media playback, the top-right indicator alternates
 every second between the battery level and the remaining play-timer value. If
 no timer is active, only the battery level is displayed. During the final five
-minutes, the timer value uses the same violet accent as the progress bar.
+minutes, the timer value is displayed in red.
 
 Volume and brightness shortcuts remain usable. Releasing MENU after using a
 combination does not accidentally leave the video.
@@ -346,7 +346,7 @@ zero, the running content closes and the child sees **Time's up!** and
 if buttons were pressed or the parent screens were opened. Selecting `OFF` or
 adding more play time before that deadline cancels the automatic power-off.
 
-During the final five minutes, the remaining time stays visible in violet at
+During the final five minutes, the remaining time stays visible in red at
 the top-right on the carousel and during audio/video playback.
 Games use
 RetroArch's native countdown notification.

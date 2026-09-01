@@ -491,7 +491,7 @@ static TTF_Font *getFontInfo(void)
 // Solid panels drawn over the theme background (PIN boxes, art fallback).
 // Fixed dark slate so white text stays readable on any theme.
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
-static const SDL_Color COLOR_MEDIA_ACCENT = {174, 72, 255};
+static const SDL_Color COLOR_WARNING_RED = {255, 64, 64};
 static const SDL_Color COLOR_TIMESUP_GREEN = {76, 217, 100};
 static const uint32_t FALLBACK_BG = 0x1A1B26; // if the theme background fails
 static const uint32_t PIN_BOX_COLOR = 0x2E3350;
@@ -2698,7 +2698,7 @@ static void renderTimeChip(int remaining)
     int mins = (remaining + 59) / 60;
     char chip[32];
     snprintf(chip, sizeof(chip), "%d min", mins);
-    SDL_Color color = mins <= 5 ? COLOR_MEDIA_ACCENT : theme()->hint.color;
+    SDL_Color color = mins <= 5 ? COLOR_WARNING_RED : theme()->hint.color;
     TTF_Font *battery_font = resource_getFont(BATTERY);
     int timer_y = (int)(30.0 * g_scale) + theme()->batteryPercentage.offsetY;
     const char *family = battery_font != NULL
@@ -3019,7 +3019,7 @@ static void renderConfirmRestart(const char *label, int remaining)
     int title_y = (g_display.height - pop_bg->h) / 2 +
                   (int)(50.0 * g_scale);
     drawText("Start over?", g_display.width / 2, title_y,
-             getFontRestartTitle(), COLOR_MEDIA_ACCENT, dialog_w);
+             getFontRestartTitle(), COLOR_WARNING_RED, dialog_w);
 
     // Reserve the label's original lines in the native textbox above, then
     // repaint only those lines with an italic font. This keeps Onion's exact
@@ -3492,10 +3492,10 @@ int main(int argc, char *argv[])
     // Repeats are accepted below for LEFT/RIGHT timer values and for horizontal
     // navigation on the media carousel. Games, PIN entry and ordinary menus
     // still require individual presses.
-    // Generate repeats often enough for the accelerated second stage. The
-    // event loop below keeps the original 100 ms pace at first, then accepts
-    // every 50 ms event after the direction has been held for 1.6 seconds.
-    SDL_EnableKeyRepeat(350, 50);
+    // Keep the familiar initial repeat speed. After a direction has been held
+    // for 2.5 seconds, the event loop advances three values/items per repeat;
+    // this remains perceptible even when loading artwork takes a little time.
+    SDL_EnableKeyRepeat(350, 100);
     writeFloorState();
 
     Screen active_screen = SCREEN_CAROUSEL;
@@ -3626,7 +3626,6 @@ int main(int argc, char *argv[])
     uint32_t last_charging_poll = 0;
     SDLKey repeated_navigation_key = SDLK_UNKNOWN;
     uint32_t repeated_navigation_started = 0;
-    uint32_t repeated_navigation_last_step = 0;
     long timesup_since = remaining == 0 ? ensureTimesUpSince() : 0;
     carousel_battery_charging = batteryIsChargingFast();
     carousel_battery_percentage = batteryPercentageFast();
@@ -3693,26 +3692,23 @@ int main(int argc, char *argv[])
             (timer_repeat_context || media_repeat_context)) {
             repeated_navigation_key = changed_key;
             repeated_navigation_started = ticks;
-            repeated_navigation_last_step = ticks;
         }
         else if (key_changed && changed_key == repeated_navigation_key &&
                  keystate[changed_key] == RELEASED) {
             repeated_navigation_key = SDLK_UNKNOWN;
             repeated_navigation_started = 0;
-            repeated_navigation_last_step = 0;
         }
 
         bool repeat_due = false;
+        int repeat_step = 1;
         if (key_changed && repeatable_navigation_key &&
             keystate[changed_key] == REPEATING &&
             changed_key == repeated_navigation_key &&
             (timer_repeat_context || media_repeat_context)) {
             uint32_t held_ms = ticks - repeated_navigation_started;
-            uint32_t interval_ms = held_ms >= 1600 ? 50 : 100;
-            if (ticks - repeated_navigation_last_step >= interval_ms) {
-                repeated_navigation_last_step = ticks;
-                repeat_due = true;
-            }
+            repeat_due = true;
+            if (held_ms >= 2500)
+                repeat_step = 3;
         }
 
         bool timer_value_repeat =
@@ -3731,12 +3727,14 @@ int main(int argc, char *argv[])
             if (active_screen == SCREEN_CAROUSEL && games_count > 0) {
                 switch (changed_key) {
                 case SW_BTN_RIGHT:
-                    current = (current + 1) % games_count;
+                    current = (current + repeat_step) % games_count;
                     rememberSelection();
                     dirty = true;
                     break;
                 case SW_BTN_LEFT:
-                    current = (current + games_count - 1) % games_count;
+                    current =
+                        (current + games_count - repeat_step % games_count) %
+                        games_count;
                     rememberSelection();
                     dirty = true;
                     break;
@@ -3825,14 +3823,14 @@ int main(int argc, char *argv[])
                 switch (changed_key) {
                 case SW_BTN_RIGHT:
                 case SW_BTN_UP:
-                    menu_timer_minutes += TIMER_STEP;
+                    menu_timer_minutes += TIMER_STEP * repeat_step;
                     if (menu_timer_minutes > TIMER_MAX)
                         menu_timer_minutes = TIMER_MAX;
                     dirty = true;
                     break;
                 case SW_BTN_LEFT:
                 case SW_BTN_DOWN:
-                    menu_timer_minutes -= TIMER_STEP;
+                    menu_timer_minutes -= TIMER_STEP * repeat_step;
                     if (menu_timer_minutes < (picker_no_off ? TIMER_STEP : 0))
                         menu_timer_minutes = picker_no_off ? TIMER_STEP : 0;
                     dirty = true;
@@ -3876,12 +3874,14 @@ int main(int argc, char *argv[])
                     break;
                 case SW_BTN_LEFT:
                     // Value selector on the add-time row (Apps-menu style)
-                    if (list_keyLeft(&menu_list, false))
-                        dirty = true;
+                    for (int step = 0; step < repeat_step; step++)
+                        if (list_keyLeft(&menu_list, false))
+                            dirty = true;
                     break;
                 case SW_BTN_RIGHT:
-                    if (list_keyRight(&menu_list, false))
-                        dirty = true;
+                    for (int step = 0; step < repeat_step; step++)
+                        if (list_keyRight(&menu_list, false))
+                            dirty = true;
                     break;
                 case SW_BTN_A:
                 case SW_BTN_START:
