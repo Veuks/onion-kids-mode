@@ -133,7 +133,7 @@ typedef enum { SCREEN_CAROUSEL,
     "/mnt/SDCARD/Saves/KidsMode/Main/series_selections"
 #define DEFAULT_VIDEO_THUMBNAIL_CACHE_DIR \
     "/mnt/SDCARD/Saves/KidsMode/Main/artwork_cache"
-#define VIDEO_THUMBNAIL_RENDER_VERSION 1
+#define VIDEO_THUMBNAIL_RENDER_VERSION 2
 #define KIDSPLAY_PATH "/mnt/SDCARD/App/KidsMode/bin/kidsplay"
 #define KIDSPLAY_LIB_DIR "/mnt/SDCARD/App/KidsMode/lib"
 #define TIMER_STEP 5
@@ -2359,6 +2359,11 @@ static void loadArtwork(void)
     }
 
     if (thumbnail_ready && raw->w == target_w && raw->h == target_h) {
+#ifdef PLATFORM_MIYOOMINI
+        /* Cached covers are stored in normal file orientation.  Apply the
+         * Miyoo display correction only to the in-memory copy, exactly once. */
+        rotate180InPlace(raw);
+#endif
         artwork = SDL_DisplayFormatAlpha(raw);
         if (artwork == NULL)
             artwork = raw;
@@ -2406,12 +2411,15 @@ static void loadArtwork(void)
     SDL_Surface *reflection = loadScreenReflection(target_w);
     if (reflection != NULL)
         blendReflection(framed, reflection, 0, 0);
-#ifdef PLATFORM_MIYOOMINI
-    rotate180InPlace(framed);
-#endif
+    /* Keep the persistent bitmap canonical.  Older caches baked the Miyoo
+     * correction into the file itself, so freshly generated and reloaded
+     * artwork could take different paths and occasionally appear inverted. */
     if (thumbnail_path[0] != '\0')
         saveVideoThumbnail(framed, thumbnail_path, thumbnail_metadata,
                            imgpath);
+#ifdef PLATFORM_MIYOOMINI
+    rotate180InPlace(framed);
+#endif
     artwork = SDL_DisplayFormatAlpha(framed);
     if (artwork == NULL)
         artwork = framed;

@@ -1019,9 +1019,6 @@ static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext *
                         kidsplay_upload_logs++;
                     }
                     SDL_UnlockTexture(*tex);
-                    if (!kidsplay_present_logged)
-                        av_log(NULL, AV_LOG_INFO,
-                               "KidsPlay stage: upload-unlocked\n");
                 }
             } else {
                 av_log(NULL, AV_LOG_FATAL, "Cannot initialize the conversion context\n");
@@ -1085,9 +1082,6 @@ static int upload_texture(SDL_Texture **tex, AVFrame *frame, struct SwsContext *
                         kidsplay_upload_logs++;
                     }
                     SDL_UnlockTexture(*tex);
-                    if (!kidsplay_present_logged)
-                        av_log(NULL, AV_LOG_INFO,
-                               "KidsPlay stage: upload-unlocked\n");
                 } else {
                     av_log(NULL, AV_LOG_ERROR,
                            "KidsPlay texture lock failed: %s\n",
@@ -1183,16 +1177,12 @@ static void video_image_display(VideoState *is)
     if (!vp->uploaded) {
         if (upload_texture(&is->vid_texture, vp->frame, &is->img_convert_ctx) < 0)
             return;
-        av_log(NULL, AV_LOG_INFO, "KidsPlay stage: upload-complete\n");
         kp_capture_clean_texture(is->vid_texture);
-        av_log(NULL, AV_LOG_INFO, "KidsPlay stage: clean-capture-complete\n");
         vp->uploaded = 1;
         vp->flip_v = vp->frame->linesize[0] < 0;
     }
 
     kp_compose_video(is, is->vid_texture);
-    if (!kidsplay_present_logged)
-        av_log(NULL, AV_LOG_INFO, "KidsPlay stage: compose-complete\n");
 
     set_sdl_yuv_conversion_mode(vp->frame);
     /* Mini_QueueCopy reaches MI GFX; Mini_QueueCopyEx is always a no-op.
@@ -1200,8 +1190,6 @@ static void video_image_display(VideoState *is)
      * stride: the converted upload texture itself has a positive pitch. */
     {
         int copy_result = SDL_RenderCopy(renderer, is->vid_texture, NULL, &rect);
-        if (!kidsplay_present_logged)
-            av_log(NULL, AV_LOG_INFO, "KidsPlay stage: render-copy-complete\n");
         if (!kidsplay_present_logged) {
             Uint32 texture_format = 0;
             int texture_access = 0, texture_w = 0, texture_h = 0;

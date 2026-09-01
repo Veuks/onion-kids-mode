@@ -633,11 +633,8 @@ static void kp_capture_clean_texture(SDL_Texture *texture)
     int pitch = 0;
     size_t size;
     int y;
-    av_log(NULL, AV_LOG_INFO, "KidsPlay stage: clean-capture-enter\n");
     if (!texture || SDL_LockTexture(texture, NULL, &pixels, &pitch) < 0)
         return;
-    av_log(NULL, AV_LOG_INFO,
-           "KidsPlay stage: clean-capture-locked pitch=%d\n", pitch);
     size = (size_t)KP_W * KP_H * 4;
     if (kp.clean_capacity < size) {
         uint8_t *grown = av_realloc(kp.clean_pixels, size);
@@ -653,7 +650,6 @@ static void kp_capture_clean_texture(SDL_Texture *texture)
     kp.clean_pitch = KP_W * 4;
     kp.clean_ready = 1;
     SDL_UnlockTexture(texture);
-    av_log(NULL, AV_LOG_INFO, "KidsPlay stage: clean-capture-unlocked\n");
 }
 
 static void kp_compose_video(VideoState *is, SDL_Texture *texture)
@@ -663,39 +659,21 @@ static void kp_compose_video(VideoState *is, SDL_Texture *texture)
     int y, bpp = 0;
     Uint32 rmask, gmask, bmask, amask;
     SDL_Surface *surface;
-    if (!kidsplay_present_logged)
-        av_log(NULL, AV_LOG_INFO, "KidsPlay stage: compose-enter\n");
     kp_tick(is);
-    if (!kidsplay_present_logged)
-        av_log(NULL, AV_LOG_INFO,
-               "KidsPlay stage: compose-tick overlay=%d timer=%ld\n",
-               kp_overlay_visible(is), kp.timer_remaining);
     if (!kp_overlay_visible(is))
         return;
     if (!kp.clean_ready || !texture || SDL_LockTexture(texture, NULL, &pixels, &pitch) < 0)
         return;
-    if (!kidsplay_present_logged)
-        av_log(NULL, AV_LOG_INFO,
-               "KidsPlay stage: compose-locked pitch=%d\n", pitch);
     for (y = 0; y < KP_H; y++)
         memcpy((uint8_t *)pixels + y * pitch, kp.clean_pixels + y * kp.clean_pitch, KP_W * 4);
     if (kp_overlay_visible(is) && SDL_PixelFormatEnumToMasks(SDL_PIXELFORMAT_ARGB8888, &bpp, &rmask, &gmask, &bmask, &amask)) {
         surface = SDL_CreateRGBSurfaceFrom(pixels, KP_W, KP_H, bpp, pitch, rmask, gmask, bmask, amask);
-        if (!kidsplay_present_logged)
-            av_log(NULL, AV_LOG_INFO,
-                   "KidsPlay stage: compose-surface-created ok=%d\n",
-                   surface != NULL);
         if (surface) {
             kp_draw_overlay(surface, is);
-            if (!kidsplay_present_logged)
-                av_log(NULL, AV_LOG_INFO,
-                       "KidsPlay stage: compose-overlay-drawn\n");
             SDL_FreeSurface(surface);
         }
     }
     SDL_UnlockTexture(texture);
-    if (!kidsplay_present_logged)
-        av_log(NULL, AV_LOG_INFO, "KidsPlay stage: compose-unlocked\n");
 }
 
 static void kp_draw_scaled_artwork(SDL_Surface *target)

@@ -419,9 +419,9 @@ run_pin_entry() {
     # echoes the PIN on success
     rm -f "$uiresult"
     if [ -n "$2" ]; then
-        "$kidui_bin" --set-pin -t "$1" --notice "$2" > "$uilog" 2>&1
+        run_kidui --set-pin -t "$1" --notice "$2" > "$uilog" 2>&1
     else
-        "$kidui_bin" --set-pin -t "$1" > "$uilog" 2>&1
+        run_kidui --set-pin -t "$1" > "$uilog" 2>&1
     fi
     [ $? -eq 3 ] || return 1
     [ "$(sed -n 1p "$uiresult")" = "PIN" ] || return 1
@@ -1372,7 +1372,7 @@ ensure_fav_shortcut() {
 
 pick_session_timer() {
     rm -f "$uiresult"
-    "$kidui_bin" --pick-timer > "$uilog" 2>&1
+    run_kidui --pick-timer > "$uilog" 2>&1
     picker_rc=$?
 
     picked=0
@@ -1580,7 +1580,7 @@ parent_menu() {
             [ -d /mnt/SDCARD/Saves/MainProfile ]; then
             switch_profile_arg=Main
         fi
-        "$kidui_bin" --parent-menu \
+        run_kidui --parent-menu \
             --remaining "$(timer_remaining)" \
             --floor "$menu_floor" \
             --lock-floor "$lock_val" \
@@ -1673,7 +1673,7 @@ parent_menu() {
                         # Older kidui without the inline selector: fall back
                         # to the separate picker screen; B cancels
                         rm -f "$uiresult"
-                        "$kidui_bin" --pick-timer --no-off -t "Add play time" > "$uilog" 2>&1
+                        run_kidui --pick-timer --no-off -t "Add play time" > "$uilog" 2>&1
                         if [ $? -eq 5 ] && [ "$(sed -n 1p "$uiresult")" = "TIMER" ]; then
                             menu_arg="$(sed -n 2p "$uiresult")"
                         else
@@ -1719,6 +1719,25 @@ restore_configured_brightness() {
     configured_raw=$(awk -v level="$configured_brightness" \
         'BEGIN { printf "%d", 3 * exp(0.350656 * level) + 0.5 }')
     [ -w "$brightness_pwm" ] && printf '%s\n' "$configured_raw" > "$brightness_pwm"
+}
+
+prepare_kidui_display() {
+    # kidui and KidsPlay use different SDL generations but share the same
+    # double-buffered framebuffer.  Normalize and clear both pages between
+    # their short-lived processes so a parent-menu refresh cannot reveal an
+    # old page prepared in the opposite orientation.
+    [ -x "$kidsplay_fb_reset" ] && "$kidsplay_fb_reset" 2> /dev/null
+}
+
+run_kidui() {
+    # Apply the same boundary on both sides of every kidui process.  This
+    # covers arbitrary parent-menu sequences, failed PINs, profile switches,
+    # timer changes and content launches without relying on their exit code.
+    prepare_kidui_display
+    "$kidui_bin" "$@"
+    kidui_status=$?
+    prepare_kidui_display
+    return "$kidui_status"
 }
 
 disarm() {
@@ -2282,15 +2301,15 @@ cmd_run() {
             --show-music "$show_music_value" \
             --show-cartoons "$show_cartoons_value"
         if [ "$no_pin_recovery" = "1" ] && [ -n "$pin_notice" ]; then
-            "$kidui_bin" "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
+            run_kidui "$@" -t "Set a new PIN" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         elif [ "$no_pin_recovery" = "1" ]; then
-            "$kidui_bin" "$@" -t "Set a new PIN" > "$uilog" 2>&1
+            run_kidui "$@" -t "Set a new PIN" > "$uilog" 2>&1
         elif [ -n "$pin_notice" ]; then
             # Wrong PIN last time: reopen straight on the PIN screen so the
             # parent can try again in place
-            "$kidui_bin" "$@" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
+            run_kidui "$@" --start-pin --notice "$pin_notice" > "$uilog" 2>&1
         else
-            "$kidui_bin" "$@" > "$uilog" 2>&1
+            run_kidui "$@" > "$uilog" 2>&1
         fi
         ui_rc=$?
         pin_notice=""
