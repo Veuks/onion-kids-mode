@@ -63,6 +63,7 @@ typedef struct KidsPlayUi {
     int battery_text_align;
     int battery_offset_x;
     int battery_offset_y;
+    SDL_Color accent_color;
     int clean_ready;
     int clean_pitch;
     uint8_t *clean_pixels;
@@ -239,12 +240,18 @@ static void kp_init(VideoState *is)
     const char *start;
     const char *fixed;
     const char *align;
+    const char *accent;
+    unsigned int accent_r, accent_g, accent_b;
     int size, timer_size;
     if (kp.initialized)
         return;
     memset(&kp, 0, sizeof(kp));
     kp.battery = -1;
     kp.battery_cycle_phase = -1;
+    kp.accent_color.r = 174;
+    kp.accent_color.g = 72;
+    kp.accent_color.b = 255;
+    kp.accent_color.a = 255;
     kp.saved_brightness = -1;
     kp.menu_brightness = -1;
     kp_copy_env(kp.position_file, sizeof(kp.position_file), "VC_POSITION_FILE");
@@ -266,6 +273,21 @@ static void kp_init(VideoState *is)
                               atoi(getenv("VC_BATTERY_OFFSET_X")) : 0;
     kp.battery_offset_y = getenv("VC_BATTERY_OFFSET_Y") ?
                               atoi(getenv("VC_BATTERY_OFFSET_Y")) : 0;
+    accent = getenv("VC_ACCENT_COLOR");
+    if (accent) {
+        if (accent[0] == '#')
+            accent++;
+        else if (accent[0] == '0' &&
+                 (accent[1] == 'x' || accent[1] == 'X'))
+            accent += 2;
+        if (strlen(accent) == 6 &&
+            sscanf(accent, "%02x%02x%02x", &accent_r, &accent_g,
+                   &accent_b) == 3) {
+            kp.accent_color.r = accent_r;
+            kp.accent_color.g = accent_g;
+            kp.accent_color.b = accent_b;
+        }
+    }
     kind = getenv("VC_MEDIA_KIND");
     kp.audio_only = kind && !strcmp(kind, "audio");
     start = getenv("VC_START_SECONDS");
@@ -479,7 +501,8 @@ static void kp_draw_progress(SDL_Surface *surface)
         int bar_y = 452;
         int knob_x, dx, dy;
         Uint32 black = SDL_MapRGB(surface->format, 0, 0, 0);
-        Uint32 accent = SDL_MapRGB(surface->format, 174, 72, 255);
+        Uint32 accent = SDL_MapRGB(surface->format, kp.accent_color.r,
+                                   kp.accent_color.g, kp.accent_color.b);
         if (elapsed_label) {
             elapsed_w = elapsed_label->w;
             elapsed_h = elapsed_label->h;
@@ -606,10 +629,10 @@ static void kp_draw_battery(SDL_Surface *surface)
 static void kp_draw_timer(SDL_Surface *surface)
 {
     SDL_Color white = {255, 255, 255, 255};
-    SDL_Color red = {255, 64, 64, 255};
-    SDL_Color color = kp.timer_remaining <= 300 ? red : white;
+    SDL_Color color = kp.timer_remaining <= 300 ? kp.accent_color : white;
     char timer[32];
     SDL_Surface *label;
+    int label_y;
     if (kp.timer_remaining <= 0)
         return;
     snprintf(timer, sizeof(timer), "%ld min",
@@ -617,8 +640,14 @@ static void kp_draw_timer(SDL_Surface *surface)
     label = kp_cached_text(
         &kp.text_timer, kp.cached_timer, sizeof(kp.cached_timer),
         kp.font_timer ? kp.font_timer : kp.font_small, timer, color);
-    if (label)
-        kp_blit(surface, label, 620 - label->w, 30 - label->h / 2);
+    if (label) {
+        // Match the exact vertical positioning used by the battery percentage,
+        // including theme offsets and the Exo-2 baseline correction.
+        label_y = 30 - label->h / 2 + kp.battery_offset_y;
+        if (strstr(kp.font_path, "Exo-2"))
+            label_y -= 4;
+        kp_blit(surface, label, 620 - label->w, label_y);
+    }
 }
 
 static int kp_overlay_visible(VideoState *is)

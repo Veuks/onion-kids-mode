@@ -491,7 +491,6 @@ static TTF_Font *getFontInfo(void)
 // Solid panels drawn over the theme background (PIN boxes, art fallback).
 // Fixed dark slate so white text stays readable on any theme.
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
-static const SDL_Color COLOR_RESTART_RED = {235, 64, 64};
 static const SDL_Color COLOR_TIMESUP_GREEN = {76, 217, 100};
 static const uint32_t FALLBACK_BG = 0x1A1B26; // if the theme background fails
 static const uint32_t PIN_BOX_COLOR = 0x2E3350;
@@ -2656,7 +2655,7 @@ static SDL_Surface *chargingBatterySurface(int percentage)
 }
 
 // Small "12 min" chip in the top-right corner (where MainUI keeps its
-// battery), switching to warning red for the last 5 minutes
+// battery), switching to the theme accent for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
     bool battery_peek = keystate[SW_BTN_Y] != RELEASED ||
@@ -2698,10 +2697,17 @@ static void renderTimeChip(int remaining)
     int mins = (remaining + 59) / 60;
     char chip[32];
     snprintf(chip, sizeof(chip), "%d min", mins);
-    SDL_Color warning_red = {255, 64, 64, 255};
-    SDL_Color color = mins <= 5 ? warning_red : theme()->hint.color;
-    drawTextAlign(chip, (int)(620.0 * g_scale), (int)(30.0 * g_scale),
-                  resource_getFont(HINT), color, 0, TEXT_RIGHT);
+    SDL_Color color = mins <= 5 ? accentColor() : theme()->hint.color;
+    TTF_Font *battery_font = resource_getFont(BATTERY);
+    int timer_y = (int)(30.0 * g_scale) + theme()->batteryPercentage.offsetY;
+    const char *family = battery_font != NULL
+                             ? TTF_FontFaceFamilyName(battery_font)
+                             : NULL;
+    if (family != NULL && strncmp(family, "Exo 2", 5) == 0)
+        timer_y -= (int)(0.075 * TTF_FontHeight(battery_font));
+    drawTextAlign(chip, (int)(620.0 * g_scale), timer_y,
+                  battery_font != NULL ? battery_font : resource_getFont(HINT),
+                  color, 0, TEXT_RIGHT);
 }
 
 static void renderFloorIndicator(void)
@@ -3012,7 +3018,7 @@ static void renderConfirmRestart(const char *label, int remaining)
     int title_y = (g_display.height - pop_bg->h) / 2 +
                   (int)(50.0 * g_scale);
     drawText("Start over?", g_display.width / 2, title_y,
-             getFontRestartTitle(), COLOR_RESTART_RED, dialog_w);
+             getFontRestartTitle(), accentColor(), dialog_w);
 
     // Reserve the label's original lines in the native textbox above, then
     // repaint only those lines with an italic font. This keeps Onion's exact

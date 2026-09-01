@@ -311,7 +311,7 @@ video is already playing also shows it for two seconds.
 While Y is held during media playback, the top-right indicator alternates
 every second between the battery level and the remaining play-timer value. If
 no timer is active, only the battery level is displayed. During the final five
-minutes, the timer value remains red.
+minutes, the timer value uses the theme's accent colour.
 
 Volume and brightness shortcuts remain usable. Releasing MENU after using a
 combination does not accidentally leave the video.
@@ -346,8 +346,9 @@ zero, the running content closes and the child sees **Time's up!** and
 if buttons were pressed or the parent screens were opened. Selecting `OFF` or
 adding more play time before that deadline cancels the automatic power-off.
 
-During the final five minutes, the remaining time stays visible in red at the
-top-right on the carousel and during audio/video playback. Games use
+During the final five minutes, the remaining time stays visible in the theme's
+accent colour at the top-right on the carousel and during audio/video playback.
+Games use
 RetroArch's native countdown notification.
 
 The current floor, folder and selection are saved. Media playback is
