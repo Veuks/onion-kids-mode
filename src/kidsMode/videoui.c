@@ -3492,10 +3492,9 @@ int main(int argc, char *argv[])
     // Repeats are accepted below for LEFT/RIGHT timer values and for horizontal
     // navigation on the media carousel. Games, PIN entry and ordinary menus
     // still require individual presses.
-    // Keep the familiar initial repeat speed. After a direction has been held
-    // for 2.5 seconds, the event loop advances three values/items per repeat;
-    // this remains perceptible even when loading artwork takes a little time.
-    SDL_EnableKeyRepeat(350, 100);
+    // A single, steady repeat speed keeps long media lists and timer values
+    // quick to browse without the abrupt jumps of staged acceleration.
+    SDL_EnableKeyRepeat(350, 75);
     writeFloorState();
 
     Screen active_screen = SCREEN_CAROUSEL;
@@ -3624,8 +3623,6 @@ int main(int argc, char *argv[])
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t last_charging_poll = 0;
-    SDLKey repeated_navigation_key = SDLK_UNKNOWN;
-    uint32_t repeated_navigation_started = 0;
     long timesup_since = remaining == 0 ? ensureTimesUpSince() : 0;
     carousel_battery_charging = batteryIsChargingFast();
     carousel_battery_percentage = batteryPercentageFast();
@@ -3684,39 +3681,14 @@ int main(int argc, char *argv[])
         bool media_repeat_context =
             active_screen == SCREEN_CAROUSEL &&
             current_floor == FLOOR_VIDEOS;
-        bool repeatable_navigation_key =
-            changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT;
-
-        if (key_changed && repeatable_navigation_key &&
-            keystate[changed_key] == PRESSED &&
-            (timer_repeat_context || media_repeat_context)) {
-            repeated_navigation_key = changed_key;
-            repeated_navigation_started = ticks;
-        }
-        else if (key_changed && changed_key == repeated_navigation_key &&
-                 keystate[changed_key] == RELEASED) {
-            repeated_navigation_key = SDLK_UNKNOWN;
-            repeated_navigation_started = 0;
-        }
-
-        bool repeat_due = false;
-        int repeat_step = 1;
-        if (key_changed && repeatable_navigation_key &&
-            keystate[changed_key] == REPEATING &&
-            changed_key == repeated_navigation_key &&
-            (timer_repeat_context || media_repeat_context)) {
-            uint32_t held_ms = ticks - repeated_navigation_started;
-            repeat_due = true;
-            if (held_ms >= 2500)
-                repeat_step = 3;
-        }
-
         bool timer_value_repeat =
             key_changed && keystate[changed_key] == REPEATING &&
-            repeat_due && timer_repeat_context;
+            (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT) &&
+            timer_repeat_context;
         bool media_carousel_repeat =
             key_changed && keystate[changed_key] == REPEATING &&
-            repeat_due && media_repeat_context;
+            (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT) &&
+            media_repeat_context;
         if (key_changed &&
             (keystate[changed_key] == PRESSED || timer_value_repeat ||
              media_carousel_repeat)) {
@@ -3727,14 +3699,12 @@ int main(int argc, char *argv[])
             if (active_screen == SCREEN_CAROUSEL && games_count > 0) {
                 switch (changed_key) {
                 case SW_BTN_RIGHT:
-                    current = (current + repeat_step) % games_count;
+                    current = (current + 1) % games_count;
                     rememberSelection();
                     dirty = true;
                     break;
                 case SW_BTN_LEFT:
-                    current =
-                        (current + games_count - repeat_step % games_count) %
-                        games_count;
+                    current = (current + games_count - 1) % games_count;
                     rememberSelection();
                     dirty = true;
                     break;
@@ -3823,14 +3793,14 @@ int main(int argc, char *argv[])
                 switch (changed_key) {
                 case SW_BTN_RIGHT:
                 case SW_BTN_UP:
-                    menu_timer_minutes += TIMER_STEP * repeat_step;
+                    menu_timer_minutes += TIMER_STEP;
                     if (menu_timer_minutes > TIMER_MAX)
                         menu_timer_minutes = TIMER_MAX;
                     dirty = true;
                     break;
                 case SW_BTN_LEFT:
                 case SW_BTN_DOWN:
-                    menu_timer_minutes -= TIMER_STEP * repeat_step;
+                    menu_timer_minutes -= TIMER_STEP;
                     if (menu_timer_minutes < (picker_no_off ? TIMER_STEP : 0))
                         menu_timer_minutes = picker_no_off ? TIMER_STEP : 0;
                     dirty = true;
@@ -3874,14 +3844,12 @@ int main(int argc, char *argv[])
                     break;
                 case SW_BTN_LEFT:
                     // Value selector on the add-time row (Apps-menu style)
-                    for (int step = 0; step < repeat_step; step++)
-                        if (list_keyLeft(&menu_list, false))
-                            dirty = true;
+                    if (list_keyLeft(&menu_list, false))
+                        dirty = true;
                     break;
                 case SW_BTN_RIGHT:
-                    for (int step = 0; step < repeat_step; step++)
-                        if (list_keyRight(&menu_list, false))
-                            dirty = true;
+                    if (list_keyRight(&menu_list, false))
+                        dirty = true;
                     break;
                 case SW_BTN_A:
                 case SW_BTN_START:
