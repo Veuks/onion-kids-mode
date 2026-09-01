@@ -491,6 +491,7 @@ static TTF_Font *getFontInfo(void)
 // Solid panels drawn over the theme background (PIN boxes, art fallback).
 // Fixed dark slate so white text stays readable on any theme.
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
+static const SDL_Color COLOR_MEDIA_ACCENT = {174, 72, 255};
 static const SDL_Color COLOR_TIMESUP_GREEN = {76, 217, 100};
 static const uint32_t FALLBACK_BG = 0x1A1B26; // if the theme background fails
 static const uint32_t PIN_BOX_COLOR = 0x2E3350;
@@ -2697,7 +2698,7 @@ static void renderTimeChip(int remaining)
     int mins = (remaining + 59) / 60;
     char chip[32];
     snprintf(chip, sizeof(chip), "%d min", mins);
-    SDL_Color color = mins <= 5 ? accentColor() : theme()->hint.color;
+    SDL_Color color = mins <= 5 ? COLOR_MEDIA_ACCENT : theme()->hint.color;
     TTF_Font *battery_font = resource_getFont(BATTERY);
     int timer_y = (int)(30.0 * g_scale) + theme()->batteryPercentage.offsetY;
     const char *family = battery_font != NULL
@@ -3018,7 +3019,7 @@ static void renderConfirmRestart(const char *label, int remaining)
     int title_y = (g_display.height - pop_bg->h) / 2 +
                   (int)(50.0 * g_scale);
     drawText("Start over?", g_display.width / 2, title_y,
-             getFontRestartTitle(), accentColor(), dialog_w);
+             getFontRestartTitle(), COLOR_MEDIA_ACCENT, dialog_w);
 
     // Reserve the label's original lines in the native textbox above, then
     // repaint only those lines with an italic font. This keeps Onion's exact
@@ -3491,7 +3492,10 @@ int main(int argc, char *argv[])
     // Repeats are accepted below for LEFT/RIGHT timer values and for horizontal
     // navigation on the media carousel. Games, PIN entry and ordinary menus
     // still require individual presses.
-    SDL_EnableKeyRepeat(350, 100);
+    // Generate repeats often enough for the accelerated second stage. The
+    // event loop below keeps the original 100 ms pace at first, then accepts
+    // every 50 ms event after the direction has been held for 1.6 seconds.
+    SDL_EnableKeyRepeat(350, 50);
     writeFloorState();
 
     Screen active_screen = SCREEN_CAROUSEL;
@@ -3620,6 +3624,9 @@ int main(int argc, char *argv[])
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
     uint32_t last_charging_poll = 0;
+    SDLKey repeated_navigation_key = SDLK_UNKNOWN;
+    uint32_t repeated_navigation_started = 0;
+    uint32_t repeated_navigation_last_step = 0;
     long timesup_since = remaining == 0 ? ensureTimesUpSince() : 0;
     carousel_battery_charging = batteryIsChargingFast();
     carousel_battery_percentage = batteryPercentageFast();
@@ -3671,17 +3678,49 @@ int main(int argc, char *argv[])
         }
         if (key_changed && changed_key == SW_BTN_Y)
             dirty = true;
-        bool timer_value_repeat =
-            key_changed && keystate[changed_key] == REPEATING &&
-            (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT) &&
+        bool timer_repeat_context =
             (active_screen == SCREEN_PICKTIMER ||
              (active_screen == SCREEN_MENU &&
               menu_list.active_pos == MENU_ADDTIME));
+        bool media_repeat_context =
+            active_screen == SCREEN_CAROUSEL &&
+            current_floor == FLOOR_VIDEOS;
+        bool repeatable_navigation_key =
+            changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT;
+
+        if (key_changed && repeatable_navigation_key &&
+            keystate[changed_key] == PRESSED &&
+            (timer_repeat_context || media_repeat_context)) {
+            repeated_navigation_key = changed_key;
+            repeated_navigation_started = ticks;
+            repeated_navigation_last_step = ticks;
+        }
+        else if (key_changed && changed_key == repeated_navigation_key &&
+                 keystate[changed_key] == RELEASED) {
+            repeated_navigation_key = SDLK_UNKNOWN;
+            repeated_navigation_started = 0;
+            repeated_navigation_last_step = 0;
+        }
+
+        bool repeat_due = false;
+        if (key_changed && repeatable_navigation_key &&
+            keystate[changed_key] == REPEATING &&
+            changed_key == repeated_navigation_key &&
+            (timer_repeat_context || media_repeat_context)) {
+            uint32_t held_ms = ticks - repeated_navigation_started;
+            uint32_t interval_ms = held_ms >= 1600 ? 50 : 100;
+            if (ticks - repeated_navigation_last_step >= interval_ms) {
+                repeated_navigation_last_step = ticks;
+                repeat_due = true;
+            }
+        }
+
+        bool timer_value_repeat =
+            key_changed && keystate[changed_key] == REPEATING &&
+            repeat_due && timer_repeat_context;
         bool media_carousel_repeat =
             key_changed && keystate[changed_key] == REPEATING &&
-            active_screen == SCREEN_CAROUSEL &&
-            current_floor == FLOOR_VIDEOS &&
-            (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT);
+            repeat_due && media_repeat_context;
         if (key_changed &&
             (keystate[changed_key] == PRESSED || timer_value_repeat ||
              media_carousel_repeat)) {
