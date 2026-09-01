@@ -35,11 +35,13 @@ typedef struct KidsPlayUi {
     int y_down;
     int screenshot_latched;
     int battery_down;
+    int battery_cycle_phase;
     int paused;
     int seek_key;
     int seek_forward;
     int seek_vertical;
     uint32_t menu_at;
+    uint32_t battery_cycle_at;
     uint32_t seek_at;
     uint32_t seek_last;
     uint32_t progress_until;
@@ -242,6 +244,7 @@ static void kp_init(VideoState *is)
         return;
     memset(&kp, 0, sizeof(kp));
     kp.battery = -1;
+    kp.battery_cycle_phase = -1;
     kp.saved_brightness = -1;
     kp.menu_brightness = -1;
     kp_copy_env(kp.position_file, sizeof(kp.position_file), "VC_POSITION_FILE");
@@ -359,10 +362,20 @@ static void kp_update_backlight(VideoState *is)
 static void kp_tick(VideoState *is)
 {
     uint32_t now;
+    int cycle_phase;
     kp_init(is);
     now = SDL_GetTicks();
     kp.paused = is->paused;
     kp_update_status(is, 0);
+    if (kp.battery_down && kp.timer_remaining > 0) {
+        cycle_phase = (int)(((now - kp.battery_cycle_at) / 1000) & 1);
+        if (cycle_phase != kp.battery_cycle_phase) {
+            kp.battery_cycle_phase = cycle_phase;
+            is->force_refresh = 1;
+        }
+    } else {
+        kp.battery_cycle_phase = -1;
+    }
     kp_update_backlight(is);
     if (now - kp.last_save >= 1000) {
         kp_save_position(is, (now / 5000) != (kp.last_save / 5000));
@@ -590,6 +603,24 @@ static void kp_draw_battery(SDL_Surface *surface)
     }
 }
 
+static void kp_draw_timer(SDL_Surface *surface)
+{
+    SDL_Color white = {255, 255, 255, 255};
+    SDL_Color red = {255, 64, 64, 255};
+    SDL_Color color = kp.timer_remaining <= 300 ? red : white;
+    char timer[32];
+    SDL_Surface *label;
+    if (kp.timer_remaining <= 0)
+        return;
+    snprintf(timer, sizeof(timer), "%ld min",
+             (kp.timer_remaining + 59) / 60);
+    label = kp_cached_text(
+        &kp.text_timer, kp.cached_timer, sizeof(kp.cached_timer),
+        kp.font_timer ? kp.font_timer : kp.font_small, timer, color);
+    if (label)
+        kp_blit(surface, label, 620 - label->w, 30 - label->h / 2);
+}
+
 static int kp_overlay_visible(VideoState *is)
 {
     uint32_t now = SDL_GetTicks();
@@ -601,7 +632,6 @@ static int kp_overlay_visible(VideoState *is)
 static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
 {
     SDL_Color white = {255, 255, 255, 255};
-    SDL_Color red = {255, 64, 64, 255};
     uint32_t now = SDL_GetTicks();
     if (kp.audio_only || is->paused || now < kp.progress_until ||
         now < kp.seek_notice_until)
@@ -614,17 +644,15 @@ static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
             kp_blit(surface, notice, kp.seek_forward ? 624 - notice->w : 16,
                     398);
     }
-    if (kp.battery_down || kp.charging)
+    if (kp.battery_down) {
+        if (kp.timer_remaining > 0 && kp.battery_cycle_phase == 1)
+            kp_draw_timer(surface);
+        else
+            kp_draw_battery(surface);
+    } else if (kp.charging)
         kp_draw_battery(surface);
-    else if (kp.timer_remaining > 0 && kp.timer_remaining <= 300) {
-        char timer[32];
-        snprintf(timer, sizeof(timer), "%ld min", (kp.timer_remaining + 59) / 60);
-        SDL_Surface *label = kp_cached_text(
-            &kp.text_timer, kp.cached_timer, sizeof(kp.cached_timer),
-            kp.font_timer ? kp.font_timer : kp.font_small, timer, red);
-        if (label)
-            kp_blit(surface, label, 620 - label->w, 30 - label->h / 2);
-    }
+    else if (kp.timer_remaining > 0 && kp.timer_remaining <= 300)
+        kp_draw_timer(surface);
 }
 
 static void kp_capture_clean_texture(SDL_Texture *texture)
@@ -860,6 +888,12 @@ static int kp_handle_key(VideoState *is, SDL_KeyboardEvent *key)
     }
     if (sym == SDLK_LALT && !kp.menu_down) {
         kp.battery_down = down;
+        if (down) {
+            kp.battery_cycle_at = now;
+            kp.battery_cycle_phase = 0;
+        } else {
+            kp.battery_cycle_phase = -1;
+        }
         kp_update_status(is, 1);
         is->force_refresh = 1;
         return 1;

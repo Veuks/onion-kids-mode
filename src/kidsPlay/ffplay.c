@@ -75,8 +75,10 @@ const int program_birth_year = 2003;
 
 /* Minimum SDL audio buffer size, in samples. */
 #define SDL_AUDIO_MIN_BUFFER_SIZE 512
-/* Calculate actual buffer size keeping in mind not cause too frequent audio callbacks */
-#define SDL_AUDIO_MAX_CALLBACKS_PER_SEC 30
+/* Keep enough decoded audio queued for the Miyoo's modest CPU. Roughly ten
+ * callbacks per second avoids the tiny underruns that are especially audible
+ * through headphones while a demanding video frame is being decoded. */
+#define SDL_AUDIO_MAX_CALLBACKS_PER_SEC 15
 
 /* Step size for volume control in dB */
 #define SDL_VOLUME_STEP (0.75)
@@ -2731,6 +2733,10 @@ static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb
             return -1;
         }
     }
+
+    av_log(NULL, AV_LOG_INFO,
+           "KidsPlay audio output: %d Hz, %d channel(s), %d samples\n",
+           spec.freq, spec.channels, spec.samples);
 
     audio_hw_params->fmt = AV_SAMPLE_FMT_S16;
     audio_hw_params->freq = spec.freq;

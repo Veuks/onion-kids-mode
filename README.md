@@ -245,7 +245,7 @@ file can be decoded. MP4 with H.264 and AAC remains the safest combination.
 
 | Button | Action |
 | --- | --- |
-| LEFT / RIGHT | Browse the current section |
+| LEFT / RIGHT | Browse the current section; hold to auto-scroll through media |
 | UP | Move from Games to Videos |
 | DOWN | Move from Videos to Games |
 | A | Launch/resume a game, play/resume a video, or open a folder |
@@ -307,6 +307,11 @@ open the parent menu or put the console into standby.
 During video playback, the same progress line appears while paused, while
 seeking and for two seconds after seeking or resuming. Pressing A while the
 video is already playing also shows it for two seconds.
+
+While Y is held during media playback, the top-right indicator alternates
+every second between the battery level and the remaining play-timer value. If
+no timer is active, only the battery level is displayed. During the final five
+minutes, the timer value remains red.
 
 Volume and brightness shortcuts remain usable. Releasing MENU after using a
 combination does not accidentally leave the video.
