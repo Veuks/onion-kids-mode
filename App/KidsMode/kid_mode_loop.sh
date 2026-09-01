@@ -2040,9 +2040,9 @@ play_video() {
             VC_BATTERY_OFFSET_X="$battery_offset_x" \
             VC_BATTERY_OFFSET_Y="$battery_offset_y" \
             VC_THEME_PATH="$theme_path" \
-            KIDSPLAY_OSS_AUDIO=1 \
             LD_LIBRARY_PATH="$player_library_path" \
             LD_PRELOAD="$player_preload" SDL_VIDEODRIVER=mini \
+            SDL_AUDIODRIVER=dsp \
             "$kidsplay" -hide_banner -loglevel info -framedrop \
                 -vn -autoexit $seek_args -i "$video" \
                 2> "$duration_log" &
@@ -2061,9 +2061,9 @@ play_video() {
             VC_BATTERY_OFFSET_X="$battery_offset_x" \
             VC_BATTERY_OFFSET_Y="$battery_offset_y" \
             VC_THEME_PATH="$theme_path" \
-            KIDSPLAY_OSS_AUDIO=1 \
             LD_LIBRARY_PATH="$player_library_path" \
             LD_PRELOAD="$player_preload" SDL_VIDEODRIVER=mini \
+            SDL_AUDIODRIVER=dsp \
             "$kidsplay" -hide_banner -loglevel info -framedrop -autoexit \
                 -vf "scale=640:480:force_original_aspect_ratio=decrease,pad=640:480:(ow-iw)/2:(oh-ih)/2" \
                 $seek_args -i "$video" \

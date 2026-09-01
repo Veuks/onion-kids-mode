@@ -25,14 +25,12 @@
 
 #include "config.h"
 #include <inttypes.h>
-#include <errno.h>
 #include <math.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdint.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
-#include <sys/soundcard.h>
 #include <unistd.h>
 
 #include "libavutil/avstring.h"
@@ -430,17 +428,6 @@ static SDL_Window *window;
 static SDL_Renderer *renderer;
 static SDL_RendererInfo renderer_info = {0};
 static SDL_AudioDeviceID audio_dev;
-/* Keep the proven Miyoo SDL2 video library and route audio through Onion's
- * persistent /dev/dsp server ourselves. Rebuilding all of SDL2 merely to
- * gain its OSS backend changed the hardware video driver and proved unstable
- * after the first decoded frame. */
-static int kids_oss_fd = -1;
-static int kids_oss_active;
-static volatile int kids_oss_running;
-static SDL_Thread *kids_oss_thread;
-static VideoState *kids_oss_state;
-static Uint8 *kids_oss_buffer;
-static int kids_oss_buffer_size;
 static int kidsplay_upload_logs;
 static int kidsplay_present_logged;
 
@@ -451,7 +438,6 @@ static void kp_audio_display(VideoState *is);
 static void kp_shutdown(VideoState *is);
 static void kp_tick(VideoState *is);
 static void kp_progressive_seek(VideoState *is);
-static void kids_oss_audio_close(void);
 
 static const struct TextureFormatEntry {
     enum AVPixelFormat format;
@@ -1396,10 +1382,7 @@ static void stream_component_close(VideoState *is, int stream_index)
     switch (codecpar->codec_type) {
     case AVMEDIA_TYPE_AUDIO:
         decoder_abort(&is->auddec, &is->sampq);
-        if (kids_oss_active)
-            kids_oss_audio_close();
-        else
-            SDL_CloseAudioDevice(audio_dev);
+        SDL_CloseAudioDevice(audio_dev);
         decoder_destroy(&is->auddec);
         swr_free(&is->swr_ctx);
         av_freep(&is->audio_buf1);
@@ -2689,188 +2672,6 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
     }
 }
 
-static int kids_oss_audio_thread(void *unused)
-{
-    (void)unused;
-    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
-    while (kids_oss_running) {
-        int offset = 0;
-        sdl_audio_callback(kids_oss_state, kids_oss_buffer,
-                           kids_oss_buffer_size);
-        while (kids_oss_running && offset < kids_oss_buffer_size) {
-            int written = write(kids_oss_fd, kids_oss_buffer + offset,
-                                kids_oss_buffer_size - offset);
-            if (written > 0) {
-                offset += written;
-            } else if (written == 0 ||
-                       (written < 0 && (errno == EINTR ||
-                                        errno == EAGAIN))) {
-                if (written == 0 || errno == EAGAIN)
-                    av_usleep(1000);
-                continue;
-            } else {
-                av_log(NULL, AV_LOG_ERROR,
-                       "KidsPlay OSS audio write failed: %s\n",
-                       strerror(errno));
-                kids_oss_running = 0;
-                break;
-            }
-        }
-    }
-    return 0;
-}
-
-static void kids_oss_audio_close(void)
-{
-    if (!kids_oss_active)
-        return;
-    kids_oss_running = 0;
-    if (kids_oss_thread) {
-        SDL_WaitThread(kids_oss_thread, NULL);
-        kids_oss_thread = NULL;
-    }
-    if (kids_oss_fd >= 0) {
-        close(kids_oss_fd);
-        kids_oss_fd = -1;
-    }
-    av_freep(&kids_oss_buffer);
-    kids_oss_buffer_size = 0;
-    kids_oss_state = NULL;
-    kids_oss_active = 0;
-}
-
-static int kids_oss_audio_open(void *opaque, SDL_AudioSpec *wanted,
-                               SDL_AudioSpec *obtained)
-{
-    int format = AFMT_S16_LE;
-    int channels = FFMIN(wanted->channels, 2);
-    int frequency = wanted->freq;
-    int fragment;
-    int formats;
-    int flags;
-    int tries;
-    const char *enabled = getenv("KIDSPLAY_OSS_AUDIO");
-
-    if (!enabled || strcmp(enabled, "1"))
-        return -1;
-    if (channels < 1)
-        channels = 1;
-
-    /* libpadsp exposes /dev/dsp only after audioserver has created its FIFO.
-     * Use the exact OSS open mode used by SDL: audioserver treats the
-     * non-blocking handshake differently from a plain blocking open. */
-    for (tries = 0; tries < 40; tries++) {
-        kids_oss_fd = open("/dev/dsp", O_WRONLY | O_NONBLOCK, 0);
-        if (kids_oss_fd >= 0)
-            break;
-        av_usleep(50000);
-    }
-    if (kids_oss_fd < 0) {
-        av_log(NULL, AV_LOG_ERROR,
-               "KidsPlay Onion audio: cannot open /dev/dsp after %d attempts: %s\n",
-               tries, strerror(errno));
-        return -1;
-    }
-
-    flags = fcntl(kids_oss_fd, F_GETFL);
-    if (flags < 0 || fcntl(kids_oss_fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
-        av_log(NULL, AV_LOG_ERROR,
-               "KidsPlay Onion audio: cannot enable blocking writes: %s\n",
-               strerror(errno));
-        close(kids_oss_fd);
-        kids_oss_fd = -1;
-        return -1;
-    }
-    if (ioctl(kids_oss_fd, SNDCTL_DSP_GETFMTS, &formats) < 0 ||
-        !(formats & AFMT_S16_LE)) {
-        av_log(NULL, AV_LOG_ERROR,
-               "KidsPlay Onion audio: 16-bit PCM is unavailable: %s\n",
-               strerror(errno));
-        close(kids_oss_fd);
-        kids_oss_fd = -1;
-        return -1;
-    }
-    if (ioctl(kids_oss_fd, SNDCTL_DSP_SETFMT, &format) < 0) {
-        av_log(NULL, AV_LOG_ERROR,
-               "KidsPlay Onion audio: sample format rejected: %s\n",
-               strerror(errno));
-        close(kids_oss_fd);
-        kids_oss_fd = -1;
-        return -1;
-    }
-    if (format != AFMT_S16_LE) {
-        av_log(NULL, AV_LOG_ERROR,
-               "KidsPlay Onion audio: server returned unsupported format %d\n",
-               format);
-        close(kids_oss_fd);
-        kids_oss_fd = -1;
-        return -1;
-    }
-    if (ioctl(kids_oss_fd, SNDCTL_DSP_CHANNELS, &channels) < 0) {
-        av_log(NULL, AV_LOG_ERROR,
-               "KidsPlay Onion audio: channel setup rejected: %s\n",
-               strerror(errno));
-        close(kids_oss_fd);
-        kids_oss_fd = -1;
-        return -1;
-    }
-    if (ioctl(kids_oss_fd, SNDCTL_DSP_SPEED, &frequency) < 0) {
-        av_log(NULL, AV_LOG_ERROR,
-               "KidsPlay Onion audio: sample rate rejected: %s\n",
-               strerror(errno));
-        close(kids_oss_fd);
-        kids_oss_fd = -1;
-        return -1;
-    }
-
-    *obtained = *wanted;
-    obtained->format = AUDIO_S16SYS;
-    obtained->channels = channels;
-    obtained->freq = frequency;
-    obtained->samples = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE,
-                              2 << av_log2(frequency /
-                                           SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
-    obtained->size = obtained->samples * obtained->channels *
-                     (SDL_AUDIO_BITSIZE(obtained->format) / 8);
-    fragment = 0;
-    while ((1 << fragment) < (int)obtained->size)
-        fragment++;
-    fragment |= 0x00020000;
-    if (ioctl(kids_oss_fd, SNDCTL_DSP_SETFRAGMENT, &fragment) < 0)
-        av_log(NULL, AV_LOG_WARNING,
-               "KidsPlay Onion audio: fragment request ignored: %s\n",
-               strerror(errno));
-    kids_oss_buffer = av_malloc(obtained->size);
-    if (!kids_oss_buffer) {
-        close(kids_oss_fd);
-        kids_oss_fd = -1;
-        return -1;
-    }
-    kids_oss_buffer_size = obtained->size;
-    kids_oss_state = opaque;
-    kids_oss_active = 1;
-    av_log(NULL, AV_LOG_INFO,
-           "KidsPlay audio backend: Onion /dev/dsp (%d Hz, %d ch, %u bytes)\n",
-           obtained->freq, obtained->channels, obtained->size);
-    return obtained->size;
-}
-
-static int kids_oss_audio_start(void)
-{
-    if (!kids_oss_active)
-        return 0;
-    kids_oss_running = 1;
-    kids_oss_thread = SDL_CreateThread(kids_oss_audio_thread,
-                                       "onion_audio", NULL);
-    if (!kids_oss_thread) {
-        av_log(NULL, AV_LOG_ERROR, "Cannot start Onion audio thread: %s\n",
-               SDL_GetError());
-        kids_oss_audio_close();
-        return -1;
-    }
-    return 0;
-}
-
 static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb_channels, int wanted_sample_rate, struct AudioParams *audio_hw_params)
 {
     SDL_AudioSpec wanted_spec, spec;
@@ -2902,10 +2703,6 @@ static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb
     wanted_spec.samples = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << av_log2(wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
     wanted_spec.callback = sdl_audio_callback;
     wanted_spec.userdata = opaque;
-    if (kids_oss_audio_open(opaque, &wanted_spec, &spec) >= 0) {
-        wanted_channel_layout = av_get_default_channel_layout(spec.channels);
-        goto audio_opened;
-    }
     while (!(audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE))) {
         av_log(NULL, AV_LOG_WARNING, "SDL_OpenAudio (%d channels, %d Hz): %s\n",
                wanted_spec.channels, wanted_spec.freq, SDL_GetError());
@@ -2921,7 +2718,6 @@ static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb
         }
         wanted_channel_layout = av_get_default_channel_layout(wanted_spec.channels);
     }
-audio_opened:
     if (spec.format != AUDIO_S16SYS) {
         av_log(NULL, AV_LOG_ERROR,
                "SDL advised audio format %d is not supported!\n", spec.format);
@@ -3069,12 +2865,7 @@ static int stream_component_open(VideoState *is, int stream_index)
         }
         if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0)
             goto out;
-        if (kids_oss_active) {
-            if (kids_oss_audio_start() < 0)
-                goto fail;
-        } else {
-            SDL_PauseAudioDevice(audio_dev, 0);
-        }
+        SDL_PauseAudioDevice(audio_dev, 0);
         break;
     case AVMEDIA_TYPE_VIDEO:
         is->video_stream = stream_index;
