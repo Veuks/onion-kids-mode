@@ -78,6 +78,7 @@ typedef struct KidsPlayUi {
     SDL_Surface *text_title;
     TTF_Font *font_small;
     TTF_Font *font_title;
+    TTF_Font *font_timer;
     char notice[16];
     char position_file[512];
     char checkpoint_file[512];
@@ -88,6 +89,7 @@ typedef struct KidsPlayUi {
     char brightness_state_file[512];
     char theme_path[512];
     char font_path[512];
+    char timer_font_path[512];
     char cached_elapsed[32];
     char cached_remaining[32];
     char cached_battery[16];
@@ -235,7 +237,7 @@ static void kp_init(VideoState *is)
     const char *start;
     const char *fixed;
     const char *align;
-    int size;
+    int size, timer_size;
     if (kp.initialized)
         return;
     memset(&kp, 0, sizeof(kp));
@@ -251,6 +253,7 @@ static void kp_init(VideoState *is)
     kp_copy_env(kp.brightness_state_file, sizeof(kp.brightness_state_file), "VC_BRIGHTNESS_STATE_FILE");
     kp_copy_env(kp.theme_path, sizeof(kp.theme_path), "VC_THEME_PATH");
     kp_copy_env(kp.font_path, sizeof(kp.font_path), "VC_OSD_FONT");
+    kp_copy_env(kp.timer_font_path, sizeof(kp.timer_font_path), "VC_TIMER_FONT");
     fixed = getenv("VC_BATTERY_FIXED");
     align = getenv("VC_BATTERY_TEXT_ALIGN");
     kp.battery_style_fixed = fixed && !strcmp(fixed, "true");
@@ -270,9 +273,17 @@ static void kp_init(VideoState *is)
     size = getenv("VC_OSD_FONT_SIZE") ? atoi(getenv("VC_OSD_FONT_SIZE")) : 24;
     if (size < 12 || size > 48)
         size = 24;
+    timer_size = getenv("VC_TIMER_FONT_SIZE") ?
+                     atoi(getenv("VC_TIMER_FONT_SIZE")) : size;
+    if (timer_size < 12 || timer_size > 48)
+        timer_size = size;
     if (TTF_Init() == 0 && kp.font_path[0]) {
         kp.font_small = TTF_OpenFont(kp.font_path, size);
         kp.font_title = TTF_OpenFont(kp.font_path, FFMIN(size + 4, 48));
+        if (kp.timer_font_path[0])
+            kp.font_timer = TTF_OpenFont(kp.timer_font_path, timer_size);
+        if (!kp.font_timer)
+            kp.font_timer = TTF_OpenFont(kp.font_path, timer_size);
     }
     kp.last_activity = kp.last_save = SDL_GetTicks();
     kp_touch(KP_MEDIA_PLAYING, 1);
@@ -590,7 +601,7 @@ static int kp_overlay_visible(VideoState *is)
 static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
 {
     SDL_Color white = {255, 255, 255, 255};
-    SDL_Color red = {235, 60, 60, 255};
+    SDL_Color red = {255, 64, 64, 255};
     uint32_t now = SDL_GetTicks();
     if (kp.audio_only || is->paused || now < kp.progress_until ||
         now < kp.seek_notice_until)
@@ -610,9 +621,9 @@ static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
         snprintf(timer, sizeof(timer), "%ld min", (kp.timer_remaining + 59) / 60);
         SDL_Surface *label = kp_cached_text(
             &kp.text_timer, kp.cached_timer, sizeof(kp.cached_timer),
-            kp.font_small, timer, red);
+            kp.font_timer ? kp.font_timer : kp.font_small, timer, red);
         if (label)
-            kp_blit(surface, label, 624 - label->w, 18);
+            kp_blit(surface, label, 620 - label->w, 30 - label->h / 2);
     }
 }
 
@@ -917,6 +928,7 @@ static void kp_shutdown(VideoState *is)
         if (kp.battery_icons[i]) SDL_FreeSurface(kp.battery_icons[i]);
     if (kp.font_small) TTF_CloseFont(kp.font_small);
     if (kp.font_title) TTF_CloseFont(kp.font_title);
+    if (kp.font_timer) TTF_CloseFont(kp.font_timer);
     TTF_Quit();
     av_freep(&kp.clean_pixels);
     kp.initialized = 0;

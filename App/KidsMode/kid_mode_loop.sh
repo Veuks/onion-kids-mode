@@ -92,6 +92,7 @@ pin_backup="$backupdir/pin_backup.json"
 remaining_file=/tmp/kidsmode_remaining
 timesup_since_file=/tmp/kidsmode_timesup_since
 timesup_resume_file="$profile_state_dir/timesup_resume.txt"
+parent_menu_active_file=/tmp/kidsmode_parent_menu_active
 timer_minutes_file=/tmp/kidsmode_timer_minutes
 ticker_pid_file=/tmp/kidmode_ticker.pid
 
@@ -917,7 +918,7 @@ game_is_running() {
         { [ -f "$player_pid" ] && kill -0 "$(cat "$player_pid")" 2> /dev/null; }
 }
 
-mark_timesup_resume() { # $1 = video | game
+mark_timesup_resume() { # $1 = carousel | parent
     resume_kind="$1"
     [ -f "$timesup_resume_file" ] && return 0
     printf '%s\n' "$resume_kind" > "$timesup_resume_file.tmp" &&
@@ -929,12 +930,16 @@ mark_timesup_resume() { # $1 = video | game
 # Non-RetroArch games (ports, standalone) get a plain TERM — best effort.
 save_quit_game() {
     if [ -f "$player_pid" ]; then
-        mark_timesup_resume video
+        # After Time's up, return to the carousel with this media selected;
+        # never restart content behind the parent's back.
+        mark_timesup_resume carousel
         kill "$(cat "$player_pid")" 2> /dev/null
         log "Play time over; video stopped."
         return
     fi
-    mark_timesup_resume game
+    # The game selection is already persisted before launch. Keep that
+    # carousel position, but do not relaunch the game after the parent PIN.
+    mark_timesup_resume carousel
     notify_game "Time's up! Saving your game..."
     sleep 2
     if pgrep retroarch > /dev/null 2>&1; then
@@ -977,6 +982,7 @@ ticker_loop() {
                 date +%s > "$timesup_since_file.tmp"
                 mv -f "$timesup_since_file.tmp" "$timesup_since_file"
             fi
+            [ -f "$parent_menu_active_file" ] && mark_timesup_resume parent
         else
             rm -f "$timesup_since_file"
         fi
@@ -1559,6 +1565,7 @@ switch_kids_profile() {
 # line 3 of the result. Returns 0 = unlock requested, 1 = stay in Kids Mode.
 
 parent_menu() {
+    touch "$parent_menu_active_file"
     while :; do
         rm -f "$uiresult" "$lockfloor_result" "$categories_result"
         lock_val=0
@@ -1635,6 +1642,7 @@ parent_menu() {
 
         if [ "$menu_rc" -ne 5 ] || [ "$(sed -n 1p "$uiresult")" != "MENU" ]; then
             rm -f "$uiresult"
+            rm -f "$parent_menu_active_file"
             return 1
         fi
 
@@ -1644,6 +1652,7 @@ parent_menu() {
             /tmp/kidsmode_video_selection
         case "$menu_action" in
             UNLOCK)
+                rm -f "$parent_menu_active_file"
                 return 0
                 ;;
             NOTIMER)
@@ -1688,6 +1697,7 @@ parent_menu() {
             SWITCHPROFILE)
                 case "$menu_arg" in
                     Main | Guest)
+                        rm -f "$parent_menu_active_file"
                         switch_kids_profile "$menu_arg"
                         ;;
                 esac
@@ -1715,7 +1725,8 @@ disarm() {
     rm -f "$flagfile"
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
         /tmp/kidsmode_media_playing "$timesup_since_file" \
-        "$timesup_resume_file" "$timesup_resume_file.tmp"
+        "$timesup_resume_file" "$timesup_resume_file.tmp" \
+        "$parent_menu_active_file"
     stop_ticker
     wait_for_game_environment
     restore_ra_lock
@@ -1917,6 +1928,8 @@ play_video() {
     # theme. Fall back to Onion's standard Exo 2 face when a theme omits it.
     osd_font="/customer/app/Exo-2-Bold-Italic.ttf"
     osd_font_size=24
+    timer_font="$osd_font"
+    timer_font_size="$osd_font_size"
     battery_fixed=false
     battery_text_align=left
     battery_offset_x=0
@@ -1943,6 +1956,10 @@ play_video() {
             '.batteryPercentage.font // .hint.font // empty' 2> /dev/null)"
         theme_font_size="$(printf '%s' "$effective_theme" | jq -r \
             '.batteryPercentage.size // 24' 2> /dev/null)"
+        theme_timer_font="$(printf '%s' "$effective_theme" | jq -r \
+            '.hint.font // .batteryPercentage.font // empty' 2> /dev/null)"
+        theme_timer_font_size="$(printf '%s' "$effective_theme" | jq -r \
+            '.hint.size // .batteryPercentage.size // 24' 2> /dev/null)"
         battery_fixed="$(printf '%s' "$effective_theme" | jq -r \
             '.batteryPercentage.fixed // false' 2> /dev/null)"
         battery_text_align="$(printf '%s' "$effective_theme" | jq -r \
@@ -1961,6 +1978,17 @@ play_video() {
         case "$theme_font_size" in
             '' | *[!0-9]*) ;;
             *) osd_font_size="$theme_font_size" ;;
+        esac
+        if [ -n "$theme_timer_font" ]; then
+            case "$theme_timer_font" in
+                /*) candidate_timer_font="$theme_timer_font" ;;
+                *) candidate_timer_font="${theme_path%/}/$theme_timer_font" ;;
+            esac
+            [ -r "$candidate_timer_font" ] && timer_font="$candidate_timer_font"
+        fi
+        case "$theme_timer_font_size" in
+            '' | *[!0-9]*) ;;
+            *) timer_font_size="$theme_timer_font_size" ;;
         esac
     fi
     if ! cd "$sysdir"; then
@@ -1993,14 +2021,15 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             VC_OSD_FONT="$osd_font" VC_OSD_FONT_SIZE="$osd_font_size" \
+            VC_TIMER_FONT="$timer_font" VC_TIMER_FONT_SIZE="$timer_font_size" \
             VC_BATTERY_FIXED="$battery_fixed" \
             VC_BATTERY_TEXT_ALIGN="$battery_text_align" \
             VC_BATTERY_OFFSET_X="$battery_offset_x" \
             VC_BATTERY_OFFSET_Y="$battery_offset_y" \
             VC_THEME_PATH="$theme_path" \
+            KIDSPLAY_OSS_AUDIO=1 \
             LD_LIBRARY_PATH="$player_library_path" \
             LD_PRELOAD="$player_preload" SDL_VIDEODRIVER=mini \
-            SDL_AUDIODRIVER=dsp \
             "$kidsplay" -hide_banner -loglevel info -framedrop \
                 -vn -autoexit $seek_args -i "$video" \
                 2> "$duration_log" &
@@ -2013,14 +2042,15 @@ play_video() {
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
             VC_BRIGHTNESS_STATE_FILE="$brightness_state" \
             VC_OSD_FONT="$osd_font" VC_OSD_FONT_SIZE="$osd_font_size" \
+            VC_TIMER_FONT="$timer_font" VC_TIMER_FONT_SIZE="$timer_font_size" \
             VC_BATTERY_FIXED="$battery_fixed" \
             VC_BATTERY_TEXT_ALIGN="$battery_text_align" \
             VC_BATTERY_OFFSET_X="$battery_offset_x" \
             VC_BATTERY_OFFSET_Y="$battery_offset_y" \
             VC_THEME_PATH="$theme_path" \
+            KIDSPLAY_OSS_AUDIO=1 \
             LD_LIBRARY_PATH="$player_library_path" \
             LD_PRELOAD="$player_preload" SDL_VIDEODRIVER=mini \
-            SDL_AUDIODRIVER=dsp \
             "$kidsplay" -hide_banner -loglevel info -framedrop -autoexit \
                 -vf "scale=640:480:force_original_aspect_ratio=decrease,pad=640:480:(ow-iw)/2:(oh-ih)/2" \
                 $seek_args -i "$video" \
@@ -2089,35 +2119,18 @@ disable_timer_and_resume_timesup() {
     state_write 0 0
     update_remaining_now
     start_ticker
-    log "Time's-up PIN accepted; timer disabled and resuming $resume_kind."
+    log "Time's-up PIN accepted; timer disabled; returning to $resume_kind."
 
     case "$resume_kind" in
-        video)
-            if [ -f "$last_video" ]; then
-                active_floor=videos
-                resume_artwork="$(sed -n 1p "$last_artwork_file" 2> /dev/null)"
-                play_video "$last_video" no "$resume_artwork"
-            else
-                log "Time's-up video resume skipped: media file is unavailable."
-            fi
-            ;;
-        game)
-            lg_launch="$(sed -n 1p "$last_game_file" 2> /dev/null)"
-            lg_rompath="$(sed -n 2p "$last_game_file" 2> /dev/null)"
-            if [ -f "$lg_launch" ] && [ -f "$lg_rompath" ]; then
-                active_floor=games
-                build_game_cmd "$lg_launch" "$lg_rompath"
-                state_save games running "$last_video" "$active_folder"
-                run_game_cmd
-                state_save games carousel "$last_video" "$active_folder"
-            else
-                log "Time's-up game resume skipped: launch files are unavailable."
-            fi
+        parent)
+            # Reopen the authenticated parent menu once, without asking for
+            # a second PIN. The main loop consumes this in its next pass.
+            reopen_parent_menu_requested=1
             ;;
         *)
-            # No running-content marker means the timer expired in carousel.
-            # Its floor, folder and selections were already captured from
-            # kidui before the PIN result was processed.
+            # Media and games both return to their saved carousel selection.
+            # Old "video"/"game" markers from an earlier build deliberately
+            # fall through here too, so updating cannot relaunch content.
             ;;
     esac
 }
@@ -2134,7 +2147,7 @@ cmd_run() {
     chmod a+x "$kids_keymon_bin" 2> /dev/null
     chmod a+x "$kidsplay" "$kidsplay_fb_reset" 2> /dev/null
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
-        /tmp/kidsmode_media_playing
+        /tmp/kidsmode_media_playing "$parent_menu_active_file"
     restart_keymon
 
     startup_started_at="$(date +%s)"
@@ -2464,7 +2477,7 @@ cmd_run() {
     restore_blf_lock
     restore_profile_isolation
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
-        /tmp/kidsmode_media_playing
+        /tmp/kidsmode_media_playing "$parent_menu_active_file"
     restore_keymap_override
     rm -f "$game_environment_marker"
     rm -f "$sysdir/cmd_to_run.sh"
@@ -2497,7 +2510,8 @@ cmd_arm() {
     fi
 
     pick_session_timer
-    rm -f "$timesup_resume_file" "$timesup_resume_file.tmp"
+    rm -f "$timesup_resume_file" "$timesup_resume_file.tmp" \
+        "$parent_menu_active_file"
 
     apply_blf_lock
     ensure_fav_shortcut
