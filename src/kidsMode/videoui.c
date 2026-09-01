@@ -3489,12 +3489,12 @@ int main(int argc, char *argv[])
     if (!SDL_InitDefault())
         return 1;
     // SDL 1.2 does not generate held-key events unless repetition is enabled.
-    // Repeats are accepted below for LEFT/RIGHT timer values and for horizontal
-    // navigation on the media carousel. Games, PIN entry and ordinary menus
-    // still require individual presses.
+    // Repeats are accepted below for LEFT/RIGHT timer values and horizontal
+    // navigation on both carousels. PIN entry and ordinary menus still
+    // require individual presses.
     // A single, steady repeat speed keeps long media lists and timer values
     // quick to browse without the abrupt jumps of staged acceleration.
-    SDL_EnableKeyRepeat(350, 75);
+    SDL_EnableKeyRepeat(350, 50);
     writeFloorState();
 
     Screen active_screen = SCREEN_CAROUSEL;
@@ -3678,20 +3678,18 @@ int main(int argc, char *argv[])
             (active_screen == SCREEN_PICKTIMER ||
              (active_screen == SCREEN_MENU &&
               menu_list.active_pos == MENU_ADDTIME));
-        bool media_repeat_context =
-            active_screen == SCREEN_CAROUSEL &&
-            current_floor == FLOOR_VIDEOS;
+        bool carousel_repeat_context = active_screen == SCREEN_CAROUSEL;
         bool timer_value_repeat =
             key_changed && keystate[changed_key] == REPEATING &&
             (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT) &&
             timer_repeat_context;
-        bool media_carousel_repeat =
+        bool carousel_navigation_repeat =
             key_changed && keystate[changed_key] == REPEATING &&
             (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT) &&
-            media_repeat_context;
+            carousel_repeat_context;
         if (key_changed &&
             (keystate[changed_key] == PRESSED || timer_value_repeat ||
-             media_carousel_repeat)) {
+             carousel_navigation_repeat)) {
             pin_last_input = ticks;
             if (active_screen == SCREEN_CAROUSEL)
                 carousel_last_activity = ticks;

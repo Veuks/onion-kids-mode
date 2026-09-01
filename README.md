@@ -245,7 +245,7 @@ file can be decoded. MP4 with H.264 and AAC remains the safest combination.
 
 | Button | Action |
 | --- | --- |
-| LEFT / RIGHT | Browse the current section; hold to auto-scroll through media |
+| LEFT / RIGHT | Browse the current section; hold to auto-scroll through games or media |
 | UP | Move from Games to Videos |
 | DOWN | Move from Videos to Games |
 | A | Launch/resume a game, play/resume a video, or open a folder |
