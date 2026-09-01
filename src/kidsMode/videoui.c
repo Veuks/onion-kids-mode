@@ -2359,16 +2359,19 @@ static void loadArtwork(void)
     }
 
     if (thumbnail_ready && raw->w == target_w && raw->h == target_h) {
-#ifdef PLATFORM_MIYOOMINI
-        /* Cached covers are stored in normal file orientation.  Apply the
-         * Miyoo display correction only to the in-memory copy, exactly once. */
-        rotate180InPlace(raw);
-#endif
         artwork = SDL_DisplayFormatAlpha(raw);
         if (artwork == NULL)
             artwork = raw;
         else
             SDL_FreeSurface(raw);
+#ifdef PLATFORM_MIYOOMINI
+        /* Cached covers are stored in normal file orientation.  Apply the
+         * Miyoo display correction only to the in-memory copy, exactly once.
+         * SDL_SaveBMP writes a 24-bit bitmap; convert it to the 32-bit display
+         * format first because rotate180InPlace deliberately ignores other
+         * pixel layouts. */
+        rotate180InPlace(artwork);
+#endif
         storeVideoArtwork(imgpath, artwork);
         return;
     }
