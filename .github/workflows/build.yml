@@ -44,6 +44,8 @@ jobs:
             "$GITHUB_WORKSPACE/App/KidsMode/bin/kidsplay" \
             "$GITHUB_WORKSPACE/App/KidsMode/bin/fb_reset"
           cp kidui "$GITHUB_WORKSPACE/App/KidsMode/bin/"
+          cp "$GITHUB_WORKSPACE/README.md" \
+            "$GITHUB_WORKSPACE/App/KidsMode/README.md"
           chmod +x "$GITHUB_WORKSPACE/App/KidsMode/bin/kidui" \
             "$GITHUB_WORKSPACE/App/KidsMode/bin/keymon" \
             "$GITHUB_WORKSPACE/App/KidsMode/bin/kidsplay" \
