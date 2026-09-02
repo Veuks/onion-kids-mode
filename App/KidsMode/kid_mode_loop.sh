@@ -1425,6 +1425,11 @@ switch_kids_profile() {
     fi
 
     log "Switching Kids Mode profile: $source_profile -> $target_profile"
+    # The Kids Mode key monitor now persists every brightness step
+    # immediately. Reapply that single global Onion value before replacing
+    # profile directories so neither a temporary dim/off state nor an old
+    # PWM value can leak across the profile boundary.
+    restore_configured_brightness
     wait_for_game_environment
     stop_ticker
 
@@ -1963,7 +1968,6 @@ play_video() {
     battery_text_align=left
     battery_offset_x=0
     battery_offset_y=0
-    accent_color=AE48FF
     theme_path="$(jq -r '.theme // empty' /mnt/SDCARD/system.json \
         2> /dev/null)"
     if [ ! -d "$theme_path" ] &&
@@ -1998,16 +2002,6 @@ play_video() {
             '.batteryPercentage.offsetX // 0' 2> /dev/null)"
         battery_offset_y="$(printf '%s' "$effective_theme" | jq -r \
             '.batteryPercentage.offsetY // 0' 2> /dev/null)"
-        theme_accent_color="$(printf '%s' "$effective_theme" | jq -r \
-            '.currentpage.color // empty' 2> /dev/null)"
-        case "$theme_accent_color" in
-            \#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
-                accent_color="${theme_accent_color#\#}"
-                ;;
-            [0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
-                accent_color="$theme_accent_color"
-                ;;
-        esac
         if [ -n "$theme_font" ]; then
             case "$theme_font" in
                 /*) candidate_font="$theme_font" ;;
@@ -2069,7 +2063,6 @@ play_video() {
             VC_BATTERY_TEXT_ALIGN="$battery_text_align" \
             VC_BATTERY_OFFSET_X="$battery_offset_x" \
             VC_BATTERY_OFFSET_Y="$battery_offset_y" \
-            VC_ACCENT_COLOR="$accent_color" \
             VC_THEME_PATH="$theme_path" \
             LD_LIBRARY_PATH="$player_library_path" \
             LD_PRELOAD="$player_preload" SDL_VIDEODRIVER=mini \
@@ -2091,7 +2084,6 @@ play_video() {
             VC_BATTERY_TEXT_ALIGN="$battery_text_align" \
             VC_BATTERY_OFFSET_X="$battery_offset_x" \
             VC_BATTERY_OFFSET_Y="$battery_offset_y" \
-            VC_ACCENT_COLOR="$accent_color" \
             VC_THEME_PATH="$theme_path" \
             LD_LIBRARY_PATH="$player_library_path" \
             LD_PRELOAD="$player_preload" SDL_VIDEODRIVER=mini \
