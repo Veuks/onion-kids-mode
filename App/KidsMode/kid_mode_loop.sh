@@ -1768,13 +1768,18 @@ prepare_kidui_display() {
 }
 
 run_kidui() {
-    # Apply the same boundary on both sides of every kidui process.  This
-    # covers arbitrary parent-menu sequences, failed PINs, profile switches,
-    # timer changes and content launches without relying on their exit code.
+    # Normalize before every new interface. When kidui returns a PIN, keep its
+    # completed frame visible while the shell verifies it and prepares the
+    # next interface. Clearing immediately after the PIN briefly exposes the
+    # Onion Apps page underneath and, on the Miyoo's second framebuffer page,
+    # that page can appear rotated. The next kidui still gets the normal clean
+    # boundary immediately before it starts.
     prepare_kidui_display
     "$kidui_bin" "$@"
     kidui_status=$?
-    prepare_kidui_display
+    if [ "$(sed -n 1p "$uiresult" 2> /dev/null)" != PIN ]; then
+        prepare_kidui_display
+    fi
     return "$kidui_status"
 }
 
