@@ -75,15 +75,16 @@ V4 display sizes are supported in the code, but feedback is welcome.
    Media section below.
 6. Reinsert the SD card, refresh the Apps list or reboot, then open
    **Apps → Kids Mode**.
-7. On first launch, choose and confirm a four-digit PIN, then select a session
-   timer or choose `OFF`.
+7. On first launch, choose and confirm a four-digit PIN. On the next screen,
+   choose the Main or Guest profile and optionally set a play timer (`OFF` by
+   default). Kids Mode then opens directly on the matching carousel.
 
 Kids Mode remains active after a reboot until it is exited through the
 parent menu.
 
-The environment is chosen automatically from the Onion profile used to launch
-Kids Mode. PIN and timer state are shared under `Saves/KidsMode`; profile-bound
-state is stored under `Saves/KidsMode/Main` or `Saves/KidsMode/Guest`.
+The Main or Guest environment is chosen when Kids Mode starts. PIN and timer
+state are shared under `Saves/KidsMode`; profile-bound state is stored under
+`Saves/KidsMode/Main` or `Saves/KidsMode/Guest`.
 
 After entering the PIN, the parent menu displays **Switch to Main profile** or
 **Switch to Guest profile** when the other Onion profile exists. Switching

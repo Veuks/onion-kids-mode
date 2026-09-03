@@ -36,6 +36,10 @@ backupdir=/mnt/SDCARD/Saves/KidsMode
 source_profile_file="$backupdir/source_profile.txt"
 reopen_parent_menu_requested="${KIDSMODE_REOPEN_PARENT:-0}"
 unset KIDSMODE_REOPEN_PARENT
+profile_selection_done="${KIDSMODE_PROFILE_SELECTED:-0}"
+unset KIDSMODE_PROFILE_SELECTED
+profile_timer_choice="${KIDSMODE_SELECTED_TIMER:-0}"
+unset KIDSMODE_SELECTED_TIMER
 
 # Main and Guest each get an entirely separate kid environment. When Kids
 # Mode is already armed (including after a reboot), the persisted origin is
@@ -1365,29 +1369,42 @@ ensure_fav_shortcut() {
     fi
 }
 
-# --------------------------- session timer picker --------------------------
-# Shown right after arming: LEFT/RIGHT picks OFF / 5 / 10 / ... / 120 minutes
-# (default OFF; must match TIMER_MAX in src/kidsMode/videoui.c). Selecting a
-# value starts a fresh budget for this session.
+# --------------------------- initial session picker ------------------------
+# Kids Mode's Main and Guest environments are fully independent. Let the
+# parent choose the one to enter before saves, favourites and media paths are
+# isolated, and optionally set the session timer on the same screen.
 
-pick_session_timer() {
+pick_start_session() {
     rm -f "$uiresult"
-    run_kidui --pick-timer > "$uilog" 2>&1
+    main_available=0
+    guest_available=0
+    { [ "$source_profile" = Main ] || [ -d /mnt/SDCARD/Saves/MainProfile ]; } &&
+        main_available=1
+    { [ "$source_profile" = Guest ] || [ -d /mnt/SDCARD/Saves/GuestProfile ]; } &&
+        guest_available=1
+    run_kidui --pick-profile --current-profile "$source_profile" \
+        --main-available "$main_available" \
+        --guest-available "$guest_available" > "$uilog" 2>&1
     picker_rc=$?
-
-    picked=0
-    if [ "$picker_rc" -eq 5 ] && [ "$(sed -n 1p "$uiresult")" = "TIMER" ]; then
-        picked="$(sed -n 2p "$uiresult")"
-        case "$picked" in
-            '' | *[!0-9]*) picked=0 ;;
-        esac
-        [ "$picked" -gt 120 ] && picked=120
+    if [ "$picker_rc" -ne 5 ] ||
+       [ "$(sed -n 1p "$uiresult")" != "PROFILE" ]; then
+        rm -f "$uiresult"
+        return 1
     fi
+    picked_profile="$(sed -n 2p "$uiresult")"
+    profile_timer_choice="$(sed -n 3p "$uiresult")"
     rm -f "$uiresult"
-
-    set_timer_minutes "$picked"
-    state_write 0 0 # fresh budget for this session
-update_remaining_now
+    case "$picked_profile" in
+        Main | Guest) ;;
+        *) return 1 ;;
+    esac
+    case "$profile_timer_choice" in
+        '' | *[!0-9]*) profile_timer_choice=0 ;;
+    esac
+    [ "$profile_timer_choice" -gt 120 ] && profile_timer_choice=120
+    [ "$picked_profile" = "$source_profile" ] && return 0
+    export KIDSMODE_SELECTED_TIMER="$profile_timer_choice"
+    switch_kids_profile "$picked_profile" initial
 }
 
 # -------------------------- Onion profile switch ---------------------------
@@ -1399,6 +1416,7 @@ update_remaining_now
 # from the new origin.
 switch_kids_profile() {
     target_profile="$1"
+    initial_switch="${2:-0}"
     [ "$target_profile" != "$source_profile" ] || return 0
 
     case "$source_profile:$target_profile" in
@@ -1444,9 +1462,11 @@ switch_kids_profile() {
         [ -f "$onion_list" ] || continue
         cp -f "$onion_list" "$current_profile/lists/" || {
             log "Profile switch aborted: could not save Onion lists."
-            apply_gambatte_remap_lock
-            apply_profile_isolation
-            start_ticker
+            if [ "$initial_switch" != initial ]; then
+                apply_gambatte_remap_lock
+                apply_profile_isolation
+                start_ticker
+            fi
             return 1
         }
     done
@@ -1473,9 +1493,11 @@ switch_kids_profile() {
         mkdir -p "$recovery_root"
         if ! mv "$parked_profile" "$stale_profile_recovery"; then
             log "Profile switch unavailable: could not preserve stale ${parked_profile##*/}."
-            apply_gambatte_remap_lock
-            apply_profile_isolation
-            start_ticker
+            if [ "$initial_switch" != initial ]; then
+                apply_gambatte_remap_lock
+                apply_profile_isolation
+                start_ticker
+            fi
             infoPanel -t "Kids Mode" -m "The requested Onion profile is unavailable." --auto
             return 1
         fi
@@ -1488,9 +1510,11 @@ switch_kids_profile() {
         [ -n "$stale_profile_recovery" ] &&
             mv "$stale_profile_recovery" "$parked_profile" 2> /dev/null
         log "Profile switch aborted: could not park CurrentProfile."
-        apply_gambatte_remap_lock
-        apply_profile_isolation
-        start_ticker
+        if [ "$initial_switch" != initial ]; then
+            apply_gambatte_remap_lock
+            apply_profile_isolation
+            start_ticker
+        fi
         return 1
     fi
     if ! mv "$incoming_profile" "$current_profile"; then
@@ -1498,9 +1522,11 @@ switch_kids_profile() {
         [ -n "$stale_profile_recovery" ] &&
             mv "$stale_profile_recovery" "$parked_profile" 2> /dev/null
         log "Profile switch rolled back: could not activate $target_profile."
-        apply_gambatte_remap_lock
-        apply_profile_isolation
-        start_ticker
+        if [ "$initial_switch" != initial ]; then
+            apply_gambatte_remap_lock
+            apply_profile_isolation
+            start_ticker
+        fi
         return 1
     fi
 
@@ -1515,9 +1541,11 @@ switch_kids_profile() {
         [ -n "$stale_profile_recovery" ] &&
             mv "$stale_profile_recovery" "$parked_profile" 2> /dev/null
         log "Profile switch rolled back: could not save the active profile."
-        apply_gambatte_remap_lock
-        apply_profile_isolation
-        start_ticker
+        if [ "$initial_switch" != initial ]; then
+            apply_gambatte_remap_lock
+            apply_profile_isolation
+            start_ticker
+        fi
         return 1
     fi
 
@@ -1554,6 +1582,11 @@ switch_kids_profile() {
         /tmp/kidsmode_folder /tmp/kidsmode_folder_history
     sync
     log "Kids Mode profile switched to $target_profile."
+
+    if [ "$initial_switch" = initial ]; then
+        export KIDSMODE_PROFILE_SELECTED=1
+        exec /bin/sh "$appdir/kid_mode_loop.sh" arm
+    fi
 
     # Re-exec rather than mutating dozens of cached profile paths in place.
     # The one-exec environment flag bypasses a second PIN request and returns
@@ -2546,7 +2579,15 @@ cmd_arm() {
         return 1
     fi
 
-    pick_session_timer
+    if [ "$profile_selection_done" != 1 ]; then
+        if ! pick_start_session; then
+            infoPanel -t "Kids Mode" -m "Session setup canceled.\nThe mode was not armed." --auto
+            return 1
+        fi
+    fi
+    set_timer_minutes "$profile_timer_choice"
+    state_write 0 0
+    update_remaining_now
     rm -f "$timesup_resume_file" "$timesup_resume_file.tmp" \
         "$parent_menu_active_file"
 

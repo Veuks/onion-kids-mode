@@ -19,6 +19,7 @@
 //            "MENU" \n "NOTIMER"                (turn the play timer off)
 //            "MENU" \n "SWITCHPROFILE" \n Main|Guest
 //            "TIMER" \n <minutes>               (--pick-timer mode)
+//            "PROFILE" \n Main|Guest \n <minutes> (--pick-profile mode)
 //   exit 7:  "POWEROFF"  (5 minutes after the timer reached zero)
 //   exit 1:  canceled / error / nothing selected (result file removed)
 //
@@ -42,6 +43,8 @@
 //   kidui --pick-timer [--no-off] -t "..."
 //                                  minutes picker; with --no-off B cancels
 //                                  (exit 1) instead of choosing 0
+//   kidui --pick-profile --current-profile Main|Guest
+//                                  startup profile and session-timer picker
 //
 // Play timer: kid_mode_loop.sh's ticker writes the remaining seconds to
 // /tmp/kidmode_remaining. The carousel shows it as a small chip and flips
@@ -109,6 +112,7 @@ typedef enum { SCREEN_CAROUSEL,
                SCREEN_MENU,
                SCREEN_CATEGORIES,
                SCREEN_PICKTIMER,
+               SCREEN_PICKPROFILE,
                SCREEN_CONFIRM_RESTART } Screen;
 
 #define MENU_UNLOCK 0
@@ -3267,6 +3271,31 @@ static void renderPickTimer(const char *title, int minutes, bool no_off)
                              no_off ? "CANCEL" : "NO TIMER");
 }
 
+static void formatProfile(void *self, char *out_label)
+{
+    ListItem *item = (ListItem *)self;
+    sprintf(out_label, "%s", item->value == 0 ? "Main" : "Guest");
+}
+
+static void formatSessionTimer(void *self, char *out_label)
+{
+    ListItem *item = (ListItem *)self;
+    if (item->value == 0)
+        sprintf(out_label, "OFF");
+    else
+        sprintf(out_label, "%d min", item->value * TIMER_STEP);
+}
+
+static void renderPickProfile(List *list)
+{
+    renderBase();
+    theme_renderHeader(screen, "Start Kids Mode", false);
+    theme_renderHeaderBattery(screen, batteryPercentage());
+    theme_renderList(screen, list);
+    theme_renderFooter(screen);
+    theme_renderStandardHint(screen, "START", "CANCEL");
+}
+
 static void flip(void)
 {
     SDL_BlitSurface(screen, NULL, video, NULL);
@@ -3414,12 +3443,16 @@ int main(int argc, char *argv[])
     bool set_pin_mode = false;
     bool menu_mode = false;
     bool pick_timer_mode = false;
+    bool pick_profile_mode = false;
     bool picker_no_off = false;
     bool start_on_pin = false;
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
     int menu_lock_floor = 0;
     char menu_switch_profile[16] = "";
+    char current_profile[16] = "Main";
+    int main_profile_available = 1;
+    int guest_profile_available = 1;
     char pin_title[STR_MAX] = "";
     char select_rompath[STR_MAX] = "";
 
@@ -3430,6 +3463,14 @@ int main(int argc, char *argv[])
             menu_mode = true;
         else if (strcmp(argv[i], "--pick-timer") == 0)
             pick_timer_mode = true;
+        else if (strcmp(argv[i], "--pick-profile") == 0)
+            pick_profile_mode = true;
+        else if (strcmp(argv[i], "--current-profile") == 0 && i + 1 < argc)
+            strncpy(current_profile, argv[++i], sizeof(current_profile) - 1);
+        else if (strcmp(argv[i], "--main-available") == 0 && i + 1 < argc)
+            main_profile_available = atoi(argv[++i]) != 0;
+        else if (strcmp(argv[i], "--guest-available") == 0 && i + 1 < argc)
+            guest_profile_available = atoi(argv[++i]) != 0;
         else if (strcmp(argv[i], "--no-off") == 0)
             picker_no_off = true;
         else if (strcmp(argv[i], "--start-pin") == 0)
@@ -3570,6 +3611,22 @@ int main(int argc, char *argv[])
                             .value = show_stories ? 1 : 0,
                             .action = onStoriesToggle});
 
+    List profile_list = list_create(2, LIST_SMALL);
+    list_addItem(&profile_list,
+                 (ListItem){.label = "Profile",
+                            .item_type = MULTIVALUE,
+                            .value_min = main_profile_available ? 0 : 1,
+                            .value_max = guest_profile_available ? 1 : 0,
+                            .value = strcmp(current_profile, "Guest") == 0 ? 1 : 0,
+                            .value_formatter = formatProfile});
+    list_addItem(&profile_list,
+                 (ListItem){.label = "Play timer",
+                            .item_type = MULTIVALUE,
+                            .value_min = 0,
+                            .value_max = TIMER_MAX / TIMER_STEP,
+                            .value = 0,
+                            .value_formatter = formatSessionTimer});
+
     if (set_pin_mode) {
         active_screen = SCREEN_PIN;
     }
@@ -3585,6 +3642,9 @@ int main(int argc, char *argv[])
             strncpy(pin_title, "Play timer", STR_MAX - 1);
         if (picker_no_off)
             remaining = readRemaining();
+    }
+    else if (pick_profile_mode) {
+        active_screen = SCREEN_PICKPROFILE;
     }
     else {
         loadPersistedFolderSelections();
@@ -3676,6 +3736,8 @@ int main(int argc, char *argv[])
             dirty = true;
         bool timer_repeat_context =
             (active_screen == SCREEN_PICKTIMER ||
+             (active_screen == SCREEN_PICKPROFILE &&
+              profile_list.active_pos == 1) ||
              (active_screen == SCREEN_MENU &&
               menu_list.active_pos == MENU_ADDTIME));
         bool carousel_repeat_context = active_screen == SCREEN_CAROUSEL;
@@ -3825,6 +3887,45 @@ int main(int argc, char *argv[])
                         exit_code = 5;
                         quit = true;
                     }
+                    break;
+                default:
+                    break;
+                }
+            }
+            else if (active_screen == SCREEN_PICKPROFILE) {
+                switch (changed_key) {
+                case SW_BTN_UP:
+                    list_keyUp(&profile_list, false);
+                    dirty = true;
+                    break;
+                case SW_BTN_DOWN:
+                    list_keyDown(&profile_list, false);
+                    dirty = true;
+                    break;
+                case SW_BTN_LEFT:
+                    if (list_keyLeft(&profile_list, false))
+                        dirty = true;
+                    break;
+                case SW_BTN_RIGHT:
+                    if (list_keyRight(&profile_list, false))
+                        dirty = true;
+                    break;
+                case SW_BTN_A:
+                case SW_BTN_START:
+                    {
+                    char minutes_str[16];
+                    snprintf(minutes_str, sizeof(minutes_str), "%d",
+                             profile_list.items[1].value * TIMER_STEP);
+                    writeResult("PROFILE",
+                                profile_list.items[0].value == 0 ? "Main" : "Guest",
+                                minutes_str);
+                    exit_code = 5;
+                    quit = true;
+                    break;
+                    }
+                case SW_BTN_B:
+                    exit_code = 1;
+                    quit = true;
                     break;
                 default:
                     break;
@@ -3981,6 +4082,7 @@ int main(int argc, char *argv[])
 
         // SELECT+START held: parent unlock gesture (any kid-facing screen)
         if (!set_pin_mode && !menu_mode && !pick_timer_mode &&
+            !pick_profile_mode &&
             active_screen != SCREEN_PIN) {
             bool combo_held = keystate[SW_BTN_SELECT] != RELEASED &&
                               keystate[SW_BTN_START] != RELEASED;
@@ -4023,6 +4125,7 @@ int main(int argc, char *argv[])
 
         // Poll the play-timer file and switch screens on expiry/refill
         if (!set_pin_mode && !menu_mode && !pick_timer_mode &&
+            !pick_profile_mode &&
             ticks - last_remaining_poll > REMAINING_POLL_MS) {
             last_remaining_poll = ticks;
             int prev_remaining = remaining;
@@ -4120,6 +4223,9 @@ int main(int argc, char *argv[])
             case SCREEN_PICKTIMER:
                 renderPickTimer(pin_title, menu_timer_minutes, picker_no_off);
                 break;
+            case SCREEN_PICKPROFILE:
+                renderPickProfile(&profile_list);
+                break;
             case SCREEN_CONFIRM_RESTART:
                 renderConfirmRestart(games[current].item.label, remaining);
                 break;
@@ -4172,6 +4278,7 @@ int main(int argc, char *argv[])
         TTF_CloseFont(font_info);
     list_free(&menu_list);
     list_free(&category_list);
+    list_free(&profile_list);
     resources_free();
 
     // NB: deliberately no final clear+flip here — an extra page flip on the
