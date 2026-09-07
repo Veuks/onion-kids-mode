@@ -87,6 +87,8 @@ game_environment_marker="$backupdir/game_environment_ready"
 game_prepare_pid_file=/tmp/kidsmode_game_prepare.pid
 last_game_file="$profile_state_dir/last_game.txt"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidsmode.log
+loop_lock_dir=/tmp/kidsmode_loop.lock
+loop_lock_owner="$loop_lock_dir/owner"
 
 timer_state="$backupdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
 # The PIN also lives in kidmode.json inside the app folder, which an app
@@ -156,6 +158,47 @@ cfg_fav_shortcut=false
 log() {
     mkdir -p "$(dirname "$logfile")"
     echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$logfile"
+}
+
+# Only one launcher loop may own kidui, KidsPlay and the framebuffer.  The
+# Apps launcher already avoids the usual duplicate-launch case, but an atomic
+# lock here also covers races with the boot hook and profile re-execs.  The
+# PID is preserved by exec during a profile switch.  A lock left by a real
+# crash is reclaimed automatically once its former owner no longer exists.
+acquire_loop_lock() {
+    if mkdir "$loop_lock_dir" 2> /dev/null; then
+        printf '%s\n' "$$" > "$loop_lock_owner"
+        return 0
+    fi
+
+    lock_pid="$(sed -n 1p "$loop_lock_owner" 2> /dev/null)"
+    if [ -z "$lock_pid" ]; then
+        # Give a simultaneously starting owner time to publish its PID before
+        # deciding that the directory was left by a crashed process.
+        sleep 1
+        lock_pid="$(sed -n 1p "$loop_lock_owner" 2> /dev/null)"
+    fi
+    case "$lock_pid" in
+        '' | *[!0-9]*) lock_pid="" ;;
+    esac
+
+    # Profile switching re-executes this script without changing its PID.
+    [ "$lock_pid" = "$$" ] && return 0
+
+    if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2> /dev/null; then
+        log "Duplicate Kids Mode launch ignored; loop $lock_pid is already active."
+        return 1
+    fi
+
+    rm -f "$loop_lock_owner"
+    rmdir "$loop_lock_dir" 2> /dev/null
+    if mkdir "$loop_lock_dir" 2> /dev/null; then
+        printf '%s\n' "$$" > "$loop_lock_owner"
+        return 0
+    fi
+
+    log "Duplicate Kids Mode launch ignored while another loop was starting."
+    return 1
 }
 
 # --------------------------- PIN handling ----------------------------------
@@ -2627,6 +2670,8 @@ cmd_arm() {
 
     cmd_run
 }
+
+acquire_loop_lock || exit 0
 
 ensure_config
 load_config_cache || exit 1
