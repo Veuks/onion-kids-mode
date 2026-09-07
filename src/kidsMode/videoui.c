@@ -947,6 +947,38 @@ static void resetEntries(void)
     episode_title_for_index = -1;
 }
 
+// Keep filenames untouched while presenting apostrophes naturally in the UI.
+// Some theme fonts give the straight ASCII apostrophe a very wide advance;
+// using the typographic glyph also lets us discard accidental whitespace
+// immediately following either apostrophe form ("l'  oie" -> "l’oie").
+static void normalizeDisplayTitle(char *text, size_t text_size)
+{
+    char normalized[STR_MAX];
+    size_t source = 0;
+    size_t destination = 0;
+
+    while (text[source] != '\0' && destination + 1 < sizeof(normalized)) {
+        bool straight = text[source] == '\'';
+        bool curly = (unsigned char)text[source] == 0xe2 &&
+                     (unsigned char)text[source + 1] == 0x80 &&
+                     (unsigned char)text[source + 2] == 0x99;
+        if (straight || curly) {
+            if (destination + 3 >= sizeof(normalized))
+                break;
+            normalized[destination++] = (char)0xe2;
+            normalized[destination++] = (char)0x80;
+            normalized[destination++] = (char)0x99;
+            source += straight ? 1 : 3;
+            while (text[source] == ' ' || text[source] == '\t')
+                source++;
+            continue;
+        }
+        normalized[destination++] = text[source++];
+    }
+    normalized[destination] = '\0';
+    snprintf(text, text_size, "%s", normalized);
+}
+
 static void loadFavorites(void)
 {
     FILE *fp = fopen(FAVORITES_PATH, "r");
@@ -965,6 +997,7 @@ static void loadFavorites(void)
             continue;
         if (entry.label[0] == '\0')
             snprintf(entry.label, sizeof(entry.label), "???");
+        normalizeDisplayTitle(entry.label, sizeof(entry.label));
         games[games_count].item = entry;
         games[games_count].is_folder = false;
         games[games_count].hide_label = false;
@@ -1463,6 +1496,7 @@ static void loadVideos(void)
         }
         findArtwork(browse_dir, fullpath, entry.label, is_folder,
                     entry.imgpath, sizeof(entry.imgpath));
+        normalizeDisplayTitle(entry.label, sizeof(entry.label));
         games[games_count].item = entry;
         games[games_count].is_folder = is_folder;
         games[games_count].hide_label = captionless_folder;

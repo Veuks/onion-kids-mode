@@ -2105,7 +2105,7 @@ play_video() {
             LD_LIBRARY_PATH="$player_library_path" \
             LD_PRELOAD="$player_preload" SDL_VIDEODRIVER=mini \
             SDL_AUDIODRIVER=dsp \
-            "$kidsplay" -hide_banner -loglevel info -framedrop \
+            "$kidsplay" -hide_banner -loglevel info -nostats -framedrop \
                 -vn -autoexit $seek_args -i "$video" \
                 2> "$duration_log" &
     else
@@ -2126,7 +2126,8 @@ play_video() {
             LD_LIBRARY_PATH="$player_library_path" \
             LD_PRELOAD="$player_preload" SDL_VIDEODRIVER=mini \
             SDL_AUDIODRIVER=dsp \
-            "$kidsplay" -hide_banner -loglevel info -framedrop -autoexit \
+            "$kidsplay" -hide_banner -loglevel info -nostats -framedrop \
+                -autoexit \
                 -vf "scale=640:480:force_original_aspect_ratio=decrease,pad=640:480:(ow-iw)/2:(oh-ih)/2" \
                 $seek_args -i "$video" \
             2> "$duration_log" &
@@ -2140,6 +2141,27 @@ play_video() {
     player_status=$?
     if [ "$player_status" -ne 0 ]; then
         log "KidsPlay stopped with status $player_status; see $duration_log"
+    fi
+    if [ "$player_status" -eq 139 ]; then
+        # Keep the evidence from the most recent segmentation fault. The
+        # regular KidsPlay logs are replaced at the next launch, whereas this
+        # single crash report remains available until another crash replaces
+        # it (so it cannot slowly fill the SD card).
+        crash_log="/mnt/SDCARD/.tmp_update/logs/kidsplay-crash.log"
+        crash_tmp="/tmp/kidsplay-crash.$$"
+        {
+            printf 'KidsPlay crash\n'
+            printf 'status=%s\n' "$player_status"
+            printf 'media_kind=%s\n' "$media_kind"
+            printf 'media=%s\n' "$video"
+            printf '\n--- kidsplay.log ---\n'
+            [ -r "$duration_log" ] && cat "$duration_log"
+            printf '\n--- kidsplay-vsync.log ---\n'
+            [ -r /mnt/SDCARD/.tmp_update/logs/kidsplay-vsync.log ] &&
+                cat /mnt/SDCARD/.tmp_update/logs/kidsplay-vsync.log
+        } > "$crash_tmp"
+        mv -f "$crash_tmp" "$crash_log"
+        log "Saved KidsPlay crash report to $crash_log"
     fi
     "$kidsplay_fb_reset" 2> /dev/null
     kill "$duration_watcher" 2> /dev/null
