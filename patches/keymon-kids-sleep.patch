@@ -188,12 +188,12 @@ index 64f22a1..967c36e 100644
                          settings_changed = true;
                      }
                      osd_showBrightnessBar(settings.brightness);
-@@ -783,12 +816,14 @@ int main(void)
-                     if (settings_setMute(0, true)) {
-                         settings_changed = true;
-                     }
+@@ -783,12 +816,11 @@ int main(void)
+-                    if (settings_setMute(0, true)) {
+-                        settings_changed = true;
+-                    }
 -                    else if (settings_setVolume(settings.volume + 1, true))
-+                    else if (settings_setVolume(settings.volume + 1, true)) {
++                    if (settings_setVolume(settings.volume + 1, true)) {
 +                        settings_saveSystemProperty("vol", settings.volume);
                          settings_changed = true;
 +                    }
