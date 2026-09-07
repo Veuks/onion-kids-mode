@@ -2156,9 +2156,6 @@ play_video() {
             printf 'media=%s\n' "$video"
             printf '\n--- kidsplay.log ---\n'
             [ -r "$duration_log" ] && cat "$duration_log"
-            printf '\n--- kidsplay-vsync.log ---\n'
-            [ -r /mnt/SDCARD/.tmp_update/logs/kidsplay-vsync.log ] &&
-                cat /mnt/SDCARD/.tmp_update/logs/kidsplay-vsync.log
         } > "$crash_tmp"
         mv -f "$crash_tmp" "$crash_log"
         log "Saved KidsPlay crash report to $crash_log"
