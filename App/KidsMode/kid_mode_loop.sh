@@ -794,8 +794,10 @@ restore_profile_isolation() {
 # While armed, a single press of the MENU button in-game saves and exits
 # straight back to the kid launcher (keymap ingame_single_press = 2,
 # "exit to menu") instead of opening the GameSwitcher overlay, which could
-# expose the parent's recent games. keymon reads keymap.json at startup, so
-# it is restarted after the change. Original keymap restored on unlock.
+# expose the parent's recent games. A long press is deliberately disabled:
+# Onion otherwise vibrates and runs a second exit action after about 700 ms.
+# keymon reads keymap.json at startup, so it is restarted after the change.
+# The original keymap is restored on unlock.
 
 restart_keymon() {
     killall keymon 2> /dev/null
@@ -816,17 +818,19 @@ apply_keymap_override() {
     if [ -f "$keymapcfg" ]; then
         [ -f "$keymapbackup" ] || cp "$keymapcfg" "$keymapbackup"
         tmpkm=/tmp/kidmode_keymap.$$
-        if jq '.ingame_single_press = 2' "$keymapcfg" > "$tmpkm" 2> /dev/null; then
+        if jq '.ingame_single_press = 2 | .ingame_long_press = 0' \
+            "$keymapcfg" > "$tmpkm" 2> /dev/null; then
             mv -f "$tmpkm" "$keymapcfg"
         else
             rm -f "$tmpkm"
         fi
     else
         touch "$keymapnone"
-        printf '{\n    "ingame_single_press": 2\n}\n' > "$keymapcfg"
+        printf '{\n    "ingame_single_press": 2,\n    "ingame_long_press": 0\n}\n' \
+            > "$keymapcfg"
     fi
     restart_keymon
-    log "MENU button set to exit-to-launcher while armed."
+    log "MENU short press set to exit-to-launcher; long press disabled while armed."
 }
 
 restore_keymap_override() {
@@ -2285,7 +2289,10 @@ cmd_run() {
     chmod a+x "$kidsplay" "$kidsplay_fb_reset" 2> /dev/null
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
         /tmp/kidsmode_media_playing "$parent_menu_active_file"
-    restart_keymon
+    # Reapply the complete keymap lock on every launch. This is intentionally
+    # not gated by game_environment_ready: an app update can add a new lock
+    # while Kids Mode is already armed and that persistent marker still exists.
+    apply_keymap_override
 
     startup_started_at="$(date +%s)"
     # This lock was added after some installations were already armed. Their
