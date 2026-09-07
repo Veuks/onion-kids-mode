@@ -1,0 +1,33 @@
+HOW TO CHANGE OR RESET THE PARENT PIN
+=====================================
+
+1. Turn the Miyoo off and insert its SD card into your computer.
+2. Open: App/KidsMode/kidmode.json
+3. Keep the rest of the file unchanged, but replace the three PIN lines with:
+
+    "pin_hash": "",
+    "pin_salt": "",
+    "pin_plain": "1234",
+
+   Replace 1234 with the new four-digit PIN you want to use.
+4. Delete: Saves/KidsMode/pin_backup.json
+5. Safely eject the SD card and start Kids Mode. The new PIN will be saved
+   and will remain shared between the Main and Guest profiles.
+
+
+COMMENT CHANGER OU REINITIALISER LE CODE PIN PARENTAL
+=====================================================
+
+1. Éteignez la Miyoo et insérez sa carte SD dans votre ordinateur.
+2. Ouvrez : App/KidsMode/kidmode.json
+3. Ne modifiez pas le reste du fichier, mais remplacez les trois lignes du
+   code PIN par :
+
+    "pin_hash": "",
+    "pin_salt": "",
+    "pin_plain": "1234",
+
+   Remplacez 1234 par le nouveau code PIN à quatre chiffres de votre choix.
+4. Supprimez : Saves/KidsMode/pin_backup.json
+5. Éjectez proprement la carte SD et lancez Kids Mode. Le nouveau code sera
+   enregistré et restera commun aux profils Main et Guest.

@@ -947,10 +947,10 @@ static void resetEntries(void)
     episode_title_for_index = -1;
 }
 
-// Keep filenames untouched while presenting apostrophes naturally in the UI.
-// Some theme fonts give the straight ASCII apostrophe a very wide advance;
-// using the typographic glyph also lets us discard accidental whitespace
-// immediately following either apostrophe form ("l'  oie" -> "l’oie").
+// Keep filenames untouched while presenting apostrophes consistently in the
+// UI. Some Onion theme fonts give the typographic apostrophe a very wide
+// advance, so display either form as a compact ASCII apostrophe and discard
+// accidental whitespace immediately after it ("l'  oie" -> "l'oie").
 static void normalizeDisplayTitle(char *text, size_t text_size)
 {
     char normalized[STR_MAX];
@@ -963,11 +963,7 @@ static void normalizeDisplayTitle(char *text, size_t text_size)
                      (unsigned char)text[source + 1] == 0x80 &&
                      (unsigned char)text[source + 2] == 0x99;
         if (straight || curly) {
-            if (destination + 3 >= sizeof(normalized))
-                break;
-            normalized[destination++] = (char)0xe2;
-            normalized[destination++] = (char)0x80;
-            normalized[destination++] = (char)0x99;
+            normalized[destination++] = '\'';
             source += straight ? 1 : 3;
             while (text[source] == ' ' || text[source] == '\t')
                 source++;
