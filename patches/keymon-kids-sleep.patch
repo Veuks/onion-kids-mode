@@ -14,7 +14,7 @@ index 64f22a1..967c36e 100644
  
  const int KONAMI_CODE[] = {HW_BTN_UP, HW_BTN_UP, HW_BTN_DOWN, HW_BTN_DOWN,
                             HW_BTN_LEFT, HW_BTN_RIGHT, HW_BTN_LEFT, HW_BTN_RIGHT,
-@@ -68,6 +68,17 @@ void takeScreenshot(void)
+@@ -68,6 +68,18 @@ void takeScreenshot(void)
      settings_setBrightness(settings.brightness, true, false);
  }
  
@@ -22,9 +22,10 @@ index 64f22a1..967c36e 100644
 +{
 +    // Onion volume steps are 5%: 15-17 = 75-85%, 18-20 = 90-100%.
 +    const uint32_t kidsmode_orange = 0x00FF9F43;
-+    uint32_t color = mute ? OSD_MUTE_ON_COLOR
-+                          : (volume >= 18 ? kidsmode_orange
-+                             : volume >= 15 ? OSD_COLOR_YELLOW
++    const uint32_t kidsmode_muted_purple = 0x008044D7;
++    uint32_t color = mute ? kidsmode_muted_purple
++                          : (volume >= 18 ? OSD_COLOR_RED
++                             : volume >= 15 ? kidsmode_orange
 +                                            : OSD_VOLUME_COLOR);
 +    osd_showBar(volume, 20, color);
 +}
