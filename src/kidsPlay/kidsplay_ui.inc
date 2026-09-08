@@ -374,6 +374,13 @@ static void kp_tick(VideoState *is)
     now = SDL_GetTicks();
     kp.paused = is->paused;
     kp_update_status(is, 0);
+    if (kp.seek_notice_until && SDL_TICKS_PASSED(now, kp.seek_notice_until)) {
+        /* A playing video naturally replaces the expired notice on its next
+         * frame. A paused frame does not, so explicitly redraw it cleanly. */
+        kp.seek_notice_until = 0;
+        kp.notice[0] = '\0';
+        is->force_refresh = 1;
+    }
     if (kp.battery_down && kp.timer_remaining > 0) {
         cycle_phase = (int)(((now - kp.battery_cycle_at) / 1000) & 1);
         if (cycle_phase != kp.battery_cycle_phase) {
@@ -561,20 +568,35 @@ static void kp_wrap_header_title(
     }
 }
 
-static void kp_draw_header_title(SDL_Surface *surface)
+static void kp_draw_progress_title(SDL_Surface *surface)
 {
     SDL_Color white = {255, 255, 255, 255};
     char lines[KP_HEADER_TITLE_LINES][512];
-    int i, y = 52;
-    kp_wrap_header_title(lines, KP_W - 32);
+    SDL_Surface *labels[KP_HEADER_TITLE_LINES] = {NULL};
+    int i, line_count = 0, total_height = 0, y;
+    /* Keep the side seek notices fully clear: title lines stay inside the
+     * centered 448 px column, leaving a 96 px safety margin on both sides. */
+    kp_wrap_header_title(lines, KP_W - 192);
     for (i = 0; i < KP_HEADER_TITLE_LINES && lines[i][0]; i++) {
-        SDL_Surface *label = kp_cached_text(
+        labels[i] = kp_cached_text(
             &kp.text_header_title[i], kp.cached_header_title[i],
             sizeof(kp.cached_header_title[i]), kp.font_small, lines[i], white);
-        if (label) {
-            kp_blit(surface, label, (KP_W - label->w) / 2, y);
-            y += label->h - 2;
-        }
+        if (!labels[i])
+            continue;
+        total_height += labels[i]->h;
+        line_count++;
+    }
+    if (!line_count)
+        return;
+    total_height -= (line_count - 1) * 2;
+    /* Keep the final line immediately above the progress labels. Extra
+     * wrapped lines grow upward, so the bar never moves. */
+    y = 424 - total_height;
+    for (i = 0; i < KP_HEADER_TITLE_LINES && lines[i][0]; i++) {
+        if (!labels[i])
+            continue;
+        kp_blit(surface, labels[i], (KP_W - labels[i]->w) / 2, y);
+        y += labels[i]->h - 2;
     }
 }
 
@@ -776,7 +798,7 @@ static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
         now < kp.seek_notice_until) {
         kp_draw_progress(surface);
         if (!kp.audio_only)
-            kp_draw_header_title(surface);
+            kp_draw_progress_title(surface);
     }
     if (kp.notice[0] && now < kp.seek_notice_until) {
         SDL_Surface *notice = kp_cached_text(
@@ -1079,6 +1101,8 @@ static int kp_handle_key(VideoState *is, SDL_KeyboardEvent *key)
     }
     if (sym == SDLK_LCTRL) {
         if (down && !is->paused) {
+            kp.notice[0] = 0;
+            kp.seek_notice_until = 0;
             toggle_pause(is);
             kp_touch(KP_MEDIA_PLAYING, 0);
             kp.progress_until = now + 2000;
