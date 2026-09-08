@@ -434,8 +434,9 @@ static int kidsplay_upload_logs;
 static int kidsplay_present_logged;
 
 static void kp_init(VideoState *is);
-static void kp_capture_clean_texture(SDL_Texture *texture);
+static void kp_capture_uploaded_texture(SDL_Texture *texture);
 static void kp_compose_video(VideoState *is, SDL_Texture *texture);
+static void kp_after_present(VideoState *is);
 static void kp_audio_display(VideoState *is);
 static void kp_shutdown(VideoState *is);
 
@@ -1180,7 +1181,10 @@ static void video_image_display(VideoState *is)
     if (!vp->uploaded) {
         if (upload_texture(&is->vid_texture, vp->frame, &is->img_convert_ctx) < 0)
             return;
-        kp_capture_clean_texture(is->vid_texture);
+        /* The first texture must reach the panel before KidsPlay locks it a
+         * second time for the OSD snapshot.  The Miyoo Mini renderer can
+         * otherwise fail inside its first lock/present transition. */
+        kp_capture_uploaded_texture(is->vid_texture);
         vp->uploaded = 1;
         vp->flip_v = vp->frame->linesize[0] < 0;
     }
@@ -1550,6 +1554,7 @@ static void video_display(VideoState *is)
     else if (is->video_st)
         video_image_display(is);
     SDL_RenderPresent(renderer);
+    kp_after_present(is);
 }
 
 static double get_clock(Clock *c)

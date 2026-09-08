@@ -64,6 +64,7 @@ typedef struct KidsPlayUi {
     int battery_text_align;
     int battery_offset_x;
     int battery_offset_y;
+    int startup_osd_pending;
     int clean_ready;
     int clean_pitch;
     uint8_t *clean_pixels;
@@ -292,10 +293,10 @@ static void kp_init(VideoState *is)
             kp.font_timer = TTF_OpenFont(kp.font_path, timer_size);
     }
     kp.last_activity = kp.last_save = SDL_GetTicks();
-    /* On a fresh player start (including an automatic post-boot resume),
-     * show the title, progress bar and times long enough to confirm what
-     * resumed without requiring a button press. */
-    kp.progress_until = kp.last_activity + 2000;
+    /* For video, arm the automatic OSD only after the first clean frame has
+     * actually been presented. Drawing and re-locking the texture before
+     * that first presentation is unreliable in the Miyoo Mini SDL backend. */
+    kp.startup_osd_pending = !kp.audio_only;
     kp_touch(KP_MEDIA_PLAYING, 1);
     kp_update_status(is, 1);
     kp.initialized = 1;
@@ -849,6 +850,28 @@ static void kp_capture_clean_texture(SDL_Texture *texture)
     kp.clean_pitch = KP_W * 4;
     kp.clean_ready = 1;
     SDL_UnlockTexture(texture);
+}
+
+/* Save every normal video frame for later OSD restoration, except the very
+ * first one. The next decoded frame is captured after startup is armed. */
+static void kp_capture_uploaded_texture(SDL_Texture *texture)
+{
+    if (!kp.startup_osd_pending)
+        kp_capture_clean_texture(texture);
+}
+
+/* Called immediately after SDL_RenderPresent(). Do not lock that texture
+ * again while the custom renderer may still be presenting it. Merely arm the
+ * OSD here; the next decoded frame will be uploaded, captured and decorated
+ * in the normal order. */
+static void kp_after_present(VideoState *is)
+{
+    if (!kp.initialized || kp.audio_only || !kp.startup_osd_pending)
+        return;
+    kp.startup_osd_pending = 0;
+    kp.progress_until = SDL_GetTicks() + 2000;
+    if (is)
+        is->force_refresh = 1;
 }
 
 static void kp_compose_video(VideoState *is, SDL_Texture *texture)
