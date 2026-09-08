@@ -1815,18 +1815,22 @@ prepare_kidui_display() {
 }
 
 run_kidui() {
-    # Normalize before every new interface. When kidui returns a PIN, keep its
-    # completed frame visible while the shell verifies it and prepares the
-    # next interface. Clearing immediately after the PIN briefly exposes the
-    # Onion Apps page underneath and, on the Miyoo's second framebuffer page,
-    # that page can appear rotated. The next kidui still gets the normal clean
-    # boundary immediately before it starts.
+    # Normalize before every new interface. When kidui returns a PIN or a
+    # parent-menu action, keep its completed frame visible while the shell
+    # verifies or applies it. Those actions immediately open another kidui
+    # screen (or return through the explicit Onion cleanup path), so clearing
+    # here and again before that next screen creates two back-to-back
+    # framebuffer resets. On the Miyoo's second page, that rapid hand-off can
+    # re-expose the completed menu rotated by 180 degrees. The next kidui still
+    # receives one clean boundary immediately before it starts.
     prepare_kidui_display
     "$kidui_bin" "$@"
     kidui_status=$?
-    if [ "$(sed -n 1p "$uiresult" 2> /dev/null)" != PIN ]; then
-        prepare_kidui_display
-    fi
+    kidui_result_kind="$(sed -n 1p "$uiresult" 2> /dev/null)"
+    case "$kidui_result_kind" in
+        PIN | MENU) ;;
+        *) prepare_kidui_display ;;
+    esac
     return "$kidui_status"
 }
 
