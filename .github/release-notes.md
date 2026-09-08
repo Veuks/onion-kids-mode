@@ -1,31 +1,38 @@
-# Kids Mode v1.4.0
+# Kids Mode v1.5.0
 
-This release introduces tear-free video playback on the Miyoo Mini Plus and
-completes the migration to the built-in KidsPlay media engine. It also improves
-display stability, carousel presentation and media playback transitions.
+This release improves everyday navigation, playback information, audio
+stability and system reliability. It also adds a simpler session-start screen
+for choosing the Kids Mode profile and play timer before opening the carousel.
 
 ## What's new
 
-- Replaced the previous video presentation path with the integrated KidsPlay
-  engine and synchronized display output.
-- Eliminated horizontal screen tearing during video playback on the Miyoo Mini
-  Plus, including during camera pans, flashes and fast scene changes.
-- Kept the child-safe playback controls, theme OSD, progress bar, elapsed and
-  remaining time, progressive seeking and paused-frame carousel capture.
-- Audio-only files continue to display their artwork and title while playing.
-- Added media duration to carousel artwork. Durations are cached in the
-  background so long files do not slow down folder navigation.
-- Improved media startup and shutdown transitions, including cleaner audio and
-  stable brightness when entering or leaving playback.
-- Improved framebuffer cleanup around the carousel and parent menu to prevent
-  stale, inverted or ghosted screens from reappearing.
-- Corrected cached artwork orientation after returning from media playback.
-- Refined carousel artwork and title spacing while keeping the navigation
-  arrows clear.
-- Parent-menu timer and profile operations now return to the appropriate Kids
-  Mode screen instead of forcing an unnecessary carousel restart.
-- After **Time's up!** is unlocked with the parent PIN, the timer is disabled
-  and Kids Mode returns to the previous carousel position or parent menu.
+- Added a combined startup screen for selecting the Main or Guest profile and
+  an optional play timer before entering Kids Mode.
+- Holding LEFT or RIGHT now auto-scrolls smoothly through game and media
+  carousels and timer values at one consistent, faster speed.
+- Holding Y during media playback shows the remaining play time first, then
+  alternates every second with the battery level. During the final five
+  minutes, the battery appears first because the timer is already visible.
+- Added the media filename to the playback OSD using the active Onion theme
+  font. Long titles are centred above the progress bar and wrap across up to
+  four lines while keeping the seek indicators clear.
+- The full playback OSD is shown for two seconds when a file starts or resumes.
+  Seek indicators now also disappear correctly after two seconds while paused.
+- Improved brightness and volume handling so rapid adjustments no longer
+  restore an outdated value when switching between controls or profiles.
+- Added clearer volume feedback: orange at high volume, red at very high
+  volume and purple while muted. Adjusting the level while muted no longer
+  turns the sound back on.
+- Increased the KidsPlay audio safety buffer and refined audio startup and
+  shutdown to reduce crackling and micro-dropouts during demanding playback.
+- Corrected unwanted spacing after apostrophes in carousel titles.
+- Disabled the in-game MENU long-press action and vibration. A normal short
+  press still saves and returns directly to the carousel.
+- Prevented concurrent Kids Mode instances from competing for the player or
+  framebuffer, improving recovery from interrupted launches and profile
+  changes.
+- Removed obsolete duplicate runtime files and temporary diagnostic logging.
+- Added an included guide for changing or resetting the parent PIN.
 
 ## Included features
 
@@ -37,8 +44,8 @@ display stability, carousel presentation and media playback transitions.
   visibility controls.
 - Nested media folders, inherited artwork, automatic thumbnail caching and
   paused-frame screenshots.
-- Inactivity dimmer, battery display, final-five-minute warning and automatic
-  shutdown after the Time's up screen.
+- Tear-free KidsPlay video output, inactivity dimmer, battery display,
+  final-five-minute warning and automatic shutdown after the Time's up screen.
 
 ## Updating
 
