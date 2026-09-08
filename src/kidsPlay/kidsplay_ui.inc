@@ -17,6 +17,7 @@ extern SDL_Surface *IMG_Load(const char *);
 
 #define KP_W 640
 #define KP_H 480
+#define KP_HEADER_TITLE_LINES 4
 #define KP_DIM_DELAY 30000
 #define KP_OFF_DELAY 45000
 #define KP_DIM_RAW 3
@@ -78,6 +79,7 @@ typedef struct KidsPlayUi {
     SDL_Surface *text_notice;
     SDL_Surface *text_timer;
     SDL_Surface *text_title;
+    SDL_Surface *text_header_title[KP_HEADER_TITLE_LINES];
     TTF_Font *font_small;
     TTF_Font *font_title;
     TTF_Font *font_timer;
@@ -98,6 +100,7 @@ typedef struct KidsPlayUi {
     char cached_notice[16];
     char cached_timer[32];
     char cached_title[512];
+    char cached_header_title[KP_HEADER_TITLE_LINES][512];
 } KidsPlayUi;
 
 static KidsPlayUi kp;
@@ -289,6 +292,10 @@ static void kp_init(VideoState *is)
             kp.font_timer = TTF_OpenFont(kp.font_path, timer_size);
     }
     kp.last_activity = kp.last_save = SDL_GetTicks();
+    /* On a fresh player start (including an automatic post-boot resume),
+     * show the title, progress bar and times long enough to confirm what
+     * resumed without requiring a button press. */
+    kp.progress_until = kp.last_activity + 2000;
     kp_touch(KP_MEDIA_PLAYING, 1);
     kp_update_status(is, 1);
     kp.initialized = 1;
@@ -444,6 +451,131 @@ static SDL_Surface *kp_cached_text(SDL_Surface **cache, char *cached,
     av_strlcpy(cached, text, cached_size);
     *cache = kp_text(font, text, color);
     return *cache;
+}
+
+static int kp_text_width(TTF_Font *font, const char *text)
+{
+    int width = 0;
+    if (!font || !text || TTF_SizeUTF8(font, text, &width, NULL) < 0)
+        return 0;
+    return width;
+}
+
+/* Return the longest UTF-8 prefix that fits, preferring a natural line
+ * break. A hyphen stays at the end of the first line; whitespace does not. */
+static size_t kp_title_break(TTF_Font *font, const char *text, int max_width,
+                             int *keep_separator)
+{
+    char candidate[512];
+    size_t length = strlen(text), offset = 0, fit = 0, natural = 0;
+    int natural_keep = 0;
+    while (offset < length && offset + 1 < sizeof(candidate)) {
+        size_t next = offset + 1;
+        while (next < length &&
+               (((unsigned char)text[next] & 0xc0) == 0x80))
+            next++;
+        memcpy(candidate, text, next);
+        candidate[next] = '\0';
+        if (kp_text_width(font, candidate) > max_width)
+            break;
+        fit = next;
+        if (text[offset] == ' ' || text[offset] == '\t') {
+            natural = offset;
+            natural_keep = 0;
+        } else if (text[offset] == '-' || text[offset] == '_' ||
+                   text[offset] == '.') {
+            natural = next;
+            natural_keep = 1;
+        }
+        offset = next;
+    }
+    if (natural > 0) {
+        *keep_separator = natural_keep;
+        return natural;
+    }
+    *keep_separator = 1;
+    return fit;
+}
+
+static void kp_ellipsize(TTF_Font *font, const char *text, int max_width,
+                         char *out, size_t out_size)
+{
+    char candidate[512];
+    size_t length;
+    av_strlcpy(out, text, out_size);
+    if (kp_text_width(font, out) <= max_width)
+        return;
+    while ((length = strlen(out)) > 0) {
+        do {
+            length--;
+        } while (length > 0 &&
+                 (((unsigned char)out[length] & 0xc0) == 0x80));
+        out[length] = '\0';
+        snprintf(candidate, sizeof(candidate), "%s...", out);
+        if (kp_text_width(font, candidate) <= max_width) {
+            av_strlcpy(out, candidate, out_size);
+            return;
+        }
+    }
+    av_strlcpy(out, "...", out_size);
+}
+
+static void kp_wrap_header_title(
+    char lines[KP_HEADER_TITLE_LINES][512], int max_width)
+{
+    const char *remainder = kp.media_title;
+    size_t split;
+    int i, keep_separator;
+    for (i = 0; i < KP_HEADER_TITLE_LINES; i++)
+        lines[i][0] = '\0';
+    if (!kp.media_title[0] || !kp.font_small)
+        return;
+    for (i = 0; i < KP_HEADER_TITLE_LINES && *remainder; i++) {
+        while (*remainder == ' ' || *remainder == '\t')
+            remainder++;
+        if (!*remainder)
+            break;
+        if (kp_text_width(kp.font_small, remainder) <= max_width) {
+            av_strlcpy(lines[i], remainder, sizeof(lines[i]));
+            break;
+        }
+        if (i == KP_HEADER_TITLE_LINES - 1) {
+            kp_ellipsize(kp.font_small, remainder, max_width,
+                         lines[i], sizeof(lines[i]));
+            break;
+        }
+        keep_separator = 0;
+        split = kp_title_break(kp.font_small, remainder, max_width,
+                               &keep_separator);
+        if (!split) {
+            kp_ellipsize(kp.font_small, remainder, max_width,
+                         lines[i], sizeof(lines[i]));
+            break;
+        }
+        memcpy(lines[i], remainder, split);
+        lines[i][split] = '\0';
+        remainder += split;
+        if (!keep_separator)
+            while (*remainder == ' ' || *remainder == '\t')
+                remainder++;
+    }
+}
+
+static void kp_draw_header_title(SDL_Surface *surface)
+{
+    SDL_Color white = {255, 255, 255, 255};
+    char lines[KP_HEADER_TITLE_LINES][512];
+    int i, y = 52;
+    kp_wrap_header_title(lines, KP_W - 32);
+    for (i = 0; i < KP_HEADER_TITLE_LINES && lines[i][0]; i++) {
+        SDL_Surface *label = kp_cached_text(
+            &kp.text_header_title[i], kp.cached_header_title[i],
+            sizeof(kp.cached_header_title[i]), kp.font_small, lines[i], white);
+        if (label) {
+            kp_blit(surface, label, (KP_W - label->w) / 2, y);
+            y += label->h - 2;
+        }
+    }
 }
 
 static void kp_format_time(long seconds, int remaining, char *out, size_t size)
@@ -641,8 +773,11 @@ static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
     SDL_Color white = {255, 255, 255, 255};
     uint32_t now = SDL_GetTicks();
     if (kp.audio_only || is->paused || now < kp.progress_until ||
-        now < kp.seek_notice_until)
+        now < kp.seek_notice_until) {
         kp_draw_progress(surface);
+        if (!kp.audio_only)
+            kp_draw_header_title(surface);
+    }
     if (kp.notice[0] && now < kp.seek_notice_until) {
         SDL_Surface *notice = kp_cached_text(
             &kp.text_notice, kp.cached_notice, sizeof(kp.cached_notice),
@@ -972,6 +1107,8 @@ static void kp_shutdown(VideoState *is)
     if (kp.text_notice) SDL_FreeSurface(kp.text_notice);
     if (kp.text_timer) SDL_FreeSurface(kp.text_timer);
     if (kp.text_title) SDL_FreeSurface(kp.text_title);
+    for (i = 0; i < KP_HEADER_TITLE_LINES; i++)
+        if (kp.text_header_title[i]) SDL_FreeSurface(kp.text_header_title[i]);
     for (i = 0; i < 6; i++)
         if (kp.battery_icons[i]) SDL_FreeSurface(kp.battery_icons[i]);
     if (kp.font_small) TTF_CloseFont(kp.font_small);

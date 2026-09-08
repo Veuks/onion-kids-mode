@@ -2159,6 +2159,7 @@ play_video() {
         VC_START_SECONDS="$start" VC_POSITION_FILE="$runtime_pos" \
             VC_CHECKPOINT_FILE="$posfile" \
             VC_SCREENSHOT_FILE="$screenshot_file" VC_MEDIA_KIND=video \
+            VC_MEDIA_TITLE="$video_base" \
             VC_DURATION_FILE="$duration_file" \
             VC_BRIGHTNESS_FILE="$brightness_pwm" \
             VC_BRIGHTNESS_RESTORE="$brightness_restore" \
