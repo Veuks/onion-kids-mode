@@ -26,6 +26,13 @@ sections use the active Onion theme and slide smoothly between each other.
   tear-free video playback on the Miyoo Mini Plus.
 - Video and audio durations are prepared in the background and displayed on
   carousel artwork without slowing down navigation.
+- A single startup screen selects the Main or Guest environment and an
+  optional play timer before opening the carousel.
+- Onion-themed playback OSD with elapsed and remaining time, battery and timer
+  information, and centred media titles that wrap across up to four lines.
+- Holding LEFT or RIGHT auto-scrolls through games, media and timer values.
+- Stable mute, volume and brightness handling across rapid adjustments,
+  playback transitions and profile changes.
 - Automatic resume follows the real shutdown state:
   - shut down while playing and that game or video resumes;
   - shut down from a carousel and the same section and selection return;
@@ -267,6 +274,8 @@ returns directly to the Kids Mode carousel. RetroArch configuration and
 dangerous hotkeys are hidden while the mode is active and restored on exit.
 Gambatte's built-in R2 fast-forward shortcut is also disabled for Game Boy and
 Game Boy Color games; R2 remains available normally on other systems.
+Holding MENU does nothing: its long-press action and vibration are disabled
+while Kids Mode is active.
 
 Restarting with X skips Onion's automatic resume state but does not erase
 normal in-game save data.
@@ -309,6 +318,13 @@ During video playback, the same progress line appears while paused, while
 seeking and for two seconds after seeking or resuming. Pressing A while the
 video is already playing also shows it for two seconds.
 
+The media filename is centred immediately above the progress bar using the
+active Onion theme font. Long titles wrap across up to four lines, growing
+upward while preserving clear margins around the left and right seek
+indicators. The complete OSD is also shown for two seconds when a file starts
+or resumes automatically after boot. Seek indicators disappear after two
+seconds in both playback and pause states.
+
 While Y is held during media playback, the top-right indicator shows the
 remaining play-timer value first, then alternates every second with the
 battery level. If no timer is active, only the battery level is displayed.
@@ -316,8 +332,15 @@ During the final five minutes, the timer value is displayed in red.
 Because it is already visible, pressing Y then shows the battery immediately
 before continuing the one-second alternation.
 
-Volume and brightness shortcuts remain usable. Releasing MENU after using a
-combination does not accidentally leave the video.
+Volume and brightness shortcuts remain usable. Their latest value is preserved
+when switching rapidly between the two controls. The volume OSD is orange at
+high levels, red at very high levels and purple while muted. VOL- and VOL+
+still adjust the selected level while muted, but do not restore audible sound;
+mute remains active until it is explicitly toggled off. Releasing MENU after
+using a combination does not accidentally leave the video.
+
+KidsPlay uses an increased audio safety buffer to reduce crackling and brief
+dropouts on demanding files without changing the media's decoded sound.
 
 To create a carousel image from a video, pause with B and press MENU + X + Y.
 Kids Mode saves `Imgs/Video name.bmp` beside that video. A later capture
@@ -364,6 +387,10 @@ real state at shutdown.
 ## PIN reset and recovery
 
 Nothing on the SD card is permanently locked.
+
+The included `App/KidsMode/CHANGE-PIN.txt` guide provides the same PIN-change
+and recovery instructions in a short file that can be read directly from the
+SD card.
 
 - **Forgotten PIN:** edit `App/KidsMode/kidmode.json`, clear `pin_hash`
   and `pin_salt`, and set `pin_plain` to a new four-digit PIN. Also delete
