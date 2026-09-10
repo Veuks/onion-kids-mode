@@ -1996,6 +1996,26 @@ reset_audio_server_after_media() {
         volume="$(/customer/app/jsonval vol 2> /dev/null)"
         case "$volume" in '' | *[!0-9]*) volume=20 ;; esac
         defvol="$(awk -v v="$volume" 'BEGIN { printf "%.0f\n", 48 * (log(1 + v) / log(10)) - 60 }')"
+        audio_state=/proc/mi_modules/mi_ao/mi_ao0
+        current_raw="$(awk '/LineOut/ { if (!seen) { gsub(",", "", $8); print $8; seen=1 } }' "$audio_state" 2> /dev/null)"
+        current_mute="$(awk '/LineOut/ { if (!seen) { gsub(",", "", $8); print $6; seen=1 } }' "$audio_state" 2> /dev/null)"
+        case "$current_raw" in '' | *[!0-9-]*) current_raw="$defvol" ;; esac
+        case "$current_mute" in 0 | 1) ;; *) current_mute=0 ;; esac
+
+        # Fade the idle codec to its minimum and mute it before the server is
+        # stopped. Reopening an unmuted MI_AO device is what produces the
+        # speaker click heard after returning to the carousel.
+        if [ -w "$audio_state" ]; then
+            i=1
+            while [ "$i" -le 8 ]; do
+                fade_raw=$((current_raw + (-60 - current_raw) * i / 8))
+                printf 'set_ao_volume 0 %sdB\n' "$fade_raw" > "$audio_state"
+                printf 'set_ao_volume 1 %sdB\n' "$fade_raw" > "$audio_state"
+                sleep 0.015
+                i=$((i + 1))
+            done
+            printf 'set_ao_mute 1\n' > "$audio_state"
+        fi
 
         # KidsPlay has already closed its libpadsp stream. Onion itself uses a
         # forced stop for this server, which is the most reliable way to clear
@@ -2012,13 +2032,34 @@ reset_audio_server_after_media() {
         rm -f /tmp/audio_fifo_server /tmp/audio_fifo_ioctl_req \
             /tmp/audio_fifo_ioctl_res /tmp/audioserver_quit
 
-        "$miyoodir/app/audioserver" "$defvol" > /dev/null 2>&1 &
+        "$miyoodir/app/audioserver" -60 > /dev/null 2>&1 &
         n=0
         while { ! pgrep audioserver > /dev/null 2>&1 ||
                 [ ! -e /tmp/audio_fifo_server ]; } && [ "$n" -lt 50 ]; do
             sleep 0.1
             n=$((n + 1))
         done
+
+        # Restore the exact hardware state that existed before the reset. If
+        # audio was active, unmute only at -60 dB and fade back up so neither
+        # the server start nor the unmute transition can create a click.
+        if [ -w "$audio_state" ]; then
+            if [ "$current_mute" -eq 0 ]; then
+                printf 'set_ao_mute 0\n' > "$audio_state"
+                i=1
+                while [ "$i" -le 8 ]; do
+                    fade_raw=$((-60 + (current_raw + 60) * i / 8))
+                    printf 'set_ao_volume 0 %sdB\n' "$fade_raw" > "$audio_state"
+                    printf 'set_ao_volume 1 %sdB\n' "$fade_raw" > "$audio_state"
+                    sleep 0.015
+                    i=$((i + 1))
+                done
+            else
+                printf 'set_ao_volume 0 %sdB\n' "$current_raw" > "$audio_state"
+                printf 'set_ao_volume 1 %sdB\n' "$current_raw" > "$audio_state"
+                printf 'set_ao_mute 1\n' > "$audio_state"
+            fi
+        fi
     ) > /dev/null 2>&1 &
 }
 
