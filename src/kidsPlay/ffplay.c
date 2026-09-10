@@ -423,6 +423,13 @@ static int filter_nbthreads = 0;
 /* current context */
 static int is_full_screen;
 static int64_t audio_callback_time;
+static int64_t kidsplay_audio_previous_callback;
+static int64_t kidsplay_audio_expected_callback;
+static int64_t kidsplay_audio_max_callback_gap;
+static unsigned int kidsplay_audio_callbacks;
+static unsigned int kidsplay_audio_late_callbacks;
+static unsigned int kidsplay_audio_decode_misses;
+static int kidsplay_audio_buffer_samples;
 
 #define FF_QUIT_EVENT    (SDL_USEREVENT + 2)
 
@@ -439,6 +446,24 @@ static void kp_compose_video(VideoState *is, SDL_Texture *texture);
 static void kp_after_present(VideoState *is);
 static void kp_audio_display(VideoState *is);
 static void kp_shutdown(VideoState *is);
+
+/* Keep diagnostics in memory during playback and write one compact summary at
+ * shutdown. This avoids SD-card activity in the real-time audio callback. */
+static void kidsplay_log_audio_diagnostics(void)
+{
+    if (kidsplay_audio_callbacks == 0)
+        return;
+    fprintf(stderr,
+            "KidsPlay audio diagnostics: callbacks=%u late=%u "
+            "decode_misses=%u max_gap_us=%lld expected_us=%lld "
+            "buffer_samples=%d\n",
+            kidsplay_audio_callbacks, kidsplay_audio_late_callbacks,
+            kidsplay_audio_decode_misses,
+            (long long)kidsplay_audio_max_callback_gap,
+            (long long)kidsplay_audio_expected_callback,
+            kidsplay_audio_buffer_samples);
+    fflush(stderr);
+}
 
 static void kp_tick(VideoState *is);
 static void kp_progressive_seek(VideoState *is);
@@ -1482,6 +1507,7 @@ static void do_exit(VideoState *is)
     if (is) {
         stream_close(is);
     }
+    kidsplay_log_audio_diagnostics();
     if (renderer)
         SDL_DestroyRenderer(renderer);
     if (window)
@@ -1500,6 +1526,7 @@ static void do_exit(VideoState *is)
 
 static void sigterm_handler(int sig)
 {
+    kidsplay_log_audio_diagnostics();
     kidsplay_fade_audio_to(-60);
     if (kidsplay_audio_guard)
         kidsplay_set_audio_mute(1);
@@ -2641,13 +2668,26 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len)
 {
     VideoState *is = opaque;
     int audio_size, len1;
-    audio_callback_time = av_gettime_relative();
+    int64_t callback_now = av_gettime_relative();
+    int64_t callback_gap = kidsplay_audio_previous_callback > 0
+                         ? callback_now - kidsplay_audio_previous_callback : 0;
+
+    if (callback_gap > kidsplay_audio_max_callback_gap)
+        kidsplay_audio_max_callback_gap = callback_gap;
+    if (callback_gap > 0 && kidsplay_audio_expected_callback > 0 &&
+        callback_gap > kidsplay_audio_expected_callback * 3 / 2)
+        kidsplay_audio_late_callbacks++;
+    kidsplay_audio_previous_callback = callback_now;
+    kidsplay_audio_callbacks++;
+    audio_callback_time = callback_now;
 
     while (len > 0) {
         if (is->audio_buf_index >= is->audio_buf_size) {
            audio_size = audio_decode_frame(is);
            if (audio_size < 0) {
                 /* if error, just output silence */
+               if (!is->paused && !is->abort_request)
+                   kidsplay_audio_decode_misses++;
                is->audio_buf = NULL;
                is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
            } else {
@@ -2742,6 +2782,9 @@ static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb
     av_log(NULL, AV_LOG_INFO,
            "KidsPlay audio output: %d Hz, %d channel(s), %d samples\n",
            spec.freq, spec.channels, spec.samples);
+    kidsplay_audio_buffer_samples = spec.samples;
+    kidsplay_audio_expected_callback =
+        spec.freq > 0 ? 1000000LL * spec.samples / spec.freq : 0;
 
     audio_hw_params->fmt = AV_SAMPLE_FMT_S16;
     audio_hw_params->freq = spec.freq;
