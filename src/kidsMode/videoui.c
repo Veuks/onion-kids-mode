@@ -115,11 +115,11 @@ typedef enum { SCREEN_CAROUSEL,
                SCREEN_PICKPROFILE,
                SCREEN_CONFIRM_RESTART } Screen;
 
-#define MENU_UNLOCK 0
+#define MENU_SWITCHPROFILE 0
 #define MENU_ADDTIME 1
 #define MENU_LOCKFLOOR 2
 #define MENU_CATEGORIES 3
-#define MENU_SWITCHPROFILE 4
+#define MENU_UNLOCK 4
 #define CATEGORY_MOVIES 0
 #define CATEGORY_MUSIC 1
 #define CATEGORY_CARTOONS 2
@@ -3573,9 +3573,19 @@ int main(int argc, char *argv[])
 
     // Parent menu list (native Onion list component)
     List menu_list = list_create(5, LIST_SMALL);
-    list_addItem(&menu_list,
-                 (ListItem){.label = "Exit Kids Mode",
-                            .item_type = ACTION});
+    if (strcmp(menu_switch_profile, "Main") == 0)
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Switch to Main profile",
+                                .item_type = ACTION});
+    else if (strcmp(menu_switch_profile, "Guest") == 0)
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Switch to Guest profile",
+                                .item_type = ACTION});
+    else
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Profile switch unavailable",
+                                .item_type = ACTION,
+                                .disabled = true});
     list_addItem(&menu_list, (ListItem){.label = "Add play time",
                                         .item_type = MULTIVALUE,
                                         .value_min = 0,
@@ -3600,19 +3610,9 @@ int main(int argc, char *argv[])
     list_addItem(&menu_list,
                  (ListItem){.label = "Media folders",
                             .item_type = ACTION});
-    if (strcmp(menu_switch_profile, "Main") == 0)
-        list_addItem(&menu_list,
-                     (ListItem){.label = "Switch to Main profile",
-                                .item_type = ACTION});
-    else if (strcmp(menu_switch_profile, "Guest") == 0)
-        list_addItem(&menu_list,
-                     (ListItem){.label = "Switch to Guest profile",
-                                .item_type = ACTION});
-    else
-        list_addItem(&menu_list,
-                     (ListItem){.label = "Profile switch unavailable",
-                                .item_type = ACTION,
-                                .disabled = true});
+    list_addItem(&menu_list,
+                 (ListItem){.label = "Exit Kids Mode",
+                            .item_type = ACTION});
 
     List category_list = list_create(5, LIST_SMALL);
     list_addItem(&category_list,
