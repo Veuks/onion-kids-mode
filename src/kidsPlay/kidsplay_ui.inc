@@ -1024,10 +1024,11 @@ static int kp_handle_key(VideoState *is, SDL_KeyboardEvent *key)
     if (down)
         kp.last_activity = now;
     if ((kp.audio_only || is->paused) && kp.backlight_stage != 0) {
-        /* Match the carousel policy: MENU is the only KidsPlay key that
-         * restores a dimmed or black screen. POWER is handled by Onion's
-         * Kids Mode keymon. Every other media control is swallowed. */
-        if (down && sym == SDLK_ESCAPE)
+        /* Match the carousel policy: any key restores a merely dimmed
+         * display, but once fully black only MENU does. POWER remains
+         * handled by Onion's Kids Mode keymon. The waking media key is
+         * swallowed so it cannot perform a second action at the same time. */
+        if (down && (kp.backlight_stage == 1 || sym == SDLK_ESCAPE))
             kp_restore_backlight();
         return 1;
     }

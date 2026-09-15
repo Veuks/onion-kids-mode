@@ -3750,15 +3750,16 @@ int main(int argc, char *argv[])
             carousel_last_activity = ticks;
         }
 
-        // When the carousel is dimmed or black, MENU is the only ordinary
-        // button that restores the backlight. Every other ordinary button
-        // is swallowed so it cannot act behind a black screen. POWER is
-        // handled separately by Onion's Kids Mode keymon.
+        // While merely dimmed, any ordinary button restores the backlight.
+        // Once fully black, only MENU does; POWER is handled separately by
+        // Onion's Kids Mode keymon. The waking press is always swallowed so
+        // it cannot also act on the carousel behind the dimmed display.
         if (key_changed && active_screen == SCREEN_CAROUSEL &&
             carousel_backlight_stage != 0 &&
             keystate[changed_key] == PRESSED &&
             changed_key != SW_BTN_POWER) {
-            if (changed_key == SW_BTN_MENU) {
+            if (carousel_backlight_stage == 1 ||
+                changed_key == SW_BTN_MENU) {
                 restoreCarouselBacklight();
                 carousel_last_activity = ticks;
             }
