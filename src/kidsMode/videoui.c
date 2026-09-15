@@ -3750,15 +3750,18 @@ int main(int argc, char *argv[])
             carousel_last_activity = ticks;
         }
 
-        // When the carousel is dimmed or black, the first ordinary button
-        // only restores the backlight. POWER is never consumed here: Onion
-        // keeps its normal short-press sleep and wake behaviour.
+        // When the carousel is dimmed or black, MENU is the only ordinary
+        // button that restores the backlight. Every other ordinary button
+        // is swallowed so it cannot act behind a black screen. POWER is
+        // handled separately by Onion's Kids Mode keymon.
         if (key_changed && active_screen == SCREEN_CAROUSEL &&
             carousel_backlight_stage != 0 &&
             keystate[changed_key] == PRESSED &&
             changed_key != SW_BTN_POWER) {
-            restoreCarouselBacklight();
-            carousel_last_activity = ticks;
+            if (changed_key == SW_BTN_MENU) {
+                restoreCarouselBacklight();
+                carousel_last_activity = ticks;
+            }
             keystate[changed_key] = RELEASED;
             key_changed = false;
         }
