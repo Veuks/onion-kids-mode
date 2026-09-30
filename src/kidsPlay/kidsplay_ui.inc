@@ -685,7 +685,7 @@ static void kp_draw_progress(SDL_Surface *surface)
 static int kp_battery_index(void)
 {
     if (kp.charging) return 5;
-    if (kp.battery < 5) return 0;
+    if (kp.battery <= 5) return 0;
     if (kp.battery < 30) return 1;
     if (kp.battery < 60) return 2;
     if (kp.battery < 90) return 3;
@@ -794,7 +794,7 @@ static int kp_overlay_visible(VideoState *is)
     uint32_t now = SDL_GetTicks();
     return kp.audio_only || is->paused || now < kp.progress_until ||
            now < kp.seek_notice_until || kp.battery_down || kp.charging ||
-           (!kp.charging && kp.battery < 5) ||
+           (!kp.charging && kp.battery <= 5) ||
            (kp.timer_remaining > 0 && kp.timer_remaining <= 300);
 }
 
@@ -816,7 +816,7 @@ static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
             kp_blit(surface, notice, kp.seek_forward ? 624 - notice->w : 16,
                     398);
     }
-    if (!kp.charging && kp.battery < 5) {
+    if (!kp.charging && kp.battery <= 5) {
         // A critical battery is always visible and has priority over the
         // final-five-minute timer. Unlike Onion's warning it stays fixed,
         // using the active theme's empty-battery icon and percentage.

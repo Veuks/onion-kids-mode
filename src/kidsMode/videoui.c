@@ -2604,9 +2604,10 @@ static int carousel_battery_percentage;
 // BATTERY_CHARGING is used for the icon without hiding the percentage. Keeping
 // the composition inside one transparent surface makes charging pixel-for-
 // pixel identical to the normal gauge and avoids direct-TTF white rectangles.
-static SDL_Surface *chargingBatterySurface(int percentage)
+static SDL_Surface *batterySurfaceWithIcon(int percentage,
+                                           ThemeImages icon_request)
 {
-    SDL_Surface *icon = resource_getSurface(BATTERY_CHARGING);
+    SDL_Surface *icon = resource_getSurface(icon_request);
     TTF_Font *font = resource_getFont(BATTERY);
     BatteryPercentage_s *style = &theme()->batteryPercentage;
     if (icon == NULL || font == NULL)
@@ -2689,12 +2690,22 @@ static SDL_Surface *chargingBatterySurface(int percentage)
     return image;
 }
 
+static SDL_Surface *chargingBatterySurface(int percentage)
+{
+    return batterySurfaceWithIcon(percentage, BATTERY_CHARGING);
+}
+
+static SDL_Surface *criticalBatterySurface(int percentage)
+{
+    return batterySurfaceWithIcon(percentage, BATTERY_0);
+}
+
 // Small "12 min" chip in the top-right corner (where MainUI keeps its
 // battery), switching to the theme accent for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
     bool critical_battery = !carousel_battery_charging &&
-                            carousel_battery_percentage < 5;
+                            carousel_battery_percentage <= 5;
     bool battery_peek = keystate[SW_BTN_Y] != RELEASED ||
                         carousel_battery_charging || critical_battery;
     if (remaining < 0 && !battery_peek)
@@ -2711,6 +2722,16 @@ static void renderTimeChip(int remaining)
         {
             SDL_Surface *batt =
                 chargingBatterySurface(carousel_battery_percentage);
+            if (batt != NULL) {
+                SDL_Rect pos = {(int)(590.0 * g_scale) - batt->w / 2,
+                                (int)(30.0 * g_scale) - batt->h / 2};
+                SDL_BlitSurface(batt, NULL, screen, &pos);
+                SDL_FreeSurface(batt);
+            }
+        }
+        else if (critical_battery) {
+            SDL_Surface *batt =
+                criticalBatterySurface(carousel_battery_percentage);
             if (batt != NULL) {
                 SDL_Rect pos = {(int)(590.0 * g_scale) - batt->w / 2,
                                 (int)(30.0 * g_scale) - batt->h / 2};

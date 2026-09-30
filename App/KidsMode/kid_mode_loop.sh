@@ -101,11 +101,10 @@ timesup_resume_file="$profile_state_dir/timesup_resume.txt"
 parent_menu_active_file=/tmp/kidsmode_parent_menu_active
 timer_minutes_file=/tmp/kidsmode_timer_minutes
 ticker_pid_file=/tmp/kidmode_ticker.pid
-onion_battery_warning_flag="$sysdir/config/.noBatteryWarning"
-# Remember whether Kids Mode created Onion's opt-out flag.  This marker lives
-# outside the replaceable app folder and survives a reboot while Kids Mode is
-# armed, but never claims a flag that the parent had already enabled.
-onion_battery_warning_marker="$backupdir/no_battery_warning.created"
+onion_battery_display_flag=/tmp/hasBatteryDisplay
+onion_battery_display_marker=/tmp/kidsmode_hasBatteryDisplay_created
+legacy_battery_warning_flag="$sysdir/config/.noBatteryWarning"
+legacy_battery_warning_marker="$backupdir/no_battery_warning.created"
 
 # kidui reports results via this file, NOT stdout — the device's SDL/driver
 # stack prints noise on stdout, which broke first-line parsing on hardware.
@@ -823,24 +822,37 @@ restart_keymon() {
 # owns the screen.  Games keep Onion's warning because RetroArch has no copy
 # of the themed header gauge.
 suppress_onion_battery_warning() {
-    mkdir -p "$backupdir" "$sysdir/config"
-    if [ -f "$onion_battery_warning_marker" ]; then
-        touch "$onion_battery_warning_flag"
-    elif [ ! -e "$onion_battery_warning_flag" ]; then
-        touch "$onion_battery_warning_flag"
-        touch "$onion_battery_warning_marker"
+    # One test build used Onion's deprecated persistent opt-out. Remove it
+    # only when its Kids Mode ownership marker proves that we created it;
+    # never alter a parent's pre-existing preference.
+    if [ -f "$legacy_battery_warning_marker" ]; then
+        rm -f "$legacy_battery_warning_flag" \
+            "$legacy_battery_warning_marker"
+    fi
+    # batmon checks this temporary flag continuously and immediately retires
+    # its framebuffer warning thread. Unlike the deprecated configuration
+    # flag, Onion's settings saver never removes it during media playback.
+    if [ -f "$onion_battery_display_marker" ]; then
+        touch "$onion_battery_display_flag"
+    elif [ ! -e "$onion_battery_display_flag" ]; then
+        touch "$onion_battery_display_flag"
+        touch "$onion_battery_display_marker"
     fi
 }
 
 allow_onion_battery_warning_for_game() {
-    [ -f "$onion_battery_warning_marker" ] &&
-        rm -f "$onion_battery_warning_flag"
+    [ -f "$onion_battery_display_marker" ] &&
+        rm -f "$onion_battery_display_flag"
 }
 
 restore_onion_battery_warning() {
-    if [ -f "$onion_battery_warning_marker" ]; then
-        rm -f "$onion_battery_warning_flag" \
-            "$onion_battery_warning_marker"
+    if [ -f "$onion_battery_display_marker" ]; then
+        rm -f "$onion_battery_display_flag" \
+            "$onion_battery_display_marker"
+    fi
+    if [ -f "$legacy_battery_warning_marker" ]; then
+        rm -f "$legacy_battery_warning_flag" \
+            "$legacy_battery_warning_marker"
     fi
 }
 
