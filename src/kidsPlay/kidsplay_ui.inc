@@ -371,10 +371,16 @@ static void kp_tick(VideoState *is)
 {
     uint32_t now;
     int cycle_phase;
+    int old_battery;
+    int old_charging;
     kp_init(is);
     now = SDL_GetTicks();
     kp.paused = is->paused;
+    old_battery = kp.battery;
+    old_charging = kp.charging;
     kp_update_status(is, 0);
+    if (old_battery != kp.battery || old_charging != kp.charging)
+        is->force_refresh = 1;
     if (kp.seek_notice_until && SDL_TICKS_PASSED(now, kp.seek_notice_until)) {
         /* A playing video naturally replaces the expired notice on its next
          * frame. A paused frame does not, so explicitly redraw it cleanly. */
@@ -788,6 +794,7 @@ static int kp_overlay_visible(VideoState *is)
     uint32_t now = SDL_GetTicks();
     return kp.audio_only || is->paused || now < kp.progress_until ||
            now < kp.seek_notice_until || kp.battery_down || kp.charging ||
+           (!kp.charging && kp.battery < 5) ||
            (kp.timer_remaining > 0 && kp.timer_remaining <= 300);
 }
 
@@ -809,7 +816,12 @@ static void kp_draw_overlay(SDL_Surface *surface, VideoState *is)
             kp_blit(surface, notice, kp.seek_forward ? 624 - notice->w : 16,
                     398);
     }
-    if (kp.battery_down) {
+    if (!kp.charging && kp.battery < 5) {
+        // A critical battery is always visible and has priority over the
+        // final-five-minute timer. Unlike Onion's warning it stays fixed,
+        // using the active theme's empty-battery icon and percentage.
+        kp_draw_battery(surface);
+    } else if (kp.battery_down) {
         // Normally Y shows the timer first. During the final five minutes the
         // red timer is already permanently visible, so Y shows the battery
         // immediately instead, then continues alternating every second.

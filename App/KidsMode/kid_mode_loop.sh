@@ -101,6 +101,11 @@ timesup_resume_file="$profile_state_dir/timesup_resume.txt"
 parent_menu_active_file=/tmp/kidsmode_parent_menu_active
 timer_minutes_file=/tmp/kidsmode_timer_minutes
 ticker_pid_file=/tmp/kidmode_ticker.pid
+onion_battery_warning_flag="$sysdir/config/.noBatteryWarning"
+# Remember whether Kids Mode created Onion's opt-out flag.  This marker lives
+# outside the replaceable app folder and survives a reboot while Kids Mode is
+# armed, but never claims a flag that the parent had already enabled.
+onion_battery_warning_marker="$backupdir/no_battery_warning.created"
 
 # kidui reports results via this file, NOT stdout — the device's SDL/driver
 # stack prints noise on stdout, which broke first-line parsing on hardware.
@@ -813,6 +818,32 @@ restart_keymon() {
     fi
 }
 
+# kidui and KidsPlay render their own stable, themed critical-battery gauge.
+# Disable Onion's separate flashing image only while one of those interfaces
+# owns the screen.  Games keep Onion's warning because RetroArch has no copy
+# of the themed header gauge.
+suppress_onion_battery_warning() {
+    mkdir -p "$backupdir" "$sysdir/config"
+    if [ -f "$onion_battery_warning_marker" ]; then
+        touch "$onion_battery_warning_flag"
+    elif [ ! -e "$onion_battery_warning_flag" ]; then
+        touch "$onion_battery_warning_flag"
+        touch "$onion_battery_warning_marker"
+    fi
+}
+
+allow_onion_battery_warning_for_game() {
+    [ -f "$onion_battery_warning_marker" ] &&
+        rm -f "$onion_battery_warning_flag"
+}
+
+restore_onion_battery_warning() {
+    if [ -f "$onion_battery_warning_marker" ]; then
+        rm -f "$onion_battery_warning_flag" \
+            "$onion_battery_warning_marker"
+    fi
+}
+
 apply_keymap_override() {
     mkdir -p "$backupdir"
     if [ -f "$keymapcfg" ]; then
@@ -1289,9 +1320,11 @@ run_game_cmd() {
     [ -n "$run_rompath" ] && playActivity start "$run_rompath"
 
     log "launching: $run_cmd"
+    allow_onion_battery_warning_for_game
     cd /mnt/SDCARD/RetroArch || cd "$appdir"
     TZ="$tz_value" sh "$sysdir/cmd_to_run.sh"
     run_retval=$?
+    suppress_onion_battery_warning
     log "game exited with $run_retval"
 
     if [ "$changed_res" -eq 1 ]; then
@@ -1846,6 +1879,7 @@ disarm() {
     restore_gambatte_remap_lock
     restore_blf_lock
     restore_profile_isolation
+    restore_onion_battery_warning
     restore_keymap_override
     restore_configured_brightness
     rm -f "$game_environment_marker"
@@ -2286,6 +2320,7 @@ cmd_run() {
        [ ! -f "$kidsplay_vsync" ] || [ ! -f "$kidsplay_fb_reset" ]; then
         log "Kids Mode runtime incomplete; disarming."
         rm -f "$flagfile"
+        restore_onion_battery_warning
         sync
         return 1
     fi
@@ -2294,6 +2329,9 @@ cmd_run() {
     chmod a+x "$kidsplay" "$kidsplay_fb_reset" 2> /dev/null
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
         /tmp/kidsmode_media_playing "$parent_menu_active_file"
+    # Suppress Onion's flashing low-battery image before the Kids Mode keymon
+    # and first carousel are started. Kids Mode supplies its own fixed gauge.
+    suppress_onion_battery_warning
     # Reapply the complete keymap lock on every launch. This is intentionally
     # not gated by game_environment_ready: an app update can add a new lock
     # while Kids Mode is already armed and that persistent marker still exists.
@@ -2627,6 +2665,7 @@ cmd_run() {
     restore_profile_isolation
     rm -f /tmp/kidsmode_carousel_dimmed /tmp/kidsmode_media_dimmed \
         /tmp/kidsmode_media_playing "$parent_menu_active_file"
+    restore_onion_battery_warning
     restore_keymap_override
     rm -f "$game_environment_marker"
     rm -f "$sysdir/cmd_to_run.sh"

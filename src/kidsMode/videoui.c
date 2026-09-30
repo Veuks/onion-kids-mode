@@ -2693,8 +2693,10 @@ static SDL_Surface *chargingBatterySurface(int percentage)
 // battery), switching to the theme accent for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
+    bool critical_battery = !carousel_battery_charging &&
+                            carousel_battery_percentage < 5;
     bool battery_peek = keystate[SW_BTN_Y] != RELEASED ||
-                        carousel_battery_charging;
+                        carousel_battery_charging || critical_battery;
     if (remaining < 0 && !battery_peek)
         return;
 
