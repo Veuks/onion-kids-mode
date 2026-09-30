@@ -1868,6 +1868,10 @@ run_kidui() {
     # framebuffer resets. On the Miyoo's second page, that rapid hand-off can
     # re-expose the completed menu rotated by 180 degrees. The next kidui still
     # receives one clean boundary immediately before it starts.
+    # resources_free() in each previous kidui process removes Onion's shared
+    # hasBatteryDisplay flag. Reassert it at every UI boundary so batmon never
+    # starts its own flashing warning between two Kids Mode screens.
+    suppress_onion_battery_warning
     prepare_kidui_display
     "$kidui_bin" "$@"
     kidui_status=$?
@@ -2045,6 +2049,10 @@ watch_media_duration() {
 play_video() {
     video="$1" fresh="$2" artwork_file="$3"
     [ -f "$video" ] || return 1
+    # The carousel has just exited and its Onion theme cleanup removes the
+    # shared battery-display flag. Restore it before KidsPlay starts; otherwise
+    # batmon draws Onion's flashing warning behind KidsPlay's fixed gauge.
+    suppress_onion_battery_warning
     mkdir -p "$positions"
     video_dir="${video%/*}"
     video_name="${video##*/}"
