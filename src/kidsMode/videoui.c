@@ -3852,6 +3852,22 @@ int main(int argc, char *argv[])
             rememberFolderInMemory(folderBrowsePath(), video_select_path,
                                    false);
         loadCurrentFloor();
+
+        // An empty floor must not prevent Kids Mode from opening when the
+        // other floor contains usable content. Respect an explicit parent
+        // lock, but otherwise start directly on the non-empty floor.
+        if (games_count == 0 && !floor_locked) {
+            ContentFloor requested_floor = current_floor;
+            current_floor = current_floor == FLOOR_GAMES
+                                ? FLOOR_VIDEOS
+                                : FLOOR_GAMES;
+            loadCurrentFloor();
+            if (games_count == 0) {
+                current_floor = requested_floor;
+                loadCurrentFloor();
+            }
+        }
+
         fprintf(stderr, "kidui: loaded %d entries on %s floor\n",
                 games_count,
                 current_floor == FLOOR_VIDEOS ? "VIDEOS" : "GAMES");

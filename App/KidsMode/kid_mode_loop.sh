@@ -2740,13 +2740,6 @@ cmd_arm() {
         return 1
     fi
 
-    fav_count=0
-    [ -f "$favfile" ] && fav_count=$(grep -c "rompath" "$favfile" 2> /dev/null)
-    if [ "$fav_count" -eq 0 ]; then
-        infoPanel -t "Kids Mode" -m "No favorites found.\nAdd some favorites first,\nthen try again." --auto
-        return 1
-    fi
-
     if ! install_hook; then
         infoPanel -t "Kids Mode" -m "kidmode_boot.sh is missing.\nReinstall Kids Mode." --auto
         return 1
