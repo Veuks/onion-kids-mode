@@ -86,6 +86,7 @@ profile_isolation_marker="$backupdir/profile_isolation_active"
 game_environment_marker="$backupdir/game_environment_ready"
 game_prepare_pid_file=/tmp/kidsmode_game_prepare.pid
 last_game_file="$profile_state_dir/last_game.txt"
+last_media_index="$profile_state_dir/last_media.tsv"
 logfile=/mnt/SDCARD/.tmp_update/logs/kidsmode.log
 loop_lock_dir=/tmp/kidsmode_loop.lock
 loop_lock_owner="$loop_lock_dir/owner"
@@ -142,6 +143,7 @@ export PATH="$sysdir/bin:$PATH"
 export KIDSMODE_MEDIA_DIR="$videosdir"
 export KIDSMODE_FOLDER_SELECTIONS_DIR="$folder_selections_dir"
 export KIDSMODE_ARTWORK_CACHE_DIR="$artwork_cache_dir"
+export KIDSMODE_LAST_MEDIA_INDEX="$last_media_index"
 
 mkdir -p "$backupdir" "$profile_state_dir" "$positions" \
     "$folder_selections_dir" "$artwork_cache_dir" "$videosdir/Imgs"
@@ -2023,6 +2025,37 @@ ensure_audio_server() {
     [ -e "$audio_fifo" ]
 }
 
+# Remember the last media that was actually launched in each folder. This is
+# deliberately separate from the browsing selection: moving over a cover must
+# not move the visual "last played" marker. The index belongs to the active
+# Onion profile through profile_state_dir.
+remember_last_media() {
+    media_folder="$1"
+    media_item="$2"
+    [ -n "$media_folder" ] || media_folder="$videosdir"
+    [ -n "$media_item" ] || return 0
+    case "$media_item" in
+        "$media_folder"/*)
+            media_parent="${media_item%/*}"
+            [ "$media_parent" = "$media_folder" ] || return 0
+            ;;
+        *) return 0 ;;
+    esac
+
+    mkdir -p "$profile_state_dir"
+    last_media_tmp="$last_media_index.tmp"
+    : > "$last_media_tmp" || return 0
+    tab_char="$(printf '\t')"
+    if [ -f "$last_media_index" ]; then
+        while IFS="$tab_char" read -r indexed_folder indexed_media; do
+            [ "$indexed_folder" = "$media_folder" ] ||
+                printf '%s\t%s\n' "$indexed_folder" "$indexed_media" >> "$last_media_tmp"
+        done < "$last_media_index"
+    fi
+    printf '%s\t%s\n' "$media_folder" "$media_item" >> "$last_media_tmp"
+    mv -f "$last_media_tmp" "$last_media_index"
+}
+
 watch_media_duration() {
     duration_log="$1" duration_output="$2" watched_pid="$3"
     tries=0
@@ -2466,6 +2499,11 @@ cmd_run() {
             set -- "$@" --game-select "$game_select_path"
         [ -n "$video_select_path" ] &&
             set -- "$@" --video-select "$video_select_path"
+        if [ -f "$last_game_file" ]; then
+            last_played_game="$(sed -n 2p "$last_game_file")"
+            [ -n "$last_played_game" ] &&
+                set -- "$@" --last-game "$last_played_game"
+        fi
         [ -n "$active_folder" ] && set -- "$@" --folder "$active_folder"
         [ "$cfg_lock_current_floor" = true ] && set -- "$@" --floor-locked
         refresh_category_values
@@ -2579,6 +2617,8 @@ cmd_run() {
                         last_artwork="$(sed -n 3p "$uiresult")"
                         printf '%s\n' "$last_artwork" > "$last_artwork_file"
                         printf '%s\n' "$last_video" > "$video_selection_file"
+                        remember_last_media \
+                            "${active_folder:-$videosdir}" "$last_video"
                         play_video "$last_video" \
                             "$([ "$sel_verb" = RESTART ] && echo yes || echo no)" \
                             "$last_artwork"

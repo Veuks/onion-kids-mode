@@ -333,6 +333,8 @@ static char video_thumbnail_cache_dir[STR_MAX] =
     DEFAULT_VIDEO_THUMBNAIL_CACHE_DIR;
 static char game_select_path[STR_MAX] = "";
 static char video_select_path[STR_MAX] = "";
+static char last_game_path[STR_MAX] = "";
+static char last_media_index_path[STR_MAX] = "";
 static int content_offset_y = 0;
 static bool floor_locked = false;
 static bool show_stories = true;
@@ -352,6 +354,10 @@ typedef struct {
     char folder[STR_MAX];
     char selection[STR_MAX];
 } FolderSelectionMemory;
+typedef struct {
+    char folder[STR_MAX];
+    char media[STR_MAX];
+} LastMediaMemory;
 typedef struct {
     char path[STR_MAX];
     bool has_media;
@@ -375,6 +381,8 @@ typedef struct {
 } VideoListCacheEntry;
 static FolderSelectionMemory folder_memory[MAX_FOLDER_MEMORY];
 static int folder_memory_count;
+static LastMediaMemory last_media_memory[MAX_FOLDER_MEMORY];
+static int last_media_memory_count;
 static VideoDirCacheEntry video_dir_cache[MAX_VIDEO_DIR_CACHE];
 static int video_dir_cache_count;
 static ArtworkDirIndex artwork_dir_cache[MAX_ARTWORK_DIR_CACHE];
@@ -1045,6 +1053,10 @@ static void loadRuntimePaths(void)
     if (value != NULL && value[0] != '\0')
         snprintf(video_thumbnail_cache_dir,
                  sizeof(video_thumbnail_cache_dir), "%s", value);
+    value = getenv("KIDSMODE_LAST_MEDIA_INDEX");
+    if (value != NULL && value[0] != '\0')
+        snprintf(last_media_index_path, sizeof(last_media_index_path), "%s",
+                 value);
     snprintf(folder_selections_index, sizeof(folder_selections_index),
              "%s/selections.tsv", folder_selections_dir);
 }
@@ -1156,6 +1168,52 @@ static void loadPersistedFolderSelections(void)
         remove(folder_selections_index);
         rename(tmp_index, folder_selections_index);
     }
+}
+
+static void loadLastMediaSelections(void)
+{
+    if (last_media_index_path[0] == '\0')
+        return;
+    FILE *index = fopen(last_media_index_path, "r");
+    if (index == NULL)
+        return;
+    char line[STR_MAX * 2 + 2];
+    while (last_media_memory_count < MAX_FOLDER_MEMORY &&
+           fgets(line, sizeof(line), index) != NULL) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char *tab = strchr(line, '\t');
+        if (tab == NULL)
+            continue;
+        *tab = '\0';
+        const char *media = tab + 1;
+        if (line[0] == '\0' || media[0] == '\0')
+            continue;
+        LastMediaMemory *entry = &last_media_memory[last_media_memory_count++];
+        snprintf(entry->folder, sizeof(entry->folder), "%s", line);
+        snprintf(entry->media, sizeof(entry->media), "%s", media);
+    }
+    fclose(index);
+}
+
+static const char *lastMediaForFolder(const char *folder)
+{
+    for (int i = 0; i < last_media_memory_count; i++)
+        if (strcmp(last_media_memory[i].folder, folder) == 0)
+            return last_media_memory[i].media;
+    return NULL;
+}
+
+static bool currentItemWasLastPlayed(void)
+{
+    if (games_count <= 0 || current < 0 || current >= games_count)
+        return false;
+    const char *path = games[current].item.rompath;
+    if (current_floor == FLOOR_GAMES)
+        return last_game_path[0] != '\0' && strcmp(path, last_game_path) == 0;
+    if (games[current].is_folder)
+        return false;
+    const char *last_media = lastMediaForFolder(folderBrowsePath());
+    return last_media != NULL && strcmp(path, last_media) == 0;
 }
 
 static bool entryType(const char *path, const struct dirent *entry,
@@ -2491,6 +2549,32 @@ static void fillRect(int x, int y, int w, int h, uint32_t color)
                             (color >> 8) & 0xFF, color & 0xFF));
 }
 
+static void drawLastPlayedMarker(int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return;
+    int border = (int)(2.0 * g_scale);
+    if (border < 2)
+        border = 2;
+    uint32_t color = accentHex();
+    fillRect(x, y, w, border, color);
+    fillRect(x, y + h - border, w, border, color);
+    fillRect(x, y, border, h, color);
+    fillRect(x + w - border, y, border, h, color);
+
+    // A plain corner ribbon marks history without suggesting that the item is
+    // currently playing. It is drawn dynamically in the active theme color.
+    int triangle = (int)(24.0 * g_scale);
+    if (triangle < 16)
+        triangle = 16;
+    if (triangle > w / 3)
+        triangle = w / 3;
+    if (triangle > h / 3)
+        triangle = h / 3;
+    for (int row = 0; row < triangle; row++)
+        fillRect(x + border, y + border + row, triangle - row, 1, color);
+}
+
 // Active theme background, like every native Onion screen (guarded: a
 // broken theme must not crash the kid launcher)
 static void renderBase(void)
@@ -2865,6 +2949,24 @@ static void renderCarousel(int remaining)
         }
         // Supplied artwork, including an inherited folder cover, stays
         // untouched. The selected file or folder name is shown below it.
+    }
+
+    if (currentItemWasLastPlayed()) {
+        int card_w;
+        int card_h;
+        if (artwork != NULL) {
+            card_w = artwork->w;
+            card_h = artwork->h;
+        }
+        else if (current_floor == FLOOR_GAMES) {
+            card_w = (int)(g_display.width * 0.55);
+            card_h = (int)(g_display.height * 0.50);
+        }
+        else {
+            card_w = card_h = (int)(g_display.height * 0.58);
+        }
+        drawLastPlayedMarker(cx - card_w / 2, art_cy - card_h / 2,
+                             card_w, card_h);
     }
 
     // A media duration is read once in the background by KidsPlay, then
@@ -3557,6 +3659,8 @@ int main(int argc, char *argv[])
             strncpy(game_select_path, argv[++i], STR_MAX - 1);
         else if (strcmp(argv[i], "--video-select") == 0 && i + 1 < argc)
             strncpy(video_select_path, argv[++i], STR_MAX - 1);
+        else if (strcmp(argv[i], "--last-game") == 0 && i + 1 < argc)
+            strncpy(last_game_path, argv[++i], STR_MAX - 1);
         else if (strcmp(argv[i], "--folder") == 0 && i + 1 < argc)
             strncpy(current_folder, argv[++i], STR_MAX - 1);
         else if (strcmp(argv[i], "--floor") == 0 && i + 1 < argc)
@@ -3701,6 +3805,7 @@ int main(int argc, char *argv[])
     }
     else {
         loadPersistedFolderSelections();
+        loadLastMediaSelections();
         if (select_rompath[0] != '\0')
             snprintf(current_floor == FLOOR_GAMES ? game_select_path
                                                   : video_select_path,
