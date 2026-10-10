@@ -2611,26 +2611,6 @@ static void drawLastPlayedMarker(int x, int y, int w, int h)
     fillRect(x, y + h - border, w, border, color);
     fillRect(x, y, border, h, color);
     fillRect(x + w - border, y, border, h, color);
-
-    // Three small corners mark history without suggesting that the item is
-    // currently playing. They are drawn in the active theme color.
-    int triangle = (int)(20.0 * g_scale);
-    if (triangle < 14)
-        triangle = 14;
-    if (triangle > w / 3)
-        triangle = w / 3;
-    if (triangle > h / 3)
-        triangle = h / 3;
-    for (int row = 0; row < triangle; row++) {
-        // Top-left: wide against the top edge, narrowing downwards.
-        fillRect(x + border, y + border + row, triangle - row, 1, color);
-        // Top-right: wide against the top edge, narrowing downwards.
-        fillRect(x + w - border - (triangle - row), y + border + row,
-                 triangle - row, 1, color);
-        // Bottom-left: narrow above, widening against the bottom edge.
-        fillRect(x + border, y + h - border - triangle + row,
-                 row + 1, 1, color);
-    }
 }
 
 // Active theme background, like every native Onion screen (guarded: a
