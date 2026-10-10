@@ -70,6 +70,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "artwork_scaler.h"
+
 #include "components/JsonGameEntry.h"
 #include "components/list.h"
 #include "system/battery.h"
@@ -628,25 +630,8 @@ static SDL_Surface *scaleSurface(SDL_Surface *src, int dst_w, int dst_h)
                 wy = (int)(position - (long long)y0 * 256);
             }
         }
-        int inv_y = 256 - wy;
-        for (int x = 0; x < dst_w; x++) {
-            int x0 = x0_map[x], x1 = x1_map[x], wx = wx_map[x];
-            int inv_x = 256 - wx;
-            uint32_t p00 = sp[y0 * spitch + x0];
-            uint32_t p01 = sp[y0 * spitch + x1];
-            uint32_t p10 = sp[y1 * spitch + x0];
-            uint32_t p11 = sp[y1 * spitch + x1];
-            uint32_t result = 0;
-            for (int shift = 0; shift <= 24; shift += 8) {
-                unsigned top = ((p00 >> shift) & 0xFF) * inv_x +
-                               ((p01 >> shift) & 0xFF) * wx;
-                unsigned bottom = ((p10 >> shift) & 0xFF) * inv_x +
-                                  ((p11 >> shift) & 0xFF) * wx;
-                unsigned value = (top * inv_y + bottom * wy + 32768) >> 16;
-                result |= (value & 0xFF) << shift;
-            }
-            dp[y * dpitch + x] = result;
-        }
+        artworkScaleRow(dp + y * dpitch, sp + y0 * spitch,
+                        sp + y1 * spitch, dst_w, x0_map, x1_map, wx_map, wy);
     }
     free(sample_x);
 
