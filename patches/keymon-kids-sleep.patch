@@ -1,8 +1,16 @@
 diff --git a/src/keymon/keymon.c b/src/keymon/keymon.c
-index 64f22a1..967c36e 100644
+index 64f22a1..9e67d58 100644
 --- a/src/keymon/keymon.c
 +++ b/src/keymon/keymon.c
-@@ -49,9 +49,9 @@
+@@ -2,6 +2,7 @@
+ #include <SDL/SDL_ttf.h>
+ #include <dirent.h>
+ #include <fcntl.h>
++#include <limits.h>
+ #include <poll.h>
+ #include <signal.h>
+ #include <stdint.h>
+@@ -49,9 +50,9 @@
  #define CHECK_SEC 15   // Interval sec to check hibernate/adc
  #define SHUTDOWN_MIN 1 // Minutes to power off after hibernate
  #define REPEAT_SEC(val) ((val * 1000 - 250) / 50)
@@ -14,7 +22,7 @@ index 64f22a1..967c36e 100644
  
  const int KONAMI_CODE[] = {HW_BTN_UP, HW_BTN_UP, HW_BTN_DOWN, HW_BTN_DOWN,
                             HW_BTN_LEFT, HW_BTN_RIGHT, HW_BTN_LEFT, HW_BTN_RIGHT,
-@@ -68,6 +68,18 @@ void takeScreenshot(void)
+@@ -68,6 +69,141 @@ void takeScreenshot(void)
      settings_setBrightness(settings.brightness, true, false);
  }
  
@@ -30,13 +38,157 @@ index 64f22a1..967c36e 100644
 +    osd_showBar(volume, 20, color);
 +}
 +
++#define KIDSMODE_SETTINGS_SAVE_DELAY_MS 500
++static bool kidsmode_volume_dirty = false;
++static bool kidsmode_brightness_dirty = false;
++static bool kidsmode_mute_dirty = false;
++static int kidsmode_settings_changed_at = 0;
++static volatile sig_atomic_t kidsmode_exit_requested = 0;
++
++static void kidsmode_requestQuit(int sig)
++{
++    (void)sig;
++    kidsmode_exit_requested = 1;
++}
++
++static bool kidsmode_settings_dirty(void)
++{
++    return kidsmode_volume_dirty || kidsmode_brightness_dirty ||
++           kidsmode_mute_dirty;
++}
++
++static void kidsmode_markSettingsChanged(void)
++{
++    kidsmode_settings_changed_at = getMilliseconds();
++    temp_flag_set("kidsmode_settings_pending", true);
++}
++
++static bool kidsmode_writeSystemSettings(cJSON *json)
++{
++    char path[PATH_MAX];
++    char temporary[PATH_MAX];
++    // Follow a possible Onion system.json symlink, then rename beside its
++    // real target. Preserve both the link and all unfamiliar JSON fields.
++    if (realpath(MAIN_UI_SETTINGS, path) == NULL ||
++        snprintf(temporary, sizeof(temporary), "%s.kidsmode.XXXXXX", path) >=
++            (int)sizeof(temporary))
++        return false;
++    char *output = cJSON_Print(json);
++    if (output == NULL)
++        return false;
++    int fd = mkstemp(temporary);
++    if (fd < 0) {
++        cJSON_free(output);
++        return false;
++    }
++    struct stat original;
++    if (stat(path, &original) == 0)
++        fchmod(fd, original.st_mode & 0777);
++    FILE *fp = fdopen(fd, "w");
++    if (fp == NULL) {
++        close(fd);
++        remove(temporary);
++        cJSON_free(output);
++        return false;
++    }
++    size_t size = strlen(output);
++    bool saved = fwrite(output, 1, size, fp) == size &&
++                 fflush(fp) == 0 && fsync(fd) == 0;
++    if (fclose(fp) != 0)
++        saved = false;
++    cJSON_free(output);
++    if (saved)
++        saved = rename(temporary, path) == 0;
++    if (!saved)
++        remove(temporary);
++    return saved;
++}
++
++static void kidsmode_saveSettings(void)
++{
++    cJSON *json = json_load(MAIN_UI_SETTINGS);
++    if (!cJSON_IsObject(json)) {
++        cJSON_Delete(json);
++        kidsmode_settings_changed_at = getMilliseconds();
++        return; // Keep pending values and retry without overwriting bad JSON.
++    }
++    const char *names[] = {"vol", "brightness", "mute"};
++    int values[] = {settings.volume, settings.brightness, settings.mute};
++    bool pending[] = {kidsmode_volume_dirty, kidsmode_brightness_dirty,
++                      kidsmode_mute_dirty};
++    bool changed = false;
++    bool valid = true;
++    for (int i = 0; i < 3 && valid; i++) {
++        if (!pending[i])
++            continue;
++        cJSON *property = cJSON_GetObjectItem(json, names[i]);
++        if (cJSON_IsNumber(property) &&
++            cJSON_GetNumberValue(property) == values[i])
++            continue;
++        cJSON *number = cJSON_CreateNumber(values[i]);
++        if (number == NULL) {
++            valid = false;
++            break;
++        }
++        valid = property != NULL
++                    ? cJSON_ReplaceItemInObject(json, names[i], number)
++                    : cJSON_AddItemToObject(json, names[i], number);
++        if (!valid)
++            cJSON_Delete(number);
++        changed = true;
++    }
++    bool saved = valid && (!changed || kidsmode_writeSystemSettings(json));
++    cJSON_Delete(json);
++    if (!saved) {
++        kidsmode_settings_changed_at = getMilliseconds();
++        return;
++    }
++    // Stock Onion obtains mute from this flag, not from the JSON property.
++    if (kidsmode_mute_dirty &&
++        config_flag_get(".muteVolume") != (settings.mute != 0))
++        config_flag_set(".muteVolume", settings.mute);
++    if (kidsmode_volume_dirty)
++        __settings.volume = settings.volume;
++    if (kidsmode_brightness_dirty)
++        __settings.brightness = settings.brightness;
++    if (kidsmode_mute_dirty)
++        __settings.mute = settings.mute;
++    kidsmode_volume_dirty = false;
++    kidsmode_brightness_dirty = false;
++    kidsmode_mute_dirty = false;
++    temp_flag_set("kidsmode_settings_pending", false);
++    if (changed)
++        temp_flag_set("settings_changed", true);
++}
++
  //
  //    Suspend / Kill processes
  //        mode: 0:STOP 1:TERM 2:KILL
-@@ -262,6 +269,12 @@ void suspend_exec(int timeout)
+@@ -168,6 +304,8 @@ void resume(void)
+ //
+ void quit(int exitcode)
+ {
++    if (kidsmode_settings_dirty())
++        kidsmode_saveSettings();
+     display_close();
+     if (input_fd > 0)
+         close(input_fd);
+@@ -182,6 +320,8 @@ void quit(int exitcode)
+ //
+ void force_shutdown(void)
+ {
++    if (kidsmode_settings_dirty())
++        kidsmode_saveSettings();
+     set_system_shutdown();
+     screenshot_system();
+     terminate_retroarch();
+@@ -262,6 +402,15 @@ void suspend_exec(int timeout)
  {
      keyinput_disable();
  
++    if (kidsmode_settings_dirty())
++        kidsmode_saveSettings();
++
 +    // Hide every process transition before playActivity or the foreground
 +    // application is stopped. This changes PWM only, so no framebuffer page
 +    // can flash while Onion enters its normal suspend sequence.
@@ -46,7 +198,7 @@ index 64f22a1..967c36e 100644
      // pause playActivity
      system("playActivity stop_all");
  
-@@ -275,8 +288,9 @@ void suspend_exec(int timeout)
+@@ -275,14 +424,17 @@ void suspend_exec(int timeout)
          setVolume(0);
      }
      rumble(0);
@@ -58,7 +210,15 @@ index 64f22a1..967c36e 100644
      system_powersave_on();
  
      uint32_t repeat_power = 0;
-@@ -306,7 +320,6 @@ void suspend_exec(int timeout)
+     uint32_t killexit = 0;
+ 
+     while (1) {
++        if (kidsmode_exit_requested)
++            break;
+         int ready = poll(fds, 1, timeout);
+ 
+         if (ready > 0) {
+@@ -306,7 +458,6 @@ void suspend_exec(int timeout)
                  if (ev.code == HW_BTN_MENU) {
                      // screenshot
                      system_powersave_off();
@@ -66,7 +226,7 @@ index 64f22a1..967c36e 100644
                      takeScreenshot();
                      break;
                  }
-@@ -329,7 +342,6 @@ void suspend_exec(int timeout)
+@@ -329,7 +480,6 @@ void suspend_exec(int timeout)
          suspend(2);
          usleep(400000);
      }
@@ -74,7 +234,24 @@ index 64f22a1..967c36e 100644
      display_setBrightness(settings.brightness);
      setVolume(settings.mute ? 0 : settings.volume);
      if (!killexit) {
-@@ -467,6 +479,8 @@ int main(void)
+@@ -430,7 +580,7 @@ static void signal_refresh(int sig)
+ int main(void)
+ {
+     // Initialize
+-    signal(SIGTERM, quit);
++    signal(SIGTERM, kidsmode_requestQuit);
+     signal(SIGSEGV, quit);
+     signal(SIGUSR1, signal_refresh);
+     log_setName("keymon");
+@@ -443,6 +593,7 @@ int main(void)
+     }
+ 
+     settings_init();
++    temp_flag_set("kidsmode_settings_pending", false);
+ 
+     // Set Initial Volume / Brightness
+     setVolume(settings.mute ? 0 : settings.volume);
+@@ -467,6 +618,8 @@ int main(void)
      bool b_BTN_Not_Menu_Pressed = false;
      bool b_BTN_Menu_Pressed = false;
      bool power_pressed = false;
@@ -83,8 +260,75 @@ index 64f22a1..967c36e 100644
      bool volUp_state = false;
      bool volUp_active = false;
      bool volDown_state = false;
-@@ -521,7 +540,10 @@ int main(void)
-                     display_setBrightness(settings.brightness);
+@@ -487,13 +640,28 @@ int main(void)
+     bool delete_flag = false;
+     bool settings_changed = false;
+ 
+-    int save_settings_timestamp = 0;
+-    volatile bool needWriteSettings = false;
+-
+     time_t fav_last_modified = time(NULL);
+ 
+     while (1) {
+-        if (poll(fds, 1, (CHECK_SEC - elapsed_sec) * 1000) > 0) {
++        if (kidsmode_exit_requested)
++            quit(0);
++        if (kidsmode_settings_dirty() &&
++            getMilliseconds() - kidsmode_settings_changed_at >=
++                KIDSMODE_SETTINGS_SAVE_DELAY_MS)
++            kidsmode_saveSettings();
++
++        int poll_timeout_ms = CHECK_SEC * 1000 - (getMilliseconds() - ticks);
++        if (poll_timeout_ms < 0)
++            poll_timeout_ms = 0;
++        if (kidsmode_settings_dirty()) {
++            int save_wait = KIDSMODE_SETTINGS_SAVE_DELAY_MS -
++                (getMilliseconds() - kidsmode_settings_changed_at);
++            if (save_wait < 0)
++                save_wait = 0;
++            if (save_wait < poll_timeout_ms)
++                poll_timeout_ms = save_wait;
++        }
++        if (poll(fds, 1, poll_timeout_ms) > 0) {
+             if (!keyinput_isValid())
+                 continue;
+             val = ev.value;
+@@ -502,9 +670,24 @@ int main(void)
+                          ev.value);
+ 
+             if (exists("/tmp/settings_changed")) {
+-                settings_load();
++                // /tmp is RAM: a global sync here only needlessly flushed
++                // the SD card. Preserve our pending change before accepting
++                // a settings refresh requested by another process.
++                int pending_volume = settings.volume;
++                int pending_brightness = settings.brightness;
++                int pending_mute = settings.mute;
++                if (kidsmode_settings_dirty())
++                    kidsmode_saveSettings();
+                 remove("/tmp/settings_changed");
+-                sync();
++                settings_load();
++                // An SD write can fail. Do not let a refresh discard values
++                // that are still waiting to be committed.
++                if (kidsmode_volume_dirty)
++                    settings.volume = pending_volume;
++                if (kidsmode_brightness_dirty)
++                    settings.brightness = pending_brightness;
++                if (kidsmode_mute_dirty)
++                    settings.mute = pending_mute;
+             }
+ 
+             if (exists("/tmp/state_changed")) {
+@@ -513,7 +696,6 @@ int main(void)
+                 if (delete_flag) {
+                     system_state_update();
+                     remove("/tmp/state_changed");
+-                    sync();
+                     delete_flag = false;
+                 }
+ 
+@@ -522,6 +704,9 @@ int main(void)
              }
  
              settings_changed = false;
@@ -94,7 +338,7 @@ index 64f22a1..967c36e 100644
              osd_bar_activated = false;
  
              if (val != REPEAT) {
-@@ -545,8 +558,14 @@ int main(void)
+@@ -545,8 +730,14 @@ int main(void)
  
              switch (ev.code) {
              case HW_BTN_POWER:
@@ -110,7 +354,7 @@ index 64f22a1..967c36e 100644
                  if (!comboKey_menu && val == REPEAT) {
                      repeat_power++;
                      if (repeat_power == 7) {
-@@ -563,8 +582,19 @@ int main(void)
+@@ -563,8 +754,19 @@ int main(void)
                      // suspend
                      if (power_pressed && repeat_power < 7) {
                          if (comboKey_menu) {
@@ -130,7 +374,7 @@ index 64f22a1..967c36e 100644
                          else {
                              if (settings.disable_standby) {
                                  deepsleep();
-@@ -575,6 +605,7 @@ int main(void)
+@@ -575,6 +777,7 @@ int main(void)
                          }
                      }
                      power_pressed = false;
@@ -138,34 +382,31 @@ index 64f22a1..967c36e 100644
                  }
                  repeat_power = 0;
                  break;
-@@ -632,7 +663,7 @@ int main(void)
-                             break;
-                         if (settings.brightness > 0) {
+@@ -634,6 +837,7 @@ int main(void)
                              settings_setBrightness(settings.brightness - 1,
--                                                   true, false);
-+                                                   true, true);
+                                                    true, false);
                              settings_changed = true;
++                            kidsmode_brightness_dirty = true;
                          }
                          osd_showBrightnessBar(settings.brightness);
-@@ -670,7 +701,7 @@ int main(void)
-                             break;
-                         if (settings.brightness < MAX_BRIGHTNESS) {
+                         comboKey_select = true;
+@@ -672,6 +876,7 @@ int main(void)
                              settings_setBrightness(settings.brightness + 1,
--                                                   true, false);
-+                                                   true, true);
+                                                    true, false);
                              settings_changed = true;
++                            kidsmode_brightness_dirty = true;
                          }
                          osd_showBrightnessBar(settings.brightness);
-@@ -728,7 +759,7 @@ int main(void)
-                     // MENU + VOL DOWN : brightness down
-                     if (val != RELEASED && settings.brightness > 0) {
+                         comboKey_select = true;
+@@ -730,6 +935,7 @@ int main(void)
                          settings_setBrightness(settings.brightness - 1, true,
--                                               false);
-+                                               true);
+                                                false);
                          settings_changed = true;
++                        kidsmode_brightness_dirty = true;
                      }
                      osd_showBrightnessBar(settings.brightness);
-@@ -740,12 +771,17 @@ int main(void)
+                     break;
+@@ -740,12 +946,17 @@ int main(void)
                  if (!volDown_active || comboKey_volume)
                      break;
                  if (val == RELEASED || val == REPEAT) {
@@ -174,7 +415,7 @@ index 64f22a1..967c36e 100644
 +                    // the active media audio path can implicitly unmute it.
 +                    if (settings_setVolume(settings.volume - 1,
 +                                           !kidsmode_muted)) {
-+                        settings_saveSystemProperty("vol", settings.volume);
++                        kidsmode_volume_dirty = true;
                          settings_changed = true;
 +                    }
                  }
@@ -185,36 +426,36 @@ index 64f22a1..967c36e 100644
                  break;
              case HW_BTN_DOWN:
                  if (DEVICE_ID == MIYOO283) {
-@@ -754,7 +787,7 @@ int main(void)
-                             // MENU + BTN DOWN : brightness down
-                             if (val != RELEASED && settings.brightness > 0) {
+@@ -756,6 +967,7 @@ int main(void)
                                  settings_setBrightness(settings.brightness - 1, true,
--                                                       false);
-+                                                       true);
+                                                        false);
                                  settings_changed = true;
++                                kidsmode_brightness_dirty = true;
                              }
                              osd_showBrightnessBar(settings.brightness);
-@@ -768,7 +801,7 @@ int main(void)
-                     if (val != RELEASED &&
-                         settings.brightness < MAX_BRIGHTNESS) {
+                         }
+@@ -770,6 +982,7 @@ int main(void)
                          settings_setBrightness(settings.brightness + 1, true,
--                                               false);
-+                                               true);
+                                                false);
                          settings_changed = true;
++                        kidsmode_brightness_dirty = true;
                      }
                      osd_showBrightnessBar(settings.brightness);
-@@ -783,12 +816,14 @@ int main(void)
+                     break;
+@@ -780,15 +993,17 @@ int main(void)
+                 if (!volUp_active || comboKey_volume)
+                     break;
+                 if (val == RELEASED || val == REPEAT) {
 -                    if (settings_setMute(0, true)) {
--                        settings_changed = true;
--                    }
--                    else if (settings_setVolume(settings.volume + 1, true))
 +                    // Keep KidsPlay silent and change only the level that
 +                    // will be applied when the parent explicitly unmutes.
 +                    if (settings_setVolume(settings.volume + 1,
 +                                           !kidsmode_muted)) {
-+                        settings_saveSystemProperty("vol", settings.volume);
++                        kidsmode_volume_dirty = true;
                          settings_changed = true;
-+                    }
+                     }
+-                    else if (settings_setVolume(settings.volume + 1, true))
+-                        settings_changed = true;
                  }
                  if (val == RELEASED)
                      volUp_active = false;
@@ -223,29 +464,63 @@ index 64f22a1..967c36e 100644
                  break;
              case HW_BTN_UP:
                  if (DEVICE_ID == MIYOO283) {
-@@ -798,7 +833,7 @@ int main(void)
-                             if (val != RELEASED &&
-                                 settings.brightness < MAX_BRIGHTNESS) {
+@@ -800,6 +1015,7 @@ int main(void)
                                  settings_setBrightness(settings.brightness + 1, true,
--                                                       false);
-+                                                       true);
+                                                        false);
                                  settings_changed = true;
++                                kidsmode_brightness_dirty = true;
                              }
                              osd_showBrightnessBar(settings.brightness);
-@@ -845,7 +880,10 @@ int main(void)
+                         }
+@@ -843,22 +1059,19 @@ int main(void)
+             if (volDown_state != RELEASED && volUp_state != RELEASED &&
+                 !comboKey_volume) {
                  comboKey_volume = true;
 -                if (settings_setMute(!settings.mute, true))
 +                kidsmode_muted = !kidsmode_muted;
 +                if (settings_setMute(kidsmode_muted, true)) {
-+                    config_flag_set(".muteVolume", kidsmode_muted);
++                    kidsmode_mute_dirty = true;
                      settings_changed = true;
-+                }
 -                osd_showVolumeBar(settings.volume, settings.mute);
++                }
 +                kidsmode_showVolumeBar(settings.volume, kidsmode_muted);
              }
              else if (volDown_state == RELEASED && volUp_state == RELEASED)
                  comboKey_volume = false;
-@@ -914,7 +949,13 @@ int main(void)
+ 
+             if (settings_changed) {
+                 settings_shm_write();
+-                needWriteSettings = true;
+-                save_settings_timestamp = ticks;
+-            }
+-
+-            if (needWriteSettings && (ticks - save_settings_timestamp) > 150) {
+-                settings_save();
+-                needWriteSettings = false;
++                kidsmode_markSettingsChanged();
+             }
+ 
+             if ((val == PRESSED) && (system_state == MODE_MAIN_UI)) {
+@@ -892,12 +1105,17 @@ int main(void)
+                 continue;
+         }
+ 
++        // A short debounce poll timeout is not a housekeeping deadline.
++        // Keep battery/hibernate/state checks on their original 15 s cadence.
++        elapsed_sec = (getMilliseconds() - ticks) / 1000;
++        if (elapsed_sec < CHECK_SEC)
++            continue;
++
+         // Comes here every CHECK_SEC(def:15) seconds interval
+         if (delete_flag) {
+             if (exists("/tmp/state_changed")) {
+                 system_state_update();
+                 remove("/tmp/state_changed");
+-                sync();
+             }
+             delete_flag = false;
+         }
+@@ -914,7 +1132,13 @@ int main(void)
          else
              hibernate_time = settings.sleep_timer;
  

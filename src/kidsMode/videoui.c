@@ -391,13 +391,10 @@ static VideoListCacheEntry video_list_cache[VIDEO_LIST_CACHE_SIZE];
 static unsigned long video_list_cache_age;
 
 static SDL_Surface *artwork = NULL;
-// Keep the last decoded image for each floor. Switching floors normally
-// returns to the same selection, so decoding and scaling it again would add
-// a visible pause before every swipe.
-static SDL_Surface *artwork_cache[2] = {NULL, NULL};
-static char artwork_cache_path[2][STR_MAX] = {{0}, {0}};
+// Share a bounded LRU between floors; their image layouts remain distinct.
 typedef struct {
     char path[STR_MAX];
+    int floor;
     SDL_Surface *surface;
     unsigned long age;
 } VideoArtworkCacheEntry;
@@ -997,8 +994,8 @@ static void resetEntries(void)
 {
     games_count = 0;
     current = 0;
-    // artwork is owned by artwork_cache. Detach it while replacing the
-    // entry list, but keep both floor caches alive for fast vertical swipes.
+    // The LRU owns artwork. Detach it while replacing the entry list, keeping
+    // already prepared surfaces alive for fast horizontal/vertical swipes.
     artwork = NULL;
     artwork_index = -1;
     title_for_index = -1;
@@ -2179,10 +2176,11 @@ static SDL_Surface *createCrtSurface(int width, int height)
     return surface;
 }
 
-static SDL_Surface *cachedVideoArtwork(const char *path)
+static SDL_Surface *cachedArtwork(const char *path)
 {
     for (int i = 0; i < VIDEO_ARTWORK_CACHE_SIZE; i++) {
         if (video_artwork_cache[i].surface != NULL &&
+            video_artwork_cache[i].floor == (int)current_floor &&
             strcmp(video_artwork_cache[i].path, path) == 0) {
             video_artwork_cache[i].age = ++video_artwork_cache_age;
             return video_artwork_cache[i].surface;
@@ -2191,7 +2189,7 @@ static SDL_Surface *cachedVideoArtwork(const char *path)
     return NULL;
 }
 
-static SDL_Surface *storeVideoArtwork(const char *path, SDL_Surface *surface)
+static SDL_Surface *storeArtwork(const char *path, SDL_Surface *surface)
 {
     int slot = -1;
     unsigned long oldest = 0;
@@ -2212,6 +2210,7 @@ static SDL_Surface *storeVideoArtwork(const char *path, SDL_Surface *surface)
     snprintf(video_artwork_cache[slot].path,
              sizeof(video_artwork_cache[slot].path), "%s", path);
     video_artwork_cache[slot].surface = surface;
+    video_artwork_cache[slot].floor = (int)current_floor;
     video_artwork_cache[slot].age = ++video_artwork_cache_age;
     return surface;
 }
@@ -2428,24 +2427,15 @@ static void loadArtwork(void)
     if (games_count == 0)
         return;
 
-    int cache_slot = (int)current_floor;
     const char *imgpath = games[current].item.imgpath;
-    if (current_floor == FLOOR_VIDEOS && imgpath[0] != '\0') {
-        artwork = cachedVideoArtwork(imgpath);
+    // The same small LRU now serves both floors. Games previously kept only
+    // the latest prepared image, so moving back one item decoded, scaled and
+    // rotated it all over again. Twelve display-sized surfaces stay well
+    // within the Mini's memory budget and remove that repeated CPU burst.
+    if (imgpath[0] != '\0') {
+        artwork = cachedArtwork(imgpath);
         if (artwork != NULL)
             return;
-    }
-    else {
-        if (artwork_cache[cache_slot] != NULL && imgpath[0] != '\0' &&
-            strcmp(artwork_cache_path[cache_slot], imgpath) == 0) {
-            artwork = artwork_cache[cache_slot];
-            return;
-        }
-        if (artwork_cache[cache_slot] != NULL) {
-            SDL_FreeSurface(artwork_cache[cache_slot]);
-            artwork_cache[cache_slot] = NULL;
-        }
-        artwork_cache_path[cache_slot][0] = '\0';
     }
     if (imgpath[0] == '\0')
         return;
@@ -2495,8 +2485,7 @@ static void loadArtwork(void)
             artwork = raw;
         else
             SDL_FreeSurface(raw);
-        artwork_cache[cache_slot] = artwork;
-        snprintf(artwork_cache_path[cache_slot], STR_MAX, "%s", imgpath);
+        storeArtwork(imgpath, artwork);
         return;
     }
 
@@ -2514,7 +2503,7 @@ static void loadArtwork(void)
          * pixel layouts. */
         rotate180InPlace(artwork);
 #endif
-        storeVideoArtwork(imgpath, artwork);
+        storeArtwork(imgpath, artwork);
         return;
     }
 
@@ -2570,7 +2559,7 @@ static void loadArtwork(void)
         artwork = framed;
     else
         SDL_FreeSurface(framed);
-    storeVideoArtwork(imgpath, artwork);
+    storeArtwork(imgpath, artwork);
 }
 
 static SDL_Surface *loadCrtFallback(int width, int height)
@@ -4451,17 +4440,17 @@ int main(int argc, char *argv[])
             flip();
             dirty = false;
         }
-        msleep(10);
+        // OnionPlus uses an idle frame deadline instead of spinning at full
+        // speed. kidui already redraws only when dirty, so a 15 ms input poll
+        // keeps controls effectively instantaneous while cutting idle loop
+        // wake-ups from roughly 100 to 67 per second.
+        msleep(15);
     }
 
     stopCarouselDimmer();
     if (selection_state_dirty)
         writeSelectionState();
     artwork = NULL;
-    for (int i = 0; i < 2; i++) {
-        if (artwork_cache[i] != NULL)
-            SDL_FreeSurface(artwork_cache[i]);
-    }
     for (int i = 0; i < VIDEO_ARTWORK_CACHE_SIZE; i++)
         if (video_artwork_cache[i].surface != NULL)
             SDL_FreeSurface(video_artwork_cache[i].surface);

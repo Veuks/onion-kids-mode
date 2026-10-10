@@ -92,6 +92,7 @@ loop_lock_dir=/tmp/kidsmode_loop.lock
 loop_lock_owner="$loop_lock_dir/owner"
 
 timer_state="$backupdir/timer_state.txt" # 3 lines: day / used seconds / bonus seconds
+timer_runtime_used=/tmp/kidsmode_timer_used
 # The PIN also lives in kidmode.json inside the app folder, which an app
 # update replaces. Keep a copy outside so updating while armed can't cause
 # a lockout (see restore_pin_backup).
@@ -806,7 +807,20 @@ restore_profile_isolation() {
 # The original keymap is restored on unlock.
 
 restart_keymon() {
+    keymon_restart_pids="$(pgrep keymon 2> /dev/null)"
     killall keymon 2> /dev/null
+    # The outgoing Kids keymon flushes a pending adjustment on SIGTERM.
+    # Reap our own child, or briefly wait for Onion's original process, before
+    # a replacement reads system.json and applies an older value.
+    for keymon_restart_pid in $keymon_restart_pids; do
+        wait "$keymon_restart_pid" 2> /dev/null
+        keymon_stop_checks=0
+        while kill -0 "$keymon_restart_pid" 2> /dev/null &&
+            [ "$keymon_stop_checks" -lt 20 ]; do
+            sleep 0.05
+            keymon_stop_checks=$((keymon_stop_checks + 1))
+        done
+    done
     if [ -f "$flagfile" ] && [ -x "$kids_keymon_bin" ]; then
         "$kids_keymon_bin" &
         log "Started Kids Mode keymon."
@@ -917,7 +931,9 @@ get_timer_minutes() {
 
 state_used() {
     v=""
-    if [ -f "$timer_state" ]; then
+    if [ -f "$timer_runtime_used" ]; then
+        IFS= read -r v < "$timer_runtime_used"
+    elif [ -f "$timer_state" ]; then
         {
             IFS= read -r _timer_day
             IFS= read -r v
@@ -937,10 +953,35 @@ state_bonus() {
     case "$v" in '' | *[!0-9]*) echo 0 ;; *) echo "$v" ;; esac
 }
 
-state_write() { # $1 used, $2 bonus
+state_persist() { # $1 used, $2 bonus
+    # Avoid rewriting an unchanged checkpoint (timer OFF, Time's up, repeated
+    # controlled exits). The ticker is stopped before a parent edits state.
+    if [ -f "$timer_state" ]; then
+        {
+            IFS= read -r timer_disk_day
+            IFS= read -r timer_disk_used
+            IFS= read -r timer_disk_bonus
+        } < "$timer_state"
+        if [ "$timer_disk_day" = "$timer_state_date" ] &&
+            [ "$timer_disk_used" = "$1" ] &&
+            [ "$timer_disk_bonus" = "$2" ]; then
+            return 0
+        fi
+    fi
     mkdir -p "$backupdir"
-    printf '%s\n%s\n%s\n' "$timer_state_date" "$1" "$2" > "$timer_state.tmp"
-    mv -f "$timer_state.tmp" "$timer_state"
+    printf '%s\n%s\n%s\n' "$timer_state_date" "$1" "$2" > "$timer_state.tmp" &&
+        mv -f "$timer_state.tmp" "$timer_state"
+}
+
+state_write() { # $1 used, $2 bonus
+    printf '%s\n' "$1" > "$timer_runtime_used.parent" &&
+        mv -f "$timer_runtime_used.parent" "$timer_runtime_used"
+    state_persist "$1" "$2"
+}
+
+checkpoint_timer_state() {
+    [ -f "$timer_runtime_used" ] || return 0
+    state_persist "$(state_used)" "$(state_bonus)"
 }
 
 # Recompute and publish remaining seconds right now (clamped to >= 0;
@@ -979,8 +1020,11 @@ timer_remaining() {
 }
 
 add_bonus() {
+    # Only one process may modify the timer's persisted state at a time.
+    stop_ticker
     state_write "$(state_used)" "$(($(state_bonus) + $1))"
     update_remaining_now
+    start_ticker
     log "Bonus play time added: $1 s"
 }
 
@@ -1057,6 +1101,7 @@ save_quit_game() {
 }
 
 ticker_loop() {
+    timer_checkpoint_elapsed=0
     while [ -f "$flagfile" ]; do
         sleep 10
         [ -f "$flagfile" ] || break
@@ -1068,8 +1113,24 @@ ticker_loop() {
             continue
         fi
 
-        used=$(($(state_used) + 10))
-        state_write "$used" "$(state_bonus)"
+        previous_used="$(state_used)"
+        used=$((previous_used + 10))
+        [ "$used" -gt "$budget" ] && used="$budget"
+        # The live counter belongs in tmpfs. Persist once a minute (and on
+        # every controlled stop) instead of rewriting FAT metadata six times
+        # per minute. A sudden total power loss can therefore restore at most
+        # 50 seconds of already-counted play time. Suspend keeps the live
+        # counter in RAM; controlled exit and shutdown checkpoint it to SD.
+        if [ "$used" -gt "$previous_used" ]; then
+            printf '%s\n' "$used" > "$timer_runtime_used.ticker" &&
+                mv -f "$timer_runtime_used.ticker" "$timer_runtime_used"
+            timer_checkpoint_elapsed=$((timer_checkpoint_elapsed + 10))
+            if [ "$timer_checkpoint_elapsed" -ge 60 ] ||
+                [ "$used" -eq "$budget" ]; then
+                state_persist "$used" "$(state_bonus)"
+                timer_checkpoint_elapsed=0
+            fi
+        fi
         rem=$((budget - used))
         [ "$rem" -lt 0 ] && rem=0
         echo "$rem" > "$remaining_file"
@@ -1115,6 +1176,7 @@ ticker_loop() {
             last_notified_min=""
         fi
     done
+    checkpoint_timer_state
     rm -f "$remaining_file"
 }
 
@@ -1126,9 +1188,12 @@ start_ticker() {
 
 stop_ticker() {
     if [ -f "$ticker_pid_file" ]; then
-        kill "$(cat "$ticker_pid_file")" 2> /dev/null
+        ticker_pid="$(cat "$ticker_pid_file")"
+        kill "$ticker_pid" 2> /dev/null
+        wait "$ticker_pid" 2> /dev/null
         rm -f "$ticker_pid_file"
     fi
+    checkpoint_timer_state
     killall imgpop 2> /dev/null # remove any lingering chip overlay
     rm -f "$remaining_file"
 }
@@ -1141,6 +1206,7 @@ stop_ticker() {
 check_off_order() {
     [ -f /tmp/.offOrder ] || return 0
     touch /tmp/shutting_down
+    stop_ticker
     # Hide the outgoing carousel/player before any process cleanup. Keep the
     # PWM black until bootScreen has painted both framebuffer pages, then
     # reveal only Onion's completed shutdown image.
@@ -1537,10 +1603,10 @@ switch_kids_profile() {
     fi
 
     log "Switching Kids Mode profile: $source_profile -> $target_profile"
-    # The Kids Mode key monitor now persists every brightness step
-    # immediately. Reapply that single global Onion value before replacing
-    # profile directories so neither a temporary dim/off state nor an old
-    # PWM value can leak across the profile boundary.
+    # The Kids Mode key monitor persists the final brightness value after a
+    # short debounce. Reapply that single global Onion value before replacing
+    # profile directories so neither a temporary dim/off state nor an old PWM
+    # value can leak across the profile boundary.
     restore_configured_brightness
     wait_for_game_environment
     stop_ticker
@@ -1792,9 +1858,11 @@ parent_menu() {
                 # minutes AND any bonus, so nothing keeps a budget alive.
                 # The kid can play with no limit until re-armed or time is
                 # added again.
+                stop_ticker
                 set_timer_minutes 0
                 state_write 0 0
                 update_remaining_now
+                start_ticker
                 rm -f "$timesup_resume_file" "$timesup_resume_file.tmp"
                 log "Play timer turned off from the parent menu."
                 continue
@@ -1844,6 +1912,13 @@ restore_configured_brightness() {
     # kidui and KidsPlay may temporarily dim the backlight.  Before returning
     # to Onion, always restore the brightness chosen in Onion's settings so
     # the launcher never inherits a transient dim/off value.
+    settings_save_checks=0
+    while [ -f /tmp/kidsmode_settings_pending ] &&
+        [ "$settings_save_checks" -lt 20 ] &&
+        pgrep keymon > /dev/null 2>&1; do
+        sleep 0.05
+        settings_save_checks=$((settings_save_checks + 1))
+    done
     configured_brightness=$(/customer/app/jsonval brightness 2> /dev/null)
     case "$configured_brightness" in
         '' | *[!0-9]*) return 0 ;;
