@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           source /root/.bashrc
-          git -C onion apply "$GITHUB_WORKSPACE/patches/keymon-kids-sleep.patch"
+          git -C onion apply --recount "$GITHUB_WORKSPACE/patches/keymon-kids-sleep.patch"
           make -C onion/src/keymon \
             BUILD_DIR="$GITHUB_WORKSPACE/App/KidsMode/bin"
           cp -r src/kidsMode onion/src/
