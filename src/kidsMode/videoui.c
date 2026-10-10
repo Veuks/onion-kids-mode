@@ -677,6 +677,56 @@ static uint32_t readSurfacePixel(SDL_Surface *surface, int x, int y)
     }
 }
 
+// Theme JSON exposes text colors, not the colored button accent visible in
+// the footer. Derive that accent from the theme's A-button artwork so the
+// marker is violet on the current theme and follows other themes correctly.
+static uint32_t markerAccentHex(void)
+{
+    static bool ready;
+    static uint32_t cached = 0x7442C8;
+    if (ready)
+        return cached;
+    ready = true;
+
+    SDL_Surface *button = resource_getSurface(BUTTON_A);
+    if (button == NULL)
+        return cached;
+    bool locked = SDL_MUSTLOCK(button);
+    if (locked && SDL_LockSurface(button) != 0)
+        return cached;
+
+    unsigned long red_sum = 0, green_sum = 0, blue_sum = 0, count = 0;
+    for (int y = 0; y < button->h; y++) {
+        for (int x = 0; x < button->w; x++) {
+            uint8_t red, green, blue, alpha;
+            SDL_GetRGBA(readSurfacePixel(button, x, y), button->format,
+                        &red, &green, &blue, &alpha);
+            uint8_t maximum = red > green ? red : green;
+            if (blue > maximum)
+                maximum = blue;
+            uint8_t minimum = red < green ? red : green;
+            if (blue < minimum)
+                minimum = blue;
+            // Ignore transparent pixels and the white A glyph/outline.
+            if (alpha < 96 || maximum < 48 || maximum - minimum < 36)
+                continue;
+            red_sum += red;
+            green_sum += green;
+            blue_sum += blue;
+            count++;
+        }
+    }
+    if (locked)
+        SDL_UnlockSurface(button);
+    if (count > 0) {
+        uint32_t red = (uint32_t)(red_sum / count);
+        uint32_t green = (uint32_t)(green_sum / count);
+        uint32_t blue = (uint32_t)(blue_sum / count);
+        cached = (red << 16) | (green << 8) | blue;
+    }
+    return cached;
+}
+
 static void writeSurfacePixel(SDL_Surface *surface, int x, int y,
                               uint32_t value)
 {
@@ -2553,26 +2603,34 @@ static void drawLastPlayedMarker(int x, int y, int w, int h)
 {
     if (w <= 0 || h <= 0)
         return;
-    int border = (int)(2.0 * g_scale);
-    if (border < 2)
-        border = 2;
-    uint32_t color = accentHex();
+    int border = (int)(1.0 * g_scale);
+    if (border < 1)
+        border = 1;
+    uint32_t color = markerAccentHex();
     fillRect(x, y, w, border, color);
     fillRect(x, y + h - border, w, border, color);
     fillRect(x, y, border, h, color);
     fillRect(x + w - border, y, border, h, color);
 
-    // A plain corner ribbon marks history without suggesting that the item is
-    // currently playing. It is drawn dynamically in the active theme color.
-    int triangle = (int)(24.0 * g_scale);
-    if (triangle < 16)
-        triangle = 16;
+    // Three small corners mark history without suggesting that the item is
+    // currently playing. They are drawn in the active theme color.
+    int triangle = (int)(20.0 * g_scale);
+    if (triangle < 14)
+        triangle = 14;
     if (triangle > w / 3)
         triangle = w / 3;
     if (triangle > h / 3)
         triangle = h / 3;
-    for (int row = 0; row < triangle; row++)
+    for (int row = 0; row < triangle; row++) {
+        // Top-left: wide against the top edge, narrowing downwards.
         fillRect(x + border, y + border + row, triangle - row, 1, color);
+        // Top-right: wide against the top edge, narrowing downwards.
+        fillRect(x + w - border - (triangle - row), y + border + row,
+                 triangle - row, 1, color);
+        // Bottom-left: narrow above, widening against the bottom edge.
+        fillRect(x + border, y + h - border - triangle + row,
+                 row + 1, 1, color);
+    }
 }
 
 // Active theme background, like every native Onion screen (guarded: a
