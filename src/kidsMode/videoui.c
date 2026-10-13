@@ -112,6 +112,7 @@ typedef enum { SCREEN_CAROUSEL,
                SCREEN_EMPTY,
                SCREEN_TIMESUP,
                SCREEN_MENU,
+               SCREEN_CAROUSEL_SETTINGS,
                SCREEN_CATEGORIES,
                SCREEN_PICKTIMER,
                SCREEN_PICKPROFILE,
@@ -119,8 +120,10 @@ typedef enum { SCREEN_CAROUSEL,
 
 #define MENU_SWITCHPROFILE 0
 #define MENU_ADDTIME 1
-#define MENU_LOCKFLOOR 2
-#define MENU_CATEGORIES 3
+#define MENU_SAVESTATES 2
+#define MENU_CAROUSEL_SETTINGS 3
+#define CAROUSEL_FLOORS 0
+#define CAROUSEL_CATEGORIES 1
 #define MENU_UNLOCK 4
 #define CATEGORY_MOVIES 0
 #define CATEGORY_MUSIC 1
@@ -129,6 +132,7 @@ typedef enum { SCREEN_CAROUSEL,
 #define CATEGORY_STORIES 4
 #define LOCKFLOOR_RESULT_FILE "/tmp/kidsmode_lockfloor_result"
 #define CATEGORIES_RESULT_FILE "/tmp/kidsmode_categories_result"
+#define SAVESTATES_RESULT_FILE "/tmp/kidsmode_savestates_result"
 #define FLOOR_STATE_FILE "/tmp/kidsmode_floor"
 #define SELECTION_STATE_FILE "/tmp/kidsmode_selection"
 #define GAME_SELECTION_STATE_FILE "/tmp/kidsmode_game_selection"
@@ -3243,6 +3247,21 @@ static void onLockFloorToggle(void *self)
     }
 }
 
+static void formatCarouselFloors(void *self, char *out_label)
+{
+    int value = ((ListItem *)self)->value;
+    strcpy(out_label, value == 1 ? "Games" : value == 2 ? "Media" : "Both");
+}
+
+static void onSaveStatesToggle(void *self)
+{
+    FILE *fp = fopen(SAVESTATES_RESULT_FILE, "w");
+    if (fp != NULL) {
+        fprintf(fp, "%d\n", ((ListItem *)self)->value ? 1 : 0);
+        fclose(fp);
+    }
+}
+
 static void writeCategoryToggle(const char *name, int value)
 {
     FILE *fp = fopen(CATEGORIES_RESULT_FILE, "a");
@@ -3322,10 +3341,10 @@ static void renderMenu(List *list, int remaining)
     theme_renderFooterStatus(screen, list->active_pos + 1, list->item_count);
 }
 
-static void renderCategories(List *list)
+static void renderSettingsList(List *list, const char *title)
 {
     renderBase();
-    theme_renderHeader(screen, "Visible media folders", false);
+    theme_renderHeader(screen, title, false);
     theme_renderHeaderBattery(screen, batteryPercentage());
     theme_renderList(screen, list);
     theme_renderFooter(screen);
@@ -3616,6 +3635,7 @@ int main(int argc, char *argv[])
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
     int menu_lock_floor = 0;
+    int menu_allow_save_states = 0;
     char menu_switch_profile[16] = "";
     char current_profile[16] = "Main";
     int main_profile_available = 1;
@@ -3650,6 +3670,8 @@ int main(int argc, char *argv[])
             menu_remaining = atoi(argv[++i]);
         else if (strcmp(argv[i], "--lock-floor") == 0 && i + 1 < argc)
             menu_lock_floor = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--allow-save-states") == 0 && i + 1 < argc)
+            menu_allow_save_states = atoi(argv[++i]) != 0;
         else if (strcmp(argv[i], "--switch-profile") == 0 && i + 1 < argc)
             strncpy(menu_switch_profile, argv[++i],
                     sizeof(menu_switch_profile) - 1);
@@ -3731,27 +3753,30 @@ int main(int argc, char *argv[])
                                         .value_max = TIMER_MAX / TIMER_STEP,
                                         .value = 1,
                                         .value_formatter = formatAddMinutes});
-    // Use separate fixed strings rather than a conditional label inside the
-    // initializer: this is safer with Onion's copied ListItem representation
-    // and the shorter wording leaves ample room for the toggle on every theme.
-    if (current_floor == FLOOR_VIDEOS)
-        list_addItem(&menu_list,
-                     (ListItem){.label = "Videos only",
-                                .item_type = TOGGLE,
-                                .value = menu_lock_floor ? 1 : 0,
-                                .action = onLockFloorToggle});
-    else
-        list_addItem(&menu_list,
-                     (ListItem){.label = "Games only",
-                                .item_type = TOGGLE,
-                                .value = menu_lock_floor ? 1 : 0,
-                                .action = onLockFloorToggle});
     list_addItem(&menu_list,
-                 (ListItem){.label = "Media folders",
+                 (ListItem){.label = "Save/load states",
+                            .item_type = TOGGLE,
+                            .value = menu_allow_save_states,
+                            .action = onSaveStatesToggle});
+    list_addItem(&menu_list,
+                 (ListItem){.label = "Carousel settings",
                             .item_type = ACTION});
     list_addItem(&menu_list,
                  (ListItem){.label = "Exit Kids Mode",
                             .item_type = ACTION});
+
+    List carousel_settings_list = list_create(2, LIST_SMALL);
+    list_addItem(&carousel_settings_list,
+                 (ListItem){.label = "Visible floors",
+                            .item_type = MULTIVALUE,
+                            .value_min = 0,
+                            .value_max = 2,
+                            .value = menu_lock_floor >= 0 && menu_lock_floor <= 2
+                                         ? menu_lock_floor : 0,
+                            .value_formatter = formatCarouselFloors,
+                            .action = onLockFloorToggle});
+    list_addItem(&carousel_settings_list,
+                 (ListItem){.label = "Media folders", .item_type = ACTION});
 
     List category_list = list_create(5, LIST_SMALL);
     list_addItem(&category_list,
@@ -4162,12 +4187,12 @@ int main(int argc, char *argv[])
                         exit_code = 5;
                         quit = true;
                     }
-                    else if (menu_list.active_pos == MENU_LOCKFLOOR) {
+                    else if (menu_list.active_pos == MENU_SAVESTATES) {
                         list_activateItem(&menu_list);
                         dirty = true;
                     }
-                    else if (menu_list.active_pos == MENU_CATEGORIES) {
-                        active_screen = SCREEN_CATEGORIES;
+                    else if (menu_list.active_pos == MENU_CAROUSEL_SETTINGS) {
+                        active_screen = SCREEN_CAROUSEL_SETTINGS;
                         dirty = true;
                     }
                     else if (menu_list.active_pos == MENU_SWITCHPROFILE &&
@@ -4181,6 +4206,40 @@ int main(int argc, char *argv[])
                 case SW_BTN_B:
                     exit_code = 1;
                     quit = true;
+                    break;
+                default:
+                    break;
+                }
+            }
+            else if (active_screen == SCREEN_CAROUSEL_SETTINGS) {
+                switch (changed_key) {
+                case SW_BTN_UP:
+                    list_keyUp(&carousel_settings_list, false);
+                    dirty = true;
+                    break;
+                case SW_BTN_DOWN:
+                    list_keyDown(&carousel_settings_list, false);
+                    dirty = true;
+                    break;
+                case SW_BTN_LEFT:
+                    if (list_keyLeft(&carousel_settings_list, false))
+                        dirty = true;
+                    break;
+                case SW_BTN_RIGHT:
+                    if (list_keyRight(&carousel_settings_list, false))
+                        dirty = true;
+                    break;
+                case SW_BTN_A:
+                case SW_BTN_START:
+                    if (carousel_settings_list.active_pos == CAROUSEL_CATEGORIES)
+                        active_screen = SCREEN_CATEGORIES;
+                    else
+                        list_activateItem(&carousel_settings_list);
+                    dirty = true;
+                    break;
+                case SW_BTN_B:
+                    active_screen = SCREEN_MENU;
+                    dirty = true;
                     break;
                 default:
                     break;
@@ -4210,7 +4269,7 @@ int main(int argc, char *argv[])
                     dirty = true;
                     break;
                 case SW_BTN_B:
-                    active_screen = SCREEN_MENU;
+                    active_screen = SCREEN_CAROUSEL_SETTINGS;
                     dirty = true;
                     break;
                 default:
@@ -4408,7 +4467,10 @@ int main(int argc, char *argv[])
                 renderMenu(&menu_list, menu_remaining);
                 break;
             case SCREEN_CATEGORIES:
-                renderCategories(&category_list);
+                renderSettingsList(&category_list, "Visible media folders");
+                break;
+            case SCREEN_CAROUSEL_SETTINGS:
+                renderSettingsList(&carousel_settings_list, "Carousel settings");
                 break;
             case SCREEN_PICKTIMER:
                 renderPickTimer(pin_title, menu_timer_minutes, picker_no_off);
@@ -4467,6 +4529,7 @@ int main(int argc, char *argv[])
     if (font_info != NULL)
         TTF_CloseFont(font_info);
     list_free(&menu_list);
+    list_free(&carousel_settings_list);
     list_free(&category_list);
     list_free(&profile_list);
     resources_free();

@@ -356,13 +356,17 @@ choose:
 - **Exit Kids Mode** — restore Onion and return to its normal interface.
 - **Add play time** — select `OFF` to remove the time limit, or add 5 to 120
   minutes to the current session.
-- **Games only / Videos only** — lock the section currently being viewed. The
-  vertical navigation arrow disappears while the lock is enabled.
-- **Media folders** — choose which root media categories are visible.
+- **Save/load states** — allow manual save states, load states and previous/next
+  save-slot shortcuts using your existing RetroArch mappings. Disabled by default;
+  automatic save/resume remains unchanged. Other locked hotkeys stay disabled.
+- **Carousel settings** — select **Both**, **Games** or **Media** under
+  **Visible floors**, and choose the visible categories under **Media folders**.
+  The vertical navigation arrow disappears when only one floor is available.
+  These choices and the save/load option are stored separately for Main and Guest.
 - **Switch to Main/Guest profile** — safely load the other Onion profile's
   Kids Mode environment when it is available.
 
-Press B to return from either parent-menu screen.
+Press B to return one level from each submenu, or leave the Parent menu.
 
 ## Timer and resume behavior
 

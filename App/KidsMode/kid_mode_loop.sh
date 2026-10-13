@@ -113,6 +113,7 @@ legacy_battery_warning_marker="$backupdir/no_battery_warning.created"
 uiresult=/tmp/kidsmode_ui_result
 lockfloor_result=/tmp/kidsmode_lockfloor_result
 categories_result=/tmp/kidsmode_categories_result
+savestates_result=/tmp/kidsmode_savestates_result
 uilog=/tmp/kidmode_ui_log
 
 # Unified video state. Game state continues to use Onion's native
@@ -155,6 +156,8 @@ cfg_pin_salt=""
 cfg_pin_plain=""
 cfg_timer_minutes=0
 cfg_lock_current_floor=false
+cfg_locked_floor=""
+cfg_allow_save_states=false
 cfg_show_stories=true
 cfg_show_movies=true
 cfg_show_series=true
@@ -229,6 +232,8 @@ make_salt() {
 }
 
 load_config_cache() {
+    cfg_allow_save_states=false
+    cfg_locked_floor=""
     [ -f "$configfile" ] || return 1
     config_dump="$(jq -r '
         (.pin_hash // ""),
@@ -269,7 +274,9 @@ EOF
             ((if has("show_movies") then .show_movies else true end) | tostring),
             ((if has("show_series") then .show_series else true end) | tostring),
             ((if has("show_music") then .show_music else true end) | tostring),
-            ((if has("show_cartoons") then .show_cartoons else true end) | tostring)
+            ((if has("show_cartoons") then .show_cartoons else true end) | tostring),
+            ((.allow_save_states == true) | tostring),
+            (.locked_floor // "")
         ' "$profile_preferences_file" 2> /dev/null)"
         {
             IFS= read -r cfg_lock_current_floor
@@ -278,10 +285,13 @@ EOF
             IFS= read -r cfg_show_series
             IFS= read -r cfg_show_music
             IFS= read -r cfg_show_cartoons
+            IFS= read -r cfg_allow_save_states
+            IFS= read -r cfg_locked_floor
         } <<EOF
 $profile_dump
 EOF
     fi
+    case "$cfg_locked_floor" in games | videos) ;; *) cfg_locked_floor="" ;; esac
     printf '%s\n' "$cfg_timer_minutes" > "$timer_minutes_file"
 }
 
@@ -374,9 +384,12 @@ profile_config_merge() {
             --argjson series "$cfg_show_series" \
             --argjson music "$cfg_show_music" \
             --argjson cartoons "$cfg_show_cartoons" \
+            --argjson states "$cfg_allow_save_states" \
+            --arg floor "$cfg_locked_floor" \
             '{lock_current_floor: $lock, show_stories: $stories,
               show_movies: $movies, show_series: $series,
-              show_music: $music, show_cartoons: $cartoons}' > "$prefs_source"
+              show_music: $music, show_cartoons: $cartoons,
+              allow_save_states: $states, locked_floor: $floor}' > "$prefs_source"
     fi
     if jq "$@" "$prefs_source" > "$tmpprefs" &&
         mv -f "$tmpprefs" "$profile_preferences_file"; then
@@ -511,11 +524,41 @@ ensure_pin() {
 # change cores, shaders, mappings, etc. Restored from backup on unlock.
 # (Approach borrowed from OnionUI PR #1910.)
 
+restore_ra_state_bindings() {
+    # Restore only the four allowed actions from the untouched backup.
+    # Preserve keyboard/axis binds too, and never invent a button combination.
+    awk '
+        function key(line, k) {
+            k = substr(line, 1, index(line, "=") - 1)
+            sub(/^[ \t]*/, "", k); sub(/[ \t]*$/, "", k)
+            return k
+        }
+        function statekey(k) {
+            return k ~ /^input_(save_state|load_state|state_slot_increase|state_slot_decrease)(_btn|_axis)?$/
+        }
+        FILENAME == ARGV[1] {
+            k = index($0, "=") ? key($0) : ""
+            if (statekey(k)) original[k] = $0
+            next
+        }
+        {
+            k = index($0, "=") ? key($0) : ""
+            if (statekey(k)) {
+                if (k in original) print original[k]
+                seen[k] = 1
+                next
+            }
+            print
+        }
+        END { for (k in original) if (!(k in seen)) print original[k] }
+    ' "$rabackup" "$racfg" > "$tmpra" && mv -f "$tmpra" "$racfg"
+}
+
 apply_ra_lock() {
     [ -f "$racfg" ] || return 0
     mkdir -p "$backupdir"
     if [ ! -f "$rabackup" ]; then
-        cp "$racfg" "$rabackup"
+        cp "$racfg" "$rabackup" || return 1
     fi
 
     # Parse each RetroArch line's key once, then look it up in an awk array.
@@ -533,8 +576,9 @@ apply_ra_lock() {
     #   quick_menu_show_* false — hide options/cheats/shaders/record/stream
     #     from the (already locked-down) quick menu
     #   settings_show_* false — hide every settings category
-    #   input_*_btn nul — every documented RetroArch hotkey action,
-    #     disabled. MENU is input_enable_hotkey_btn, held with another
+    #   input_*_btn nul — RetroArch hotkey actions disabled, except save/load
+    #     and slot selection when the parent explicitly permits them.
+    #     MENU is input_enable_hotkey_btn, held with another
     #     button: this covers MENU+SELECT (open RA's menu), MENU+L2/R2
     #     (save/load state), MENU+L/R (rewind/fast-forward), MENU+LEFT/
     #     RIGHT (save-slot change), MENU+START (fullscreen), and every
@@ -576,13 +620,27 @@ apply_ra_lock() {
         input_volume_down_btn input_netplay_fade_chat_toggle_btn
         input_netplay_host_toggle_btn input_netplay_ping_toggle_btn
         input_netplay_player_chat_btn"
+    ra_keys="$ra_keys input_save_state input_save_state_axis
+        input_load_state input_load_state_axis input_state_slot_increase
+        input_state_slot_increase_axis input_state_slot_decrease
+        input_state_slot_decrease_axis"
 
     tmpra=/tmp/kidmode_ra.$$
+    if [ "$cfg_allow_save_states" = true ]; then
+        restore_ra_state_bindings || return 1
+    fi
     awkprog=/tmp/kidmode_ra_awk.$$
     {
         echo 'BEGIN {'
         i=0
         for k in $ra_keys; do
+            case "$k" in
+                input_save_state | input_save_state_btn | input_save_state_axis | \
+                input_load_state | input_load_state_btn | input_load_state_axis | \
+                input_state_slot_increase | input_state_slot_increase_btn | input_state_slot_increase_axis | \
+                input_state_slot_decrease | input_state_slot_decrease_btn | input_state_slot_decrease_axis)
+                    [ "$cfg_allow_save_states" = true ] && continue ;;
+            esac
             i=$((i + 1))
             case "$k" in
                 kiosk_mode_enable | video_font_enable) v=true ;;
@@ -1765,9 +1823,14 @@ switch_kids_profile() {
 parent_menu() {
     touch "$parent_menu_active_file"
     while :; do
-        rm -f "$uiresult" "$lockfloor_result" "$categories_result"
+        rm -f "$uiresult" "$lockfloor_result" "$categories_result" "$savestates_result"
         lock_val=0
-        [ "$cfg_lock_current_floor" = "true" ] && lock_val=1
+        if [ "$cfg_lock_current_floor" = true ]; then
+            locked_menu_floor="${cfg_locked_floor:-$active_floor}"
+            [ "$locked_menu_floor" = videos ] && lock_val=2 || lock_val=1
+        fi
+        states_val=0
+        [ "$cfg_allow_save_states" = true ] && states_val=1
         refresh_category_values
         [ "$active_floor" = videos ] && menu_floor=VIDEOS || menu_floor=GAMES
         switch_profile_arg=""
@@ -1782,6 +1845,7 @@ parent_menu() {
             --remaining "$(timer_remaining)" \
             --floor "$menu_floor" \
             --lock-floor "$lock_val" \
+            --allow-save-states "$states_val" \
             --switch-profile "$switch_profile_arg" \
             --show-stories "$show_stories_value" \
             --show-movies "$show_movies_value" \
@@ -1795,11 +1859,17 @@ parent_menu() {
             rm -f "$lockfloor_result"
             case "$new_lock_val" in
                 1)
-                    profile_config_merge '.lock_current_floor = true'
-                    log "Current floor lock turned ON."
+                    profile_config_merge '.lock_current_floor = true | .locked_floor = "games"'
+                    active_floor=games
+                    log "Carousel restricted to games."
+                    ;;
+                2)
+                    profile_config_merge '.lock_current_floor = true | .locked_floor = "videos"'
+                    active_floor=videos
+                    log "Carousel restricted to media."
                     ;;
                 0)
-                    profile_config_merge '.lock_current_floor = false'
+                    profile_config_merge '.lock_current_floor = false | .locked_floor = ""'
                     log "Current floor lock turned OFF."
                     ;;
             esac
@@ -1836,6 +1906,22 @@ parent_menu() {
                  .show_cartoons = ($cartoons == 1)'
             log "Visible media folders updated from the parent menu."
             normalize_active_media_folder
+        fi
+
+        if [ -f "$savestates_result" ]; then
+            new_states_val="$(sed -n 1p "$savestates_result")"
+            rm -f "$savestates_result"
+            case "$new_states_val" in
+                0 | 1)
+                    # Join preparation before changing the config, so a stale
+                    # background worker cannot overwrite the parent's choice.
+                    wait_for_game_environment
+                    profile_config_merge --argjson enabled "$new_states_val" \
+                        '.allow_save_states = ($enabled == 1)'
+                    apply_ra_lock
+                    log "Manual save/load states and slot hotkeys: $cfg_allow_save_states."
+                    ;;
+            esac
         fi
 
         if [ "$menu_rc" -ne 5 ] || [ "$(sed -n 1p "$uiresult")" != "MENU" ]; then
@@ -2472,6 +2558,9 @@ cmd_run() {
     # The operation is idempotent and only writes on the first run, so checking
     # it here also covers app updates performed while Kids Mode stays active.
     apply_gambatte_remap_lock
+    # A previous armed session or app update can leave preparation marked
+    # complete. Reapply the current profile's permission in that case too.
+    [ -f "$game_environment_marker" ] && apply_ra_lock
     prepare_game_environment_async
     repair_onion_favorites_if_needed
 
@@ -2568,6 +2657,9 @@ cmd_run() {
         [ -f "$video_selection_file" ] &&
             video_select_path="$(sed -n 1p "$video_selection_file")"
         [ -n "$video_select_path" ] || video_select_path="$last_video"
+        if [ "$cfg_lock_current_floor" = true ] && [ -n "$cfg_locked_floor" ]; then
+            active_floor="$cfg_locked_floor"
+        fi
         [ "$active_floor" = videos ] && ui_floor_arg=VIDEOS || ui_floor_arg=GAMES
         set -- --floor "$ui_floor_arg"
         [ -n "$game_select_path" ] &&
