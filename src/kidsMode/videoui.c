@@ -859,6 +859,80 @@ static void tintRestartIcon(SDL_Surface *img)
         SDL_UnlockSurface(img);
 }
 
+// Use A's actual alpha silhouette, including its transparent margins and
+// antialiased circle edge. Extract only the white X from the bundled badge
+// and center it without scaling it: changing the circle must not enlarge X.
+static SDL_Surface *matchRestartCircle(SDL_Surface *img)
+{
+    SDL_Surface *button = resource_getSurface(BUTTON_A);
+    if (button == NULL)
+        return NULL;
+    SDL_Surface *badge = scaleAlphaSurface(button, button->w, button->h);
+    if (badge == NULL)
+        return NULL;
+    bool locked = SDL_MUSTLOCK(img);
+    if (locked && SDL_LockSurface(img) != 0) {
+        SDL_FreeSurface(badge);
+        return NULL;
+    }
+    unsigned max_chroma = 0;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            uint8_t r, g, b, a;
+            SDL_GetRGBA(readSurfacePixel(img, x, y), img->format, &r, &g, &b, &a);
+            unsigned hi = r > g ? r : g;
+            if (b > hi) hi = b;
+            unsigned lo = r < g ? r : g;
+            if (b < lo) lo = b;
+            if (a && hi - lo > max_chroma) max_chroma = hi - lo;
+        }
+    }
+    int left = badge->w, right = -1, top = badge->h, bottom = -1;
+    uint32_t accent = markerAccentHex();
+    unsigned tr = (accent >> 16) & 255, tg = (accent >> 8) & 255, tb = accent & 255;
+    for (int y = 0; y < badge->h; y++) {
+        for (int x = 0; x < badge->w; x++) {
+            uint8_t r, g, b, a;
+            SDL_GetRGBA(readSurfacePixel(badge, x, y), badge->format, &r, &g, &b, &a);
+            if (a) {
+                if (x < left) left = x;
+                if (x > right) right = x;
+                if (y < top) top = y;
+                if (y > bottom) bottom = y;
+            }
+            writeSurfacePixel(badge, x, y, SDL_MapRGBA(badge->format, tr, tg, tb, a));
+        }
+    }
+    if (max_chroma == 0 || right < left || bottom < top) {
+        if (locked) SDL_UnlockSurface(img);
+        SDL_FreeSurface(badge);
+        return NULL;
+    }
+    int dx = (left + right - img->w + 1) / 2;
+    int dy = (top + bottom - img->h + 1) / 2;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            int bx = x + dx, by = y + dy;
+            if (bx < 0 || bx >= badge->w || by < 0 || by >= badge->h) continue;
+            uint8_t r, g, b, a, br, bg, bb, ba;
+            SDL_GetRGBA(readSurfacePixel(img, x, y), img->format, &r, &g, &b, &a);
+            unsigned hi = r > g ? r : g;
+            if (b > hi) hi = b;
+            unsigned lo = r < g ? r : g;
+            if (b < lo) lo = b;
+            unsigned glyph = (255 - (hi - lo) * 255 / max_chroma) * a / 255;
+            if (glyph == 0) continue;
+            SDL_GetRGBA(readSurfacePixel(badge, bx, by), badge->format, &br, &bg, &bb, &ba);
+            writeSurfacePixel(badge, bx, by, SDL_MapRGBA(badge->format,
+                (tr * (255 - glyph) + 255 * glyph + 127) / 255,
+                (tg * (255 - glyph) + 255 * glyph + 127) / 255,
+                (tb * (255 - glyph) + 255 * glyph + 127) / 255, ba));
+        }
+    }
+    if (locked) SDL_UnlockSurface(img);
+    return badge;
+}
+
 // Prefer an X supplied by the theme or its profile overrides. A missing or
 // unreadable themed icon falls back to the bundled shape, tinted once.
 static SDL_Surface *loadIconX(void)
@@ -879,8 +953,16 @@ static SDL_Surface *loadIconX(void)
     SDL_Surface *scaled = scaleAlphaSurface(
         img, (int)(img->w * g_scale + 0.5), (int)(img->h * g_scale + 0.5));
     SDL_FreeSurface(img);
-    if (scaled != NULL && bundled)
-        tintRestartIcon(scaled);
+    if (scaled != NULL && bundled) {
+        SDL_Surface *matched = matchRestartCircle(scaled);
+        if (matched != NULL) {
+            SDL_FreeSurface(scaled);
+            scaled = matched;
+        }
+        else {
+            tintRestartIcon(scaled);
+        }
+    }
     return scaled;
 }
 
