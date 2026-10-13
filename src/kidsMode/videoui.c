@@ -327,6 +327,8 @@ static VideoEntry games[MAX_GAMES];
 static int games_count = 0;
 static int current = 0;
 static char current_folder[STR_MAX] = "";
+static char single_media_root[STR_MAX] = "";
+static bool single_media_root_checked;
 
 typedef enum { FLOOR_GAMES = 0, FLOOR_VIDEOS = 1 } ContentFloor;
 static ContentFloor current_floor = FLOOR_GAMES;
@@ -1560,6 +1562,54 @@ static bool rootCategoryVisible(const char *name)
     return true;
 }
 
+// Detect once per kidui process. Parent changes start a new process with
+// fresh visibility flags. Count only entries the normal root browser would
+// show; empty/hidden categories, Imgs and the control video do not count.
+static void findSingleMediaRoot(void)
+{
+    if (single_media_root_checked)
+        return;
+    single_media_root_checked = true;
+    DIR *dir = opendir(videos_dir);
+    if (dir == NULL)
+        return;
+    int count = 0;
+    char candidate[STR_MAX] = "";
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.')
+            continue;
+        char path[STR_MAX];
+        int length = snprintf(path, sizeof(path), "%s/%s", videos_dir, de->d_name);
+        if (length < 0 || length >= (int)sizeof(path))
+            continue;
+        bool regular, directory;
+        if (!entryType(path, de, &regular, &directory))
+            continue;
+        bool folder = directory && rootCategoryVisible(de->d_name) &&
+                      strcasecmp(de->d_name, "Imgs") != 0 &&
+                      directoryHasVideos(path, 1);
+        bool media = regular && hasMediaExtension(de->d_name) &&
+                     strcasecmp(de->d_name, "FFplay controls.mp4") != 0;
+        if (!folder && !media)
+            continue;
+        count++;
+        if (count > 1)
+            break;
+        snprintf(candidate, sizeof(candidate), "%s", folder ? path : "");
+    }
+    closedir(dir);
+    if (count == 1)
+        snprintf(single_media_root, sizeof(single_media_root), "%s", candidate);
+}
+
+static bool canLeaveVideoFolder(void)
+{
+    return current_folder[0] != '\0' &&
+           (single_media_root[0] == '\0' ||
+            strcmp(current_folder, single_media_root) != 0);
+}
+
 static bool findNearestFolderArtwork(const char *folder, char *out,
                                      size_t out_size)
 {
@@ -1673,6 +1723,15 @@ static void storeVideoList(const char *folder)
 
 static void loadVideos(void)
 {
+    findSingleMediaRoot();
+    if (current_folder[0] == '\0' && single_media_root[0] != '\0') {
+        snprintf(current_folder, sizeof(current_folder), "%s", single_media_root);
+        const char *saved = rememberedFolderSelection(current_folder);
+        if (saved != NULL && (video_select_path[0] == '\0' ||
+                              strcmp(video_select_path, single_media_root) == 0))
+            snprintf(video_select_path, sizeof(video_select_path), "%s", saved);
+        video_selection = 0;
+    }
     const char *browse_dir = current_folder[0] ? current_folder : videos_dir;
     if (loadCachedVideoList(browse_dir))
         return;
@@ -1807,7 +1866,7 @@ static bool enterCurrentVideoFolder(void)
 
 static bool leaveCurrentVideoFolder(void)
 {
-    if (current_floor != FLOOR_VIDEOS || current_folder[0] == '\0')
+    if (current_floor != FLOOR_VIDEOS || !canLeaveVideoFolder())
         return false;
     rememberCurrentVideoFolder();
     char leaving_folder[STR_MAX];
@@ -3200,7 +3259,7 @@ static void renderCarousel(int remaining)
         screen, games[current].is_folder ? "OPEN"
                 : current_floor == FLOOR_GAMES ? "PLAY"
                                                : "PLAY",
-        games[current].is_folder && current_folder[0] ? "BACK" : NULL);
+        games[current].is_folder && canLeaveVideoFolder() ? "BACK" : NULL);
     // No X-button icon ships with Onion's theme (only BUTTON_A/BUTTON_B),
     // so we draw a small badge ourselves. To guarantee it lands in the
     // right spot regardless of theme (icon size and "PLAY" label width
@@ -3241,7 +3300,7 @@ static void renderCarousel(int remaining)
 
         // Inside any media folder, B returns one level. Keep the kid-facing
         // order A:PLAY, X:RESTART, B:BACK.
-        if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
+        if (current_floor == FLOOR_VIDEOS && canLeaveVideoFolder()) {
             int restart_w = 0, restart_h = 0;
             TTF_SizeUTF8(resource_getFont(HINT), "RESTART", &restart_w,
                          &restart_h);
@@ -3693,6 +3752,7 @@ static bool switchFloor(ContentFloor target, int remaining)
     writeFloorState();
     writeFolderState();
     loadCurrentFloor();
+    writeFolderState(); // loadVideos may have skipped a single category root
     rememberSelection();
     writeSelectionState();
     if (games_count == 0) {

@@ -131,6 +131,11 @@ The historical `v1.0.0` GitHub release itself is not changed.
 
 ## Media folders and local artwork
 
+If only one visible root folder contains playable media, Kids Mode opens its
+contents directly instead of showing the category root. Nested folders still
+work normally; B returns to that category, without an unnecessary root screen.
+When multiple categories are available, the root carousel remains visible.
+
 Each Onion profile has its own media root:
 
 ```text
