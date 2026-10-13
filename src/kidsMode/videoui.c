@@ -669,10 +669,11 @@ static uint32_t readSurfacePixel(SDL_Surface *surface, int x, int y)
 static uint32_t markerAccentHex(void)
 {
     static bool ready;
-    static uint32_t cached = 0x7442C8;
+    static uint32_t cached;
     if (ready)
         return cached;
     ready = true;
+    cached = accentHex(); // neutral/missing button art: use theme, not violet
 
     SDL_Surface *button = resource_getSurface(BUTTON_A);
     if (button == NULL)
@@ -809,31 +810,78 @@ static SDL_Surface *scaleAlphaSurface(SDL_Surface *src, int dst_w, int dst_h)
     return dst;
 }
 
-// icon-X-54.png ships inside the app itself
-// (App/KidsMode/icon-X-54.png)
-// rather than living in the active theme's folder — no dependency on the
-// person having added anything to their theme, and the file travels with
-// the app on every install/update.
+// Recolor only the bundled badge. Its white X and antialiased edges remain
+// white/mixed with the new accent, and its alpha channel stays untouched.
+// Use the same A-button accent as the last-played marker, not the theme's
+// text color (which is often white even when its buttons are colored).
+static void tintRestartIcon(SDL_Surface *img)
+{
+    bool locked = SDL_MUSTLOCK(img);
+    if (locked && SDL_LockSurface(img) != 0)
+        return;
+    unsigned max_chroma = 0;
+    for (int y = 0; y < img->h; y++) {
+        for (int x = 0; x < img->w; x++) {
+            uint8_t r, g, b, a;
+            SDL_GetRGBA(readSurfacePixel(img, x, y), img->format, &r, &g, &b, &a);
+            unsigned hi = r > g ? r : g;
+            if (b > hi) hi = b;
+            unsigned lo = r < g ? r : g;
+            if (b < lo) lo = b;
+            if (a != 0 && hi - lo > max_chroma)
+                max_chroma = hi - lo;
+        }
+    }
+    if (max_chroma != 0) {
+        uint32_t accent = markerAccentHex();
+        unsigned tr = (accent >> 16) & 255;
+        unsigned tg = (accent >> 8) & 255;
+        unsigned tb = accent & 255;
+        for (int y = 0; y < img->h; y++) {
+            for (int x = 0; x < img->w; x++) {
+                uint8_t r, g, b, a;
+                SDL_GetRGBA(readSurfacePixel(img, x, y), img->format, &r, &g, &b, &a);
+                if (a == 0) continue;
+                unsigned hi = r > g ? r : g;
+                if (b > hi) hi = b;
+                unsigned lo = r < g ? r : g;
+                if (b < lo) lo = b;
+                unsigned ink = (hi - lo) * 255 / max_chroma;
+                unsigned white = 255 * (255 - ink);
+                writeSurfacePixel(img, x, y, SDL_MapRGBA(img->format,
+                    (tr * ink + white + 127) / 255,
+                    (tg * ink + white + 127) / 255,
+                    (tb * ink + white + 127) / 255, a));
+            }
+        }
+    }
+    if (locked)
+        SDL_UnlockSurface(img);
+}
+
+// Prefer an X supplied by the theme or its profile overrides. A missing or
+// unreadable themed icon falls back to the bundled shape, tinted once.
 static SDL_Surface *loadIconX(void)
 {
-    SDL_Surface *img = IMG_Load(ICON_X_PATH);
+    char themed_path[STR_MAX * 2];
+    SDL_Surface *img = NULL;
+    bool bundled = true;
+    if (theme_getImagePath(theme()->path, "icon-X-54", themed_path) > 0) {
+        img = IMG_Load(themed_path);
+        bundled = img == NULL;
+    }
+    if (img == NULL)
+        img = IMG_Load(ICON_X_PATH);
     if (img == NULL)
         return NULL;
-    if (img->format->BitsPerPixel != 32) {
-        SDL_Surface *converted = SDL_CreateRGBSurface(
-            SDL_SWSURFACE, img->w, img->h, 32, 0x000000ff, 0x0000ff00,
-            0x00ff0000, 0xff000000);
-        SDL_BlitSurface(img, NULL, converted, NULL);
-        SDL_FreeSurface(img);
-        img = converted;
-    }
-    if (g_scale != 1.0) {
-        SDL_Surface *scaled = scaleSurface(
-            img, (int)(img->w * g_scale + 0.5), (int)(img->h * g_scale + 0.5));
-        SDL_FreeSurface(img);
-        img = scaled;
-    }
-    return img;
+    // Normalize without an alpha-destroying SDL blit; use the same safe
+    // scaler as our transparent overlays. No orientation changes here.
+    SDL_Surface *scaled = scaleAlphaSurface(
+        img, (int)(img->w * g_scale + 0.5), (int)(img->h * g_scale + 0.5));
+    SDL_FreeSurface(img);
+    if (scaled != NULL && bundled)
+        tintRestartIcon(scaled);
+    return scaled;
 }
 
 // ScreenScraper Mix V1 bakes the same glass highlight into every square.
