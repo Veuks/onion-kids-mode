@@ -359,8 +359,8 @@ choose:
 - **Save/load states** — allow manual save states, load states and previous/next
   save-slot shortcuts using your existing RetroArch mappings. Disabled by default;
   automatic save/resume remains unchanged. Other locked hotkeys stay disabled.
-- **Carousel settings** — select **Both**, **Games** or **Media** under
-  **Visible floors**, and choose the visible categories under **Media folders**.
+- **Carousel settings** — select **Games&Media**, **Games only** or **Media only** under
+  **Content access**, and choose the visible categories under **Media folders**.
   The vertical navigation arrow disappears when only one floor is available.
   These choices and the save/load option are stored separately for Main and Guest.
 - **Switch to Main/Guest profile** — safely load the other Onion profile's

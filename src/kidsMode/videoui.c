@@ -3250,7 +3250,7 @@ static void onLockFloorToggle(void *self)
 static void formatCarouselFloors(void *self, char *out_label)
 {
     int value = ((ListItem *)self)->value;
-    strcpy(out_label, value == 1 ? "Games" : value == 2 ? "Media" : "Both");
+    strcpy(out_label, value == 1 ? "Games only" : value == 2 ? "Media only" : "Games&Media");
 }
 
 static void onSaveStatesToggle(void *self)
@@ -3767,7 +3767,7 @@ int main(int argc, char *argv[])
 
     List carousel_settings_list = list_create(2, LIST_SMALL);
     list_addItem(&carousel_settings_list,
-                 (ListItem){.label = "Visible floors",
+                 (ListItem){.label = "Content access",
                             .item_type = MULTIVALUE,
                             .value_min = 0,
                             .value_max = 2,
