@@ -1427,6 +1427,29 @@ wait_for_game_environment() {
     [ -f "$game_environment_marker" ] || prepare_game_environment
 }
 
+# Match OnionPlus runtime.sh's Loading/saving screen preference. Older Onion
+# has no launchScreen file: keep its original screenshot + popup behaviour.
+# Do not source runtime.sh (it owns the system launcher loop).
+kidsmode_show_launch_screen() {
+    case "$(cat "$sysdir/config/display/launchScreen" 2> /dev/null)" in
+        1)
+            infoPanel --persistent --romscreen &
+            touch /tmp/dismiss_info_panel
+            ;;
+        2)
+            bootScreen clear
+            ;;
+        3)
+            infoPanel --message "$1" --persistent &
+            touch /tmp/dismiss_info_panel
+            ;;
+        *)
+            infoPanel --message "$1" --persistent --romscreen &
+            touch /tmp/dismiss_info_panel
+            ;;
+    esac
+}
+
 run_game_cmd() {
     [ -f "$sysdir/cmd_to_run.sh" ] || return 1
 
@@ -1450,8 +1473,7 @@ run_game_cmd() {
         set_resolution "$(cat /tmp/screen_resolution 2> /dev/null || echo 752x560)"
         changed_res=1
     elif [ ! -f /tmp/new_res_available ]; then
-        infoPanel --message "LOADING" --persistent --romscreen &
-        touch /tmp/dismiss_info_panel
+        kidsmode_show_launch_screen "LOADING"
         sync
     fi
 
@@ -1471,8 +1493,7 @@ run_game_cmd() {
 
     if [ ! -f /tmp/.offOrder ] && [ -f /tmp/.displaySavingMessage ]; then
         rm -f /tmp/.displaySavingMessage
-        infoPanel --message "SAVING" --persistent --romscreen &
-        touch /tmp/dismiss_info_panel
+        kidsmode_show_launch_screen "SAVING"
         sync
     fi
 
