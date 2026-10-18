@@ -535,7 +535,6 @@ index 64f22a1..9e67d58 100644
              if (ticks - hibernate_start > hibernate_time * 60 * 1000) {
                  suspend_exec(SHUTDOWN_MIN * 60000);
                  hibernate_start = ticks;
-
 diff --git a/src/keymon/menuButtonAction.h b/src/keymon/menuButtonAction.h
 --- a/src/keymon/menuButtonAction.h
 +++ b/src/keymon/menuButtonAction.h
