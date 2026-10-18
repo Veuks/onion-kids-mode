@@ -535,3 +535,37 @@ index 64f22a1..9e67d58 100644
              if (ticks - hibernate_start > hibernate_time * 60 * 1000) {
                  suspend_exec(SHUTDOWN_MIN * 60000);
                  hibernate_start = ticks;
+
+diff --git a/src/keymon/menuButtonAction.h b/src/keymon/menuButtonAction.h
+--- a/src/keymon/menuButtonAction.h
++++ b/src/keymon/menuButtonAction.h
+@@ -145,8 +145,27 @@
+ void displaySavingMessage(void)
+ {
+     if (temp_flag_get(".displaySavingMessage")) {
+         temp_flag_set(".displaySavingMessage", false);
+-        system("infoPanel --message \"SAVING\" --persistent --romscreen &");
+-        temp_flag_set("dismiss_info_panel", true);
++        // Read directly: the pinned settings struct has no launch_screen.
++        // Missing/invalid preferences retain stock Onion's popup.
++        int launch_screen = 0;
++        config_get("display/launchScreen", CONFIG_INT, &launch_screen);
++        switch (launch_screen) {
++        case 1:
++            system("infoPanel --persistent --romscreen &");
++            temp_flag_set("dismiss_info_panel", true);
++            break;
++        case 2:
++            display_clear();
++            break;
++        case 3:
++            system("infoPanel --message \"SAVING\" --persistent &");
++            temp_flag_set("dismiss_info_panel", true);
++            break;
++        default:
++            system("infoPanel --message \"SAVING\" --persistent --romscreen &");
++            temp_flag_set("dismiss_info_panel", true);
++            break;
++        }
+     }
+ }
