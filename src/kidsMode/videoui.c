@@ -17,10 +17,8 @@
 //   exit 5:  "MENU" \n "UNLOCK"
 //            "MENU" \n "ADDTIME" \n <minutes>   (inline add-time selector)
 //            "MENU" \n "NOTIMER"                (turn the play timer off)
-//            "MENU" \n "SWITCHPROFILE" \n Main|Guest
 //            "TIMER" \n <minutes>               (--pick-timer mode)
-//            "PROFILE" \n Main|Guest \n <minutes> (--pick-profile mode)
-//   exit 7:  "POWEROFF"  (5 minutes after the timer reached zero)
+//   exit 7:  "POWEROFF"  (Time's up screen sat idle for 5 minutes)
 //   exit 1:  canceled / error / nothing selected (result file removed)
 //
 // PIN screens: UP/DOWN changes the digit, LEFT/RIGHT moves, A confirms
@@ -43,8 +41,6 @@
 //   kidui --pick-timer [--no-off] -t "..."
 //                                  minutes picker; with --no-off B cancels
 //                                  (exit 1) instead of choosing 0
-//   kidui --pick-profile --current-profile Main|Guest
-//                                  startup profile and session-timer picker
 //
 // Play timer: kid_mode_loop.sh's ticker writes the remaining seconds to
 // /tmp/kidmode_remaining. The carousel shows it as a small chip and flips
@@ -57,25 +53,19 @@
 #include <SDL/SDL_rotozoom.h>
 #include <SDL/SDL_ttf.h>
 #include <dirent.h>
-#include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <strings.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
-
-#include "artwork_scaler.h"
 
 #include "components/JsonGameEntry.h"
 #include "components/list.h"
 #include "system/battery.h"
-#include "system/display.h"
 #include "system/keymap_sw.h"
 #include "theme/background.h"
 #include "theme/theme.h"
@@ -92,16 +82,10 @@
 #define UNLOCK_BAR_SHOW_MS 800
 #define PIN_IDLE_TIMEOUT_MS 30000
 #define REMAINING_POLL_MS 2000
-#define SELECTION_WRITE_DELAY_MS 300
-#define TIMESUP_OFF_SECONDS (5 * 60)
-#define TIMESUP_SINCE_FILE "/tmp/kidsmode_timesup_since"
-#define CAROUSEL_DIM_DELAY_MS 30000
-#define CAROUSEL_OFF_DELAY_MS 45000
-#define CAROUSEL_DIM_RAW 3
-#define CAROUSEL_DIMMED_FLAG "/tmp/kidsmode_carousel_dimmed"
+#define TIMESUP_OFF_MS (5 * 60 * 1000)
 #define REMAINING_FILE "/tmp/kidsmode_remaining"
 #define RESULT_FILE "/tmp/kidsmode_ui_result"
-#define DEFAULT_VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode/Main"
+#define VIDEOS_DIR "/mnt/SDCARD/Media/KidsMode"
 #define FAVORITES_PATH "/mnt/SDCARD/Roms/favourite.json"
 #define ICON_X_PATH "/mnt/SDCARD/App/KidsMode/icon-X-54.png"
 #define SCREEN_REFLECTION_PATH \
@@ -112,40 +96,20 @@ typedef enum { SCREEN_CAROUSEL,
                SCREEN_EMPTY,
                SCREEN_TIMESUP,
                SCREEN_MENU,
-               SCREEN_CAROUSEL_SETTINGS,
-               SCREEN_CATEGORIES,
                SCREEN_PICKTIMER,
-               SCREEN_PICKPROFILE,
                SCREEN_CONFIRM_RESTART } Screen;
 
-#define MENU_SWITCHPROFILE 0
+#define MENU_UNLOCK 0
 #define MENU_ADDTIME 1
-#define MENU_SAVESTATES 2
-#define MENU_CAROUSEL_SETTINGS 3
-#define CAROUSEL_FLOORS 0
-#define CAROUSEL_CATEGORIES 1
-#define MENU_UNLOCK 4
-#define CATEGORY_MOVIES 0
-#define CATEGORY_MUSIC 1
-#define CATEGORY_CARTOONS 2
-#define CATEGORY_SERIES 3
-#define CATEGORY_STORIES 4
+#define MENU_NOTIMER 2
+#define MENU_LOCKFLOOR 3
+#define MENU_BACK 4
 #define LOCKFLOOR_RESULT_FILE "/tmp/kidsmode_lockfloor_result"
-#define CATEGORIES_RESULT_FILE "/tmp/kidsmode_categories_result"
-#define SAVESTATES_RESULT_FILE "/tmp/kidsmode_savestates_result"
 #define FLOOR_STATE_FILE "/tmp/kidsmode_floor"
 #define SELECTION_STATE_FILE "/tmp/kidsmode_selection"
 #define GAME_SELECTION_STATE_FILE "/tmp/kidsmode_game_selection"
 #define VIDEO_SELECTION_STATE_FILE "/tmp/kidsmode_video_selection"
 #define FOLDER_STATE_FILE "/tmp/kidsmode_folder"
-#define FOLDER_HISTORY_FILE "/tmp/kidsmode_folder_history"
-#define DEFAULT_FOLDER_SELECTIONS_DIR \
-    "/mnt/SDCARD/Saves/KidsMode/Main/series_selections"
-#define DEFAULT_VIDEO_THUMBNAIL_CACHE_DIR \
-    "/mnt/SDCARD/Saves/KidsMode/Main/artwork_cache"
-#define VIDEO_THUMBNAIL_RENDER_VERSION 2
-#define KIDSPLAY_PATH "/mnt/SDCARD/App/KidsMode/bin/kidsplay"
-#define KIDSPLAY_LIB_DIR "/mnt/SDCARD/App/KidsMode/lib"
 #define TIMER_STEP 5
 #define TIMER_MAX 120
 
@@ -156,7 +120,6 @@ typedef enum { SCREEN_CAROUSEL,
 #define EPISODE_MAX_LINES 6
 #define EPISODE_MAX_WORDS 128
 #define BIG_VALUE_FONT_SIZE 48
-#define RESTART_TITLE_FONT_OFFSET 4
 // Longer helper sentences use the theme's LIST font (the readable upright
 // face Onion pairs with its display font in the Apps menu) at a controlled
 // size — theme hint fonts are display faces sized for short labels
@@ -168,155 +131,6 @@ static bool dirty = true; // set by any render function that needs to keep
                           // loop tick, even with no new input
 static KeyState keystate[320] = {(KeyState)0};
 
-// Carousel backlight timer. This deliberately controls PWM brightness only:
-// it never clears, redraws or flips a framebuffer page. POWER remains owned
-// entirely by Onion, so normal system sleep/wake is not replaced by kidui.
-static uint32_t carousel_last_activity;
-static uint32_t carousel_last_backlight_check;
-static uint32_t carousel_last_loop_tick;
-static int carousel_backlight_stage; // 0 = lit, 1 = dim, 2 = off
-static long carousel_saved_brightness = -1;
-static bool carousel_was_active;
-static bool carousel_system_screen_off;
-
-static void setCarouselDimmedFlag(bool enabled)
-{
-    if (!enabled) {
-        unlink(CAROUSEL_DIMMED_FLAG);
-        return;
-    }
-    FILE *fp = fopen(CAROUSEL_DIMMED_FLAG, "w");
-    if (fp != NULL)
-        fclose(fp);
-}
-
-static void restoreCarouselBacklight(void)
-{
-    if (carousel_backlight_stage != 0 && carousel_saved_brightness > 0)
-        display_setBrightnessRaw((uint32_t)carousel_saved_brightness);
-    carousel_backlight_stage = 0;
-    carousel_system_screen_off = false;
-    setCarouselDimmedFlag(false);
-}
-
-static void stopCarouselDimmer(void)
-{
-    // During shutdown the Onion splash must be drawn while the backlight
-    // remains black. Restoring here would briefly expose the last carousel
-    // frame before kid_mode_loop.sh has finished painting that splash.
-    if (access("/tmp/.offOrder", F_OK) == 0 ||
-        access("/tmp/shutting_down", F_OK) == 0) {
-        carousel_backlight_stage = 0;
-        carousel_system_screen_off = false;
-        setCarouselDimmedFlag(false);
-    }
-    else {
-        restoreCarouselBacklight();
-    }
-    carousel_was_active = false;
-    carousel_last_loop_tick = 0;
-}
-
-static void updateCarouselDimmer(uint32_t ticks, bool carousel_active)
-{
-    if (!carousel_active) {
-        if (carousel_was_active || carousel_backlight_stage != 0)
-            stopCarouselDimmer();
-        return;
-    }
-
-    if (!carousel_was_active) {
-        carousel_was_active = true;
-        carousel_last_activity = ticks;
-        long current = display_getBrightnessRaw();
-        if (current > 0)
-            carousel_saved_brightness = current;
-    }
-
-    // keymon suspends kidui during a real system sleep, so kidui may never
-    // observe the brief zero-brightness interval itself. A long gap between
-    // two loop iterations is therefore also treated as a wake: preserve the
-    // brightness restored by Onion and restart the inactivity timer.
-    if (carousel_last_loop_tick != 0 &&
-        ticks - carousel_last_loop_tick > 1000) {
-        long current = display_getBrightnessRaw();
-        if (current > 0) {
-            carousel_saved_brightness = current;
-            carousel_backlight_stage = 0;
-            carousel_system_screen_off = false;
-            setCarouselDimmedFlag(false);
-        }
-        carousel_last_activity = ticks;
-    }
-    carousel_last_loop_tick = ticks;
-
-    // Detect Onion's own display-off/display-on transition without touching
-    // its POWER handling. While Onion reports zero, park our timer. Once it
-    // restores the configured brightness, begin a fresh 30/15-second cycle.
-    if (ticks - carousel_last_backlight_check >= 250) {
-        carousel_last_backlight_check = ticks;
-        long current = display_getBrightnessRaw();
-
-        if (carousel_system_screen_off) {
-            if (current > 0) {
-                carousel_system_screen_off = false;
-                carousel_backlight_stage = 0;
-                carousel_saved_brightness = current;
-                carousel_last_activity = ticks;
-                setCarouselDimmedFlag(false);
-            }
-            else {
-                carousel_last_activity = ticks;
-            }
-            return;
-        }
-
-        if (carousel_backlight_stage == 0 && current == 0) {
-            carousel_system_screen_off = true;
-            carousel_last_activity = ticks;
-            return;
-        }
-
-        if (carousel_backlight_stage == 1) {
-            if (current == 0) {
-                carousel_system_screen_off = true;
-                carousel_last_activity = ticks;
-                return;
-            }
-            if (current > CAROUSEL_DIM_RAW) {
-                carousel_backlight_stage = 0;
-                carousel_saved_brightness = current;
-                carousel_last_activity = ticks;
-                setCarouselDimmedFlag(false);
-            }
-        }
-        else if (carousel_backlight_stage == 2 && current > 0) {
-            carousel_backlight_stage = 0;
-            carousel_saved_brightness = current;
-            carousel_last_activity = ticks;
-            setCarouselDimmedFlag(false);
-        }
-    }
-
-    if (carousel_saved_brightness <= 0)
-        return;
-
-    uint32_t idle = ticks - carousel_last_activity;
-    if (carousel_backlight_stage == 0 && idle >= CAROUSEL_DIM_DELAY_MS) {
-        long current = display_getBrightnessRaw();
-        if (current > 0)
-            carousel_saved_brightness = current;
-        display_setBrightnessRaw(CAROUSEL_DIM_RAW);
-        carousel_backlight_stage = 1;
-        setCarouselDimmedFlag(true);
-    }
-    if (carousel_backlight_stage == 1 && idle >= CAROUSEL_OFF_DELAY_MS) {
-        display_setBrightnessRaw(0);
-        carousel_backlight_stage = 2;
-        setCarouselDimmedFlag(true);
-    }
-}
-
 typedef struct {
     JsonGameEntry item;
     bool is_folder;
@@ -327,90 +141,22 @@ static VideoEntry games[MAX_GAMES];
 static int games_count = 0;
 static int current = 0;
 static char current_folder[STR_MAX] = "";
-static char single_media_root[STR_MAX] = "";
-static bool single_media_root_checked;
 
 typedef enum { FLOOR_GAMES = 0, FLOOR_VIDEOS = 1 } ContentFloor;
 static ContentFloor current_floor = FLOOR_GAMES;
 static int game_selection = 0;
 static int video_selection = 0;
-static char videos_dir[STR_MAX] = DEFAULT_VIDEOS_DIR;
-static char folder_selections_dir[STR_MAX] = DEFAULT_FOLDER_SELECTIONS_DIR;
-static char folder_selections_index[STR_MAX] = "";
-static char video_thumbnail_cache_dir[STR_MAX] =
-    DEFAULT_VIDEO_THUMBNAIL_CACHE_DIR;
 static char game_select_path[STR_MAX] = "";
 static char video_select_path[STR_MAX] = "";
-static char last_game_path[STR_MAX] = "";
-static char last_media_index_path[STR_MAX] = "";
 static int content_offset_y = 0;
 static bool floor_locked = false;
-static bool show_stories = true;
-static bool show_movies = true;
-static bool show_series = true;
-static bool show_music = true;
-static bool show_cartoons = true;
-static bool selection_state_dirty;
-static uint32_t selection_changed_at;
-
-#define MAX_FOLDER_MEMORY 128
-#define MAX_VIDEO_DIR_CACHE 512
-#define MAX_ARTWORK_DIR_CACHE 64
-#define VIDEO_ARTWORK_CACHE_SIZE 12
-#define VIDEO_LIST_CACHE_SIZE 6
-typedef struct {
-    char folder[STR_MAX];
-    char selection[STR_MAX];
-} FolderSelectionMemory;
-typedef struct {
-    char folder[STR_MAX];
-    char media[STR_MAX];
-} LastMediaMemory;
-typedef struct {
-    char path[STR_MAX];
-    bool has_media;
-} VideoDirCacheEntry;
-typedef struct {
-    char label[STR_MAX];
-    char path[STR_MAX];
-    int priority;
-} ArtworkIndexEntry;
-typedef struct {
-    char folder[STR_MAX];
-    ArtworkIndexEntry *entries;
-    int count;
-    int capacity;
-} ArtworkDirIndex;
-typedef struct {
-    char folder[STR_MAX];
-    VideoEntry *entries;
-    int count;
-    unsigned long age;
-} VideoListCacheEntry;
-static FolderSelectionMemory folder_memory[MAX_FOLDER_MEMORY];
-static int folder_memory_count;
-static LastMediaMemory last_media_memory[MAX_FOLDER_MEMORY];
-static int last_media_memory_count;
-static VideoDirCacheEntry video_dir_cache[MAX_VIDEO_DIR_CACHE];
-static int video_dir_cache_count;
-static ArtworkDirIndex artwork_dir_cache[MAX_ARTWORK_DIR_CACHE];
-static int artwork_dir_cache_count;
-static VideoListCacheEntry video_list_cache[VIDEO_LIST_CACHE_SIZE];
-static unsigned long video_list_cache_age;
 
 static SDL_Surface *artwork = NULL;
-// Share a bounded LRU between floors; their image layouts remain distinct.
-typedef struct {
-    char path[STR_MAX];
-    int floor;
-    SDL_Surface *surface;
-    unsigned long age;
-} VideoArtworkCacheEntry;
-static VideoArtworkCacheEntry video_artwork_cache[VIDEO_ARTWORK_CACHE_SIZE];
-static unsigned long video_artwork_cache_age;
-static bool thumbnail_cache_dir_ready;
-static char duration_probe_path[STR_MAX] = "";
-static uint32_t duration_probe_last_poll;
+// Keep the last decoded image for each floor. Switching floors normally
+// returns to the same selection, so decoding and scaling it again would add
+// a visible pause before every swipe.
+static SDL_Surface *artwork_cache[2] = {NULL, NULL};
+static char artwork_cache_path[2][STR_MAX] = {{0}, {0}};
 static SDL_Surface *crt_fallback = NULL;
 static SDL_Surface *screen_reflection = NULL;
 static bool screen_reflection_checked = false;
@@ -445,7 +191,6 @@ static TTF_Font *font_gamelabel = NULL; // theme list font, large + bold
 // episode titles. Most titles keep the normal large carousel font.
 static TTF_Font *font_episode_sizes[GAME_LABEL_FONT_SIZE + 1] = {NULL};
 static TTF_Font *font_bigvalue = NULL;  // theme title font, large
-static TTF_Font *font_restart_title = NULL; // restart dialog, medium-large
 static TTF_Font *font_info = NULL;      // theme list font, sentence-sized
 
 // Fonts are loaded lazily (on first actual use) rather than all three
@@ -488,15 +233,6 @@ static TTF_Font *getFontBigValue(void)
     return font_bigvalue;
 }
 
-static TTF_Font *getFontRestartTitle(void)
-{
-    if (font_restart_title == NULL)
-        font_restart_title =
-            theme_loadFont(theme()->path, theme()->title.font,
-                           theme()->title.size + RESTART_TITLE_FONT_OFFSET);
-    return font_restart_title;
-}
-
 static TTF_Font *getFontInfo(void)
 {
     if (font_info == NULL)
@@ -508,8 +244,6 @@ static TTF_Font *getFontInfo(void)
 // Solid panels drawn over the theme background (PIN boxes, art fallback).
 // Fixed dark slate so white text stays readable on any theme.
 static const SDL_Color COLOR_WHITE = {255, 255, 255};
-static const SDL_Color COLOR_WARNING_RED = {255, 64, 64};
-static const SDL_Color COLOR_TIMESUP_GREEN = {76, 217, 100};
 static const uint32_t FALLBACK_BG = 0x1A1B26; // if the theme background fails
 static const uint32_t PIN_BOX_COLOR = 0x2E3350;
 static const uint32_t PIN_BOX_ACTIVE = 0x4A5480;
@@ -582,64 +316,40 @@ static SDL_Surface *scaleSurface(SDL_Surface *src, int dst_w, int dst_h)
     int sw = src32->w, sh = src32->h;
     int spitch = src32->pitch / 4, dpitch = dst->pitch / 4;
 
-    // Precompute horizontal sampling once. The former implementation used
-    // floating-point divisions and sixteen floating multiplies per output
-    // pixel, which made the first display of a large poster noticeably slow
-    // on the Cortex-A7. Fixed-point bilinear interpolation produces the same
-    // smooth result with integer arithmetic.
-    int *sample_x = malloc((size_t)dst_w * 3 * sizeof(*sample_x));
-    if (sample_x == NULL) {
-        SDL_FreeSurface(src32);
-        SDL_FreeSurface(dst);
-        return NULL;
-    }
-    int *x0_map = sample_x;
-    int *x1_map = sample_x + dst_w;
-    int *wx_map = sample_x + dst_w * 2;
-    for (int x = 0; x < dst_w; x++) {
-        long long position =
-            ((long long)(2 * x + 1) * sw * 256) / (2 * dst_w) - 128;
-        if (position <= 0) {
-            x0_map[x] = x1_map[x] = 0;
-            wx_map[x] = 0;
-        }
-        else {
-            int x0 = (int)(position / 256);
-            if (x0 >= sw - 1) {
-                x0_map[x] = x1_map[x] = sw - 1;
-                wx_map[x] = 0;
-            }
-            else {
-                x0_map[x] = x0;
-                x1_map[x] = x0 + 1;
-                wx_map[x] = (int)(position - (long long)x0 * 256);
-            }
-        }
-    }
-
     for (int y = 0; y < dst_h; y++) {
-        long long position =
-            ((long long)(2 * y + 1) * sh * 256) / (2 * dst_h) - 128;
-        int y0, y1, wy;
-        if (position <= 0) {
-            y0 = y1 = 0;
+        double fy = ((double)y + 0.5) * sh / dst_h - 0.5;
+        int y0 = (int)fy;
+        if (y0 < 0)
+            y0 = 0;
+        int y1 = y0 + 1 < sh ? y0 + 1 : sh - 1;
+        double wy = fy - y0;
+        if (wy < 0)
             wy = 0;
-        }
-        else {
-            y0 = (int)(position / 256);
-            if (y0 >= sh - 1) {
-                y0 = y1 = sh - 1;
-                wy = 0;
+
+        for (int x = 0; x < dst_w; x++) {
+            double fx = ((double)x + 0.5) * sw / dst_w - 0.5;
+            int x0 = (int)fx;
+            if (x0 < 0)
+                x0 = 0;
+            int x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
+            double wx = fx - x0;
+            if (wx < 0)
+                wx = 0;
+
+            uint32_t p00 = sp[y0 * spitch + x0], p01 = sp[y0 * spitch + x1];
+            uint32_t p10 = sp[y1 * spitch + x0], p11 = sp[y1 * spitch + x1];
+
+            uint32_t result = 0;
+            for (int shift = 0; shift <= 24; shift += 8) {
+                double c = ((p00 >> shift) & 0xFF) * (1 - wx) * (1 - wy) +
+                           ((p01 >> shift) & 0xFF) * wx * (1 - wy) +
+                           ((p10 >> shift) & 0xFF) * (1 - wx) * wy +
+                           ((p11 >> shift) & 0xFF) * wx * wy;
+                result |= ((uint32_t)(c + 0.5) & 0xFF) << shift;
             }
-            else {
-                y1 = y0 + 1;
-                wy = (int)(position - (long long)y0 * 256);
-            }
+            dp[y * dpitch + x] = result;
         }
-        artworkScaleRow(dp + y * dpitch, sp + y0 * spitch,
-                        sp + y1 * spitch, dst_w, x0_map, x1_map, wx_map, wy);
     }
-    free(sample_x);
 
     SDL_FreeSurface(src32);
     return dst;
@@ -663,57 +373,6 @@ static uint32_t readSurfacePixel(SDL_Surface *surface, int x, int y)
     default:
         return *(uint32_t *)pixel;
     }
-}
-
-// Theme JSON exposes text colors, not the colored button accent visible in
-// the footer. Derive that accent from the theme's A-button artwork so the
-// marker is violet on the current theme and follows other themes correctly.
-static uint32_t markerAccentHex(void)
-{
-    static bool ready;
-    static uint32_t cached;
-    if (ready)
-        return cached;
-    ready = true;
-    cached = accentHex(); // neutral/missing button art: use theme, not violet
-
-    SDL_Surface *button = resource_getSurface(BUTTON_A);
-    if (button == NULL)
-        return cached;
-    bool locked = SDL_MUSTLOCK(button);
-    if (locked && SDL_LockSurface(button) != 0)
-        return cached;
-
-    unsigned long red_sum = 0, green_sum = 0, blue_sum = 0, count = 0;
-    for (int y = 0; y < button->h; y++) {
-        for (int x = 0; x < button->w; x++) {
-            uint8_t red, green, blue, alpha;
-            SDL_GetRGBA(readSurfacePixel(button, x, y), button->format,
-                        &red, &green, &blue, &alpha);
-            uint8_t maximum = red > green ? red : green;
-            if (blue > maximum)
-                maximum = blue;
-            uint8_t minimum = red < green ? red : green;
-            if (blue < minimum)
-                minimum = blue;
-            // Ignore transparent pixels and the white A glyph/outline.
-            if (alpha < 96 || maximum < 48 || maximum - minimum < 36)
-                continue;
-            red_sum += red;
-            green_sum += green;
-            blue_sum += blue;
-            count++;
-        }
-    }
-    if (locked)
-        SDL_UnlockSurface(button);
-    if (count > 0) {
-        uint32_t red = (uint32_t)(red_sum / count);
-        uint32_t green = (uint32_t)(green_sum / count);
-        uint32_t blue = (uint32_t)(blue_sum / count);
-        cached = (red << 16) | (green << 8) | blue;
-    }
-    return cached;
 }
 
 static void writeSurfacePixel(SDL_Surface *surface, int x, int y,
@@ -812,160 +471,31 @@ static SDL_Surface *scaleAlphaSurface(SDL_Surface *src, int dst_w, int dst_h)
     return dst;
 }
 
-// Recolor only the bundled badge. Its white X and antialiased edges remain
-// white/mixed with the new accent, and its alpha channel stays untouched.
-// Use the same A-button accent as the last-played marker, not the theme's
-// text color (which is often white even when its buttons are colored).
-static void tintRestartIcon(SDL_Surface *img)
-{
-    bool locked = SDL_MUSTLOCK(img);
-    if (locked && SDL_LockSurface(img) != 0)
-        return;
-    unsigned max_chroma = 0;
-    for (int y = 0; y < img->h; y++) {
-        for (int x = 0; x < img->w; x++) {
-            uint8_t r, g, b, a;
-            SDL_GetRGBA(readSurfacePixel(img, x, y), img->format, &r, &g, &b, &a);
-            unsigned hi = r > g ? r : g;
-            if (b > hi) hi = b;
-            unsigned lo = r < g ? r : g;
-            if (b < lo) lo = b;
-            if (a != 0 && hi - lo > max_chroma)
-                max_chroma = hi - lo;
-        }
-    }
-    if (max_chroma != 0) {
-        uint32_t accent = markerAccentHex();
-        unsigned tr = (accent >> 16) & 255;
-        unsigned tg = (accent >> 8) & 255;
-        unsigned tb = accent & 255;
-        for (int y = 0; y < img->h; y++) {
-            for (int x = 0; x < img->w; x++) {
-                uint8_t r, g, b, a;
-                SDL_GetRGBA(readSurfacePixel(img, x, y), img->format, &r, &g, &b, &a);
-                if (a == 0) continue;
-                unsigned hi = r > g ? r : g;
-                if (b > hi) hi = b;
-                unsigned lo = r < g ? r : g;
-                if (b < lo) lo = b;
-                unsigned ink = (hi - lo) * 255 / max_chroma;
-                unsigned white = 255 * (255 - ink);
-                writeSurfacePixel(img, x, y, SDL_MapRGBA(img->format,
-                    (tr * ink + white + 127) / 255,
-                    (tg * ink + white + 127) / 255,
-                    (tb * ink + white + 127) / 255, a));
-            }
-        }
-    }
-    if (locked)
-        SDL_UnlockSurface(img);
-}
-
-// Use A's actual alpha silhouette, including its transparent margins and
-// antialiased circle edge. Extract only the white X from the bundled badge
-// and center it without scaling it: changing the circle must not enlarge X.
-static SDL_Surface *matchRestartCircle(SDL_Surface *img)
-{
-    SDL_Surface *button = resource_getSurface(BUTTON_A);
-    if (button == NULL)
-        return NULL;
-    SDL_Surface *badge = scaleAlphaSurface(button, button->w, button->h);
-    if (badge == NULL)
-        return NULL;
-    bool locked = SDL_MUSTLOCK(img);
-    if (locked && SDL_LockSurface(img) != 0) {
-        SDL_FreeSurface(badge);
-        return NULL;
-    }
-    unsigned max_chroma = 0;
-    for (int y = 0; y < img->h; y++) {
-        for (int x = 0; x < img->w; x++) {
-            uint8_t r, g, b, a;
-            SDL_GetRGBA(readSurfacePixel(img, x, y), img->format, &r, &g, &b, &a);
-            unsigned hi = r > g ? r : g;
-            if (b > hi) hi = b;
-            unsigned lo = r < g ? r : g;
-            if (b < lo) lo = b;
-            if (a && hi - lo > max_chroma) max_chroma = hi - lo;
-        }
-    }
-    int left = badge->w, right = -1, top = badge->h, bottom = -1;
-    uint32_t accent = markerAccentHex();
-    unsigned tr = (accent >> 16) & 255, tg = (accent >> 8) & 255, tb = accent & 255;
-    for (int y = 0; y < badge->h; y++) {
-        for (int x = 0; x < badge->w; x++) {
-            uint8_t r, g, b, a;
-            SDL_GetRGBA(readSurfacePixel(badge, x, y), badge->format, &r, &g, &b, &a);
-            if (a) {
-                if (x < left) left = x;
-                if (x > right) right = x;
-                if (y < top) top = y;
-                if (y > bottom) bottom = y;
-            }
-            writeSurfacePixel(badge, x, y, SDL_MapRGBA(badge->format, tr, tg, tb, a));
-        }
-    }
-    if (max_chroma == 0 || right < left || bottom < top) {
-        if (locked) SDL_UnlockSurface(img);
-        SDL_FreeSurface(badge);
-        return NULL;
-    }
-    int dx = (left + right - img->w + 1) / 2;
-    int dy = (top + bottom - img->h + 1) / 2;
-    for (int y = 0; y < img->h; y++) {
-        for (int x = 0; x < img->w; x++) {
-            int bx = x + dx, by = y + dy;
-            if (bx < 0 || bx >= badge->w || by < 0 || by >= badge->h) continue;
-            uint8_t r, g, b, a, br, bg, bb, ba;
-            SDL_GetRGBA(readSurfacePixel(img, x, y), img->format, &r, &g, &b, &a);
-            unsigned hi = r > g ? r : g;
-            if (b > hi) hi = b;
-            unsigned lo = r < g ? r : g;
-            if (b < lo) lo = b;
-            unsigned glyph = (255 - (hi - lo) * 255 / max_chroma) * a / 255;
-            if (glyph == 0) continue;
-            SDL_GetRGBA(readSurfacePixel(badge, bx, by), badge->format, &br, &bg, &bb, &ba);
-            writeSurfacePixel(badge, bx, by, SDL_MapRGBA(badge->format,
-                (tr * (255 - glyph) + 255 * glyph + 127) / 255,
-                (tg * (255 - glyph) + 255 * glyph + 127) / 255,
-                (tb * (255 - glyph) + 255 * glyph + 127) / 255, ba));
-        }
-    }
-    if (locked) SDL_UnlockSurface(img);
-    return badge;
-}
-
-// Prefer an X supplied by the theme or its profile overrides. A missing or
-// unreadable themed icon falls back to the bundled shape, tinted once.
+// icon-X-54.png ships inside the app itself
+// (App/KidsMode/icon-X-54.png)
+// rather than living in the active theme's folder — no dependency on the
+// person having added anything to their theme, and the file travels with
+// the app on every install/update.
 static SDL_Surface *loadIconX(void)
 {
-    char themed_path[STR_MAX * 2];
-    SDL_Surface *img = NULL;
-    bool bundled = true;
-    if (theme_getImagePath(theme()->path, "icon-X-54", themed_path) > 0) {
-        img = IMG_Load(themed_path);
-        bundled = img == NULL;
-    }
-    if (img == NULL)
-        img = IMG_Load(ICON_X_PATH);
+    SDL_Surface *img = IMG_Load(ICON_X_PATH);
     if (img == NULL)
         return NULL;
-    // Normalize without an alpha-destroying SDL blit; use the same safe
-    // scaler as our transparent overlays. No orientation changes here.
-    SDL_Surface *scaled = scaleAlphaSurface(
-        img, (int)(img->w * g_scale + 0.5), (int)(img->h * g_scale + 0.5));
-    SDL_FreeSurface(img);
-    if (scaled != NULL && bundled) {
-        SDL_Surface *matched = matchRestartCircle(scaled);
-        if (matched != NULL) {
-            SDL_FreeSurface(scaled);
-            scaled = matched;
-        }
-        else {
-            tintRestartIcon(scaled);
-        }
+    if (img->format->BitsPerPixel != 32) {
+        SDL_Surface *converted = SDL_CreateRGBSurface(
+            SDL_SWSURFACE, img->w, img->h, 32, 0x000000ff, 0x0000ff00,
+            0x00ff0000, 0xff000000);
+        SDL_BlitSurface(img, NULL, converted, NULL);
+        SDL_FreeSurface(img);
+        img = converted;
     }
-    return scaled;
+    if (g_scale != 1.0) {
+        SDL_Surface *scaled = scaleSurface(
+            img, (int)(img->w * g_scale + 0.5), (int)(img->h * g_scale + 0.5));
+        SDL_FreeSurface(img);
+        img = scaled;
+    }
+    return img;
 }
 
 // ScreenScraper Mix V1 bakes the same glass highlight into every square.
@@ -1017,40 +547,38 @@ static SDL_Surface *loadScreenReflection(int size)
 // Blend the white reflection into the already-rendered screen ourselves.
 // This deliberately bypasses SDL_BlitSurface: on-device it can ignore the
 // mask's per-pixel alpha and turn the whole square white.
-static void blendReflection(SDL_Surface *destination,
-                            SDL_Surface *reflection, int dst_x, int dst_y)
+static void blendScreenReflection(SDL_Surface *reflection, int dst_x,
+                                  int dst_y)
 {
-    if (destination == NULL || reflection == NULL ||
-        reflection->format->BytesPerPixel != 4)
+    if (reflection == NULL || reflection->format->BytesPerPixel != 4)
         return;
-    bool destination_locked = SDL_MUSTLOCK(destination);
+    bool screen_locked = SDL_MUSTLOCK(screen);
     bool reflection_locked = SDL_MUSTLOCK(reflection);
-    if (destination_locked && SDL_LockSurface(destination) != 0)
+    if (screen_locked && SDL_LockSurface(screen) != 0)
         return;
     if (reflection_locked && SDL_LockSurface(reflection) != 0) {
-        if (destination_locked)
-            SDL_UnlockSurface(destination);
+        if (screen_locked)
+            SDL_UnlockSurface(screen);
         return;
     }
 
     uint32_t *mask = (uint32_t *)reflection->pixels;
     int mask_pitch = reflection->pitch / 4;
     for (int y = 0; y < reflection->h; y++) {
-        int destination_y = dst_y + y;
-        if (destination_y < 0 || destination_y >= destination->h)
+        int screen_y = dst_y + y;
+        if (screen_y < 0 || screen_y >= screen->h)
             continue;
         for (int x = 0; x < reflection->w; x++) {
-            int destination_x = dst_x + x;
-            if (destination_x < 0 || destination_x >= destination->w)
+            int screen_x = dst_x + x;
+            if (screen_x < 0 || screen_x >= screen->w)
                 continue;
             uint32_t alpha = (mask[y * mask_pitch + x] >> 24) & 0xFF;
             if (alpha == 0)
                 continue;
 
             uint8_t red, green, blue;
-            SDL_GetRGB(readSurfacePixel(destination, destination_x,
-                                        destination_y),
-                       destination->format, &red, &green, &blue);
+            SDL_GetRGB(readSurfacePixel(screen, screen_x, screen_y),
+                       screen->format, &red, &green, &blue);
             // The reference samples use a neutral white reflection. The
             // apparent tint in some covers comes from the artwork below it.
             // Screen-blend towards white so the exact matte remains visible
@@ -1058,16 +586,15 @@ static void blendReflection(SDL_Surface *destination,
             red += ((255 - red) * 255 * alpha + 32512) / 65025;
             green += ((255 - green) * 255 * alpha + 32512) / 65025;
             blue += ((255 - blue) * 255 * alpha + 32512) / 65025;
-            writeSurfacePixel(destination, destination_x, destination_y,
-                              SDL_MapRGB(destination->format, red, green,
-                                         blue));
+            writeSurfacePixel(screen, screen_x, screen_y,
+                              SDL_MapRGB(screen->format, red, green, blue));
         }
     }
 
     if (reflection_locked)
         SDL_UnlockSurface(reflection);
-    if (destination_locked)
-        SDL_UnlockSurface(destination);
+    if (screen_locked)
+        SDL_UnlockSurface(screen);
 }
 
 // Results go through a file: stdout is unreliable on-device (SDL/driver
@@ -1115,40 +642,21 @@ static void resetEntries(void)
 {
     games_count = 0;
     current = 0;
-    // The LRU owns artwork. Detach it while replacing the entry list, keeping
-    // already prepared surfaces alive for fast horizontal/vertical swipes.
+    // artwork is owned by artwork_cache. Detach it while replacing the
+    // entry list, but keep both floor caches alive for fast vertical swipes.
     artwork = NULL;
     artwork_index = -1;
     title_for_index = -1;
     episode_title_for_index = -1;
 }
 
-// Keep filenames untouched while presenting apostrophes consistently in the
-// UI. Some Onion theme fonts give the typographic apostrophe a very wide
-// advance, so display either form as a compact ASCII apostrophe and discard
-// accidental whitespace immediately after it ("l'  oie" -> "l'oie").
-static void normalizeDisplayTitle(char *text, size_t text_size)
+// MainUI's favorites list can contain both games and Apps. Kids Mode's game
+// floor only includes game launchers; App favorites remain untouched in
+// favourite.json for Onion/MainUI.
+static bool isAppFavorite(const JsonGameEntry *entry)
 {
-    char normalized[STR_MAX];
-    size_t source = 0;
-    size_t destination = 0;
-
-    while (text[source] != '\0' && destination + 1 < sizeof(normalized)) {
-        bool straight = text[source] == '\'';
-        bool curly = (unsigned char)text[source] == 0xe2 &&
-                     (unsigned char)text[source + 1] == 0x80 &&
-                     (unsigned char)text[source + 2] == 0x99;
-        if (straight || curly) {
-            normalized[destination++] = '\'';
-            source += straight ? 1 : 3;
-            while (text[source] == ' ' || text[source] == '\t')
-                source++;
-            continue;
-        }
-        normalized[destination++] = text[source++];
-    }
-    normalized[destination] = '\0';
-    snprintf(text, text_size, "%s", normalized);
+    return strstr(entry->launch, "/App/") != NULL ||
+           strstr(entry->rompath, "/App/") != NULL;
 }
 
 static void loadFavorites(void)
@@ -1164,12 +672,11 @@ static void loadFavorites(void)
         JsonGameEntry entry = JsonGameEntry_fromJson(line);
         if (entry.launch[0] == '\0' || entry.rompath[0] == '\0')
             continue;
-        if (strstr(entry.launch, "/App/KidsMode/") != NULL ||
+        if (isAppFavorite(&entry) ||
             access(entry.rompath, F_OK) != 0)
             continue;
         if (entry.label[0] == '\0')
             snprintf(entry.label, sizeof(entry.label), "???");
-        normalizeDisplayTitle(entry.label, sizeof(entry.label));
         games[games_count].item = entry;
         games[games_count].is_folder = false;
         games[games_count].hide_label = false;
@@ -1182,22 +689,6 @@ static int compareVideos(const void *a, const void *b)
 {
     const VideoEntry *va = (const VideoEntry *)a;
     const VideoEntry *vb = (const VideoEntry *)b;
-    if (!current_folder[0] && va->is_folder && vb->is_folder) {
-        // Keep the five supplied media categories in a deliberate order.
-        // Additional user folders remain alphabetically sorted afterwards.
-        static const char *categories[] = {
-            "Movies", "Music", "Cartoons", "Series", "Stories"};
-        int order_a = 100;
-        int order_b = 100;
-        for (int i = 0; i < 5; i++) {
-            if (strcasecmp(va->item.label, categories[i]) == 0)
-                order_a = i;
-            if (strcasecmp(vb->item.label, categories[i]) == 0)
-                order_b = i;
-        }
-        if (order_a != order_b)
-            return order_a - order_b;
-    }
     return strcasecmp(va->item.label, vb->item.label);
 }
 
@@ -1208,212 +699,8 @@ static const char *visibleFolderName(const char *name)
     return name;
 }
 
-static void loadRuntimePaths(void)
-{
-    const char *value = getenv("KIDSMODE_MEDIA_DIR");
-    if (value != NULL && value[0] != '\0')
-        snprintf(videos_dir, sizeof(videos_dir), "%s", value);
-    value = getenv("KIDSMODE_FOLDER_SELECTIONS_DIR");
-    if (value != NULL && value[0] != '\0')
-        snprintf(folder_selections_dir, sizeof(folder_selections_dir), "%s",
-                 value);
-    value = getenv("KIDSMODE_ARTWORK_CACHE_DIR");
-    if (value != NULL && value[0] != '\0')
-        snprintf(video_thumbnail_cache_dir,
-                 sizeof(video_thumbnail_cache_dir), "%s", value);
-    value = getenv("KIDSMODE_LAST_MEDIA_INDEX");
-    if (value != NULL && value[0] != '\0')
-        snprintf(last_media_index_path, sizeof(last_media_index_path), "%s",
-                 value);
-    snprintf(folder_selections_index, sizeof(folder_selections_index),
-             "%s/selections.tsv", folder_selections_dir);
-}
-
-static const char *folderBrowsePath(void)
-{
-    return current_folder[0] ? current_folder : videos_dir;
-}
-
-static void rememberFolderInMemory(const char *folder, const char *selection,
-                                   bool record_change)
-{
-    if (folder == NULL || selection == NULL || folder[0] == '\0' ||
-        selection[0] == '\0')
-        return;
-    size_t folder_len = strlen(folder);
-    if (strncmp(selection, folder, folder_len) != 0 ||
-        selection[folder_len] != '/' ||
-        strchr(selection + folder_len + 1, '/') != NULL)
-        return;
-    int slot = -1;
-    for (int i = 0; i < folder_memory_count; i++) {
-        if (strcmp(folder_memory[i].folder, folder) == 0) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot < 0) {
-        if (folder_memory_count >= MAX_FOLDER_MEMORY)
-            return;
-        slot = folder_memory_count++;
-        snprintf(folder_memory[slot].folder,
-                 sizeof(folder_memory[slot].folder), "%s", folder);
-    }
-    snprintf(folder_memory[slot].selection,
-             sizeof(folder_memory[slot].selection), "%s", selection);
-    if (record_change) {
-        FILE *fp = fopen(FOLDER_HISTORY_FILE, "a");
-        if (fp != NULL) {
-            fprintf(fp, "%s\t%s\n", folder, selection);
-            fclose(fp);
-        }
-    }
-}
-
-static const char *rememberedFolderSelection(const char *folder)
-{
-    for (int i = 0; i < folder_memory_count; i++)
-        if (strcmp(folder_memory[i].folder, folder) == 0)
-            return folder_memory[i].selection;
-    return NULL;
-}
-
-static void loadPersistedFolderSelections(void)
-{
-    FILE *index = fopen(folder_selections_index, "r");
-    if (index != NULL) {
-        char line[STR_MAX * 2 + 2];
-        while (fgets(line, sizeof(line), index) != NULL) {
-            line[strcspn(line, "\r\n")] = '\0';
-            char *tab = strchr(line, '\t');
-            if (tab == NULL)
-                continue;
-            *tab = '\0';
-            rememberFolderInMemory(line, tab + 1, false);
-        }
-        fclose(index);
-        return;
-    }
-
-    // One-time migration from the older one-file-per-folder layout.
-    DIR *dir = opendir(folder_selections_dir);
-    if (dir == NULL)
-        return;
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.' ||
-            strcmp(de->d_name, "selections.tsv") == 0)
-            continue;
-        char path[STR_MAX];
-        snprintf(path, sizeof(path), "%s/%s", folder_selections_dir,
-                 de->d_name);
-        FILE *fp = fopen(path, "r");
-        if (fp == NULL)
-            continue;
-        char selection[STR_MAX] = "";
-        if (fgets(selection, sizeof(selection), fp) != NULL) {
-            selection[strcspn(selection, "\r\n")] = '\0';
-            char folder[STR_MAX];
-            snprintf(folder, sizeof(folder), "%s", selection);
-            char *slash = strrchr(folder, '/');
-            if (slash != NULL) {
-                *slash = '\0';
-                rememberFolderInMemory(folder, selection, false);
-            }
-        }
-        fclose(fp);
-    }
-    closedir(dir);
-
-    char tmp_index[STR_MAX];
-    snprintf(tmp_index, sizeof(tmp_index), "%s.tmp", folder_selections_index);
-    index = fopen(tmp_index, "w");
-    if (index != NULL) {
-        for (int i = 0; i < folder_memory_count; i++)
-            fprintf(index, "%s\t%s\n", folder_memory[i].folder,
-                    folder_memory[i].selection);
-        fclose(index);
-        remove(folder_selections_index);
-        rename(tmp_index, folder_selections_index);
-    }
-}
-
-static void loadLastMediaSelections(void)
-{
-    if (last_media_index_path[0] == '\0')
-        return;
-    FILE *index = fopen(last_media_index_path, "r");
-    if (index == NULL)
-        return;
-    char line[STR_MAX * 2 + 2];
-    while (last_media_memory_count < MAX_FOLDER_MEMORY &&
-           fgets(line, sizeof(line), index) != NULL) {
-        line[strcspn(line, "\r\n")] = '\0';
-        char *tab = strchr(line, '\t');
-        if (tab == NULL)
-            continue;
-        *tab = '\0';
-        const char *media = tab + 1;
-        if (line[0] == '\0' || media[0] == '\0')
-            continue;
-        LastMediaMemory *entry = &last_media_memory[last_media_memory_count++];
-        snprintf(entry->folder, sizeof(entry->folder), "%s", line);
-        snprintf(entry->media, sizeof(entry->media), "%s", media);
-    }
-    fclose(index);
-}
-
-static const char *lastMediaForFolder(const char *folder)
-{
-    for (int i = 0; i < last_media_memory_count; i++)
-        if (strcmp(last_media_memory[i].folder, folder) == 0)
-            return last_media_memory[i].media;
-    return NULL;
-}
-
-static bool currentItemWasLastPlayed(void)
-{
-    if (games_count <= 0 || current < 0 || current >= games_count)
-        return false;
-    const char *path = games[current].item.rompath;
-    if (current_floor == FLOOR_GAMES)
-        return last_game_path[0] != '\0' && strcmp(path, last_game_path) == 0;
-    if (games[current].is_folder)
-        return false;
-    const char *last_media = lastMediaForFolder(folderBrowsePath());
-    return last_media != NULL && strcmp(path, last_media) == 0;
-}
-
-static bool entryType(const char *path, const struct dirent *entry,
-                      bool *is_regular, bool *is_directory)
-{
-    *is_regular = false;
-    *is_directory = false;
-#ifdef DT_REG
-    if (entry->d_type == DT_REG) {
-        *is_regular = true;
-        return true;
-    }
-    if (entry->d_type == DT_DIR) {
-        *is_directory = true;
-        return true;
-    }
-    if (entry->d_type != DT_UNKNOWN)
-        return true;
-#endif
-    struct stat st;
-    if (lstat(path, &st) != 0)
-        return false;
-    *is_regular = S_ISREG(st.st_mode);
-    *is_directory = S_ISDIR(st.st_mode);
-    return true;
-}
-
 static bool directoryHasVideos(const char *path, int depth)
 {
-    for (int i = 0; i < video_dir_cache_count; i++)
-        if (strcmp(video_dir_cache[i].path, path) == 0)
-            return video_dir_cache[i].has_media;
     if (depth > MAX_FOLDER_DEPTH)
         return false;
     DIR *dir = opendir(path);
@@ -1426,188 +713,46 @@ static bool directoryHasVideos(const char *path, int depth)
             continue;
         char child[STR_MAX];
         snprintf(child, sizeof(child), "%s/%s", path, de->d_name);
-        bool is_regular, is_directory;
-        if (!entryType(child, de, &is_regular, &is_directory))
+        struct stat st;
+        if (lstat(child, &st) != 0)
             continue;
         if (de->d_name[0] == '.')
             continue;
-        if (is_regular && hasMediaExtension(de->d_name) &&
+        if (S_ISREG(st.st_mode) && hasMediaExtension(de->d_name) &&
             strcasecmp(de->d_name, "FFplay controls.mp4") != 0) {
             found = true;
             break;
         }
-        if (is_directory && strcasecmp(de->d_name, "Imgs") != 0 &&
+        if (S_ISDIR(st.st_mode) && strcasecmp(de->d_name, "Imgs") != 0 &&
             directoryHasVideos(child, depth + 1)) {
             found = true;
             break;
         }
     }
     closedir(dir);
-    if (video_dir_cache_count < MAX_VIDEO_DIR_CACHE) {
-        snprintf(video_dir_cache[video_dir_cache_count].path,
-                 sizeof(video_dir_cache[video_dir_cache_count].path), "%s",
-                 path);
-        video_dir_cache[video_dir_cache_count].has_media = found;
-        video_dir_cache_count++;
-    }
     return found;
-}
-
-static int artworkExtensionPriority(const char *name)
-{
-    const char *dot = strrchr(name, '.');
-    if (dot == NULL)
-        return -1;
-    if (strcasecmp(dot, ".bmp") == 0)
-        return 0;
-    if (strcasecmp(dot, ".png") == 0)
-        return 1;
-    if (strcasecmp(dot, ".jpg") == 0)
-        return 2;
-    if (strcasecmp(dot, ".jpeg") == 0)
-        return 3;
-    return -1;
-}
-
-static ArtworkDirIndex *artworkIndexForFolder(const char *folder)
-{
-    for (int i = 0; i < artwork_dir_cache_count; i++)
-        if (strcmp(artwork_dir_cache[i].folder, folder) == 0)
-            return &artwork_dir_cache[i];
-    if (artwork_dir_cache_count >= MAX_ARTWORK_DIR_CACHE)
-        return NULL;
-
-    ArtworkDirIndex *index = &artwork_dir_cache[artwork_dir_cache_count++];
-    memset(index, 0, sizeof(*index));
-    snprintf(index->folder, sizeof(index->folder), "%s", folder);
-
-    char imgs_dir[STR_MAX];
-    snprintf(imgs_dir, sizeof(imgs_dir), "%s/Imgs", folder);
-    DIR *dir = opendir(imgs_dir);
-    if (dir == NULL)
-        return index; // Cache the missing Imgs directory too.
-
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        int priority = artworkExtensionPriority(de->d_name);
-        if (priority < 0)
-            continue;
-        char label[STR_MAX];
-        snprintf(label, sizeof(label), "%s", de->d_name);
-        char *dot = strrchr(label, '.');
-        if (dot == NULL)
-            continue;
-        *dot = '\0';
-
-        int existing = -1;
-        for (int i = 0; i < index->count; i++)
-            if (strcmp(index->entries[i].label, label) == 0) {
-                existing = i;
-                break;
-            }
-        if (existing >= 0 && index->entries[existing].priority <= priority)
-            continue;
-        if (existing < 0) {
-            if (index->count >= index->capacity) {
-                int capacity = index->capacity == 0 ? 16 : index->capacity * 2;
-                ArtworkIndexEntry *grown = realloc(
-                    index->entries, (size_t)capacity * sizeof(*grown));
-                if (grown == NULL)
-                    break;
-                index->entries = grown;
-                index->capacity = capacity;
-            }
-            existing = index->count++;
-        }
-        snprintf(index->entries[existing].label,
-                 sizeof(index->entries[existing].label), "%s", label);
-        snprintf(index->entries[existing].path,
-                 sizeof(index->entries[existing].path), "%s/%s", imgs_dir,
-                 de->d_name);
-        index->entries[existing].priority = priority;
-    }
-    closedir(dir);
-    return index;
 }
 
 static bool findArtworkInFolder(const char *folder, const char *label,
                                 char *out, size_t out_size)
 {
+    // A frame captured in the player is stored as BMP and deliberately has
+    // priority over a supplied poster. Deleting the BMP restores the poster.
+    const char *art_exts[] = {"bmp", "BMP", "png", "PNG", "jpg", "JPG",
+                              "jpeg", "JPEG"};
     if (folder == NULL || folder[0] == '\0' || label == NULL ||
         label[0] == '\0')
         return false;
-    ArtworkDirIndex *index = artworkIndexForFolder(folder);
-    if (index == NULL)
-        return false;
-    for (int i = 0; i < index->count; i++)
-        if (strcmp(index->entries[i].label, label) == 0) {
-            snprintf(out, out_size, "%s", index->entries[i].path);
+    for (size_t i = 0; i < sizeof(art_exts) / sizeof(art_exts[0]); i++) {
+        char candidate[STR_MAX];
+        snprintf(candidate, sizeof(candidate), "%s/Imgs/%s.%s", folder,
+                 label, art_exts[i]);
+        if (access(candidate, F_OK) == 0) {
+            snprintf(out, out_size, "%s", candidate);
             return true;
         }
-    return false;
-}
-
-static bool rootCategoryVisible(const char *name)
-{
-    if (strcasecmp(name, "Stories") == 0)
-        return show_stories;
-    if (strcasecmp(name, "Movies") == 0)
-        return show_movies;
-    if (strcasecmp(name, "Series") == 0)
-        return show_series;
-    if (strcasecmp(name, "Music") == 0)
-        return show_music;
-    if (strcasecmp(name, "Cartoons") == 0)
-        return show_cartoons;
-    return true;
-}
-
-// Detect once per kidui process. Parent changes start a new process with
-// fresh visibility flags. Count only entries the normal root browser would
-// show; empty/hidden categories, Imgs and the control video do not count.
-static void findSingleMediaRoot(void)
-{
-    if (single_media_root_checked)
-        return;
-    single_media_root_checked = true;
-    DIR *dir = opendir(videos_dir);
-    if (dir == NULL)
-        return;
-    int count = 0;
-    char candidate[STR_MAX] = "";
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.')
-            continue;
-        char path[STR_MAX];
-        int length = snprintf(path, sizeof(path), "%s/%s", videos_dir, de->d_name);
-        if (length < 0 || length >= (int)sizeof(path))
-            continue;
-        bool regular, directory;
-        if (!entryType(path, de, &regular, &directory))
-            continue;
-        bool folder = directory && rootCategoryVisible(de->d_name) &&
-                      strcasecmp(de->d_name, "Imgs") != 0 &&
-                      directoryHasVideos(path, 1);
-        bool media = regular && hasMediaExtension(de->d_name) &&
-                     strcasecmp(de->d_name, "FFplay controls.mp4") != 0;
-        if (!folder && !media)
-            continue;
-        count++;
-        if (count > 1)
-            break;
-        snprintf(candidate, sizeof(candidate), "%s", folder ? path : "");
     }
-    closedir(dir);
-    if (count == 1)
-        snprintf(single_media_root, sizeof(single_media_root), "%s", candidate);
-}
-
-static bool canLeaveVideoFolder(void)
-{
-    return current_folder[0] != '\0' &&
-           (single_media_root[0] == '\0' ||
-            strcmp(current_folder, single_media_root) != 0);
+    return false;
 }
 
 static bool findNearestFolderArtwork(const char *folder, char *out,
@@ -1618,7 +763,7 @@ static bool findNearestFolderArtwork(const char *folder, char *out,
 
     char cursor[STR_MAX];
     snprintf(cursor, sizeof(cursor), "%s", folder);
-    while (strcmp(cursor, videos_dir) != 0) {
+    while (strcmp(cursor, VIDEOS_DIR) != 0) {
         char *slash = strrchr(cursor, '/');
         if (slash == NULL || slash[1] == '\0')
             break;
@@ -1639,7 +784,7 @@ static bool findNearestFolderArtwork(const char *folder, char *out,
             return true;
 
         *slash = '\0';
-        if (strncmp(cursor, videos_dir, strlen(videos_dir)) != 0)
+        if (strncmp(cursor, VIDEOS_DIR, strlen(VIDEOS_DIR)) != 0)
             break;
     }
     return false;
@@ -1664,8 +809,8 @@ static void findArtwork(const char *browse_dir, const char *item_path,
 
     // Keep older layouts working while local exact-name artwork takes
     // priority.
-    if (strcmp(browse_dir, videos_dir) != 0 &&
-        findArtworkInFolder(videos_dir, label, out, out_size))
+    if (strcmp(browse_dir, VIDEOS_DIR) != 0 &&
+        findArtworkInFolder(VIDEOS_DIR, label, out, out_size))
         return;
 
     // An item without its own image reuses the nearest available folder
@@ -1676,65 +821,9 @@ static void findArtwork(const char *browse_dir, const char *item_path,
         return;
 }
 
-static bool loadCachedVideoList(const char *folder)
-{
-    for (int i = 0; i < VIDEO_LIST_CACHE_SIZE; i++) {
-        if (video_list_cache[i].entries != NULL &&
-            strcmp(video_list_cache[i].folder, folder) == 0) {
-            games_count = video_list_cache[i].count;
-            memcpy(games, video_list_cache[i].entries,
-                   (size_t)games_count * sizeof(games[0]));
-            video_list_cache[i].age = ++video_list_cache_age;
-            return true;
-        }
-    }
-    return false;
-}
-
-static void storeVideoList(const char *folder)
-{
-    if (games_count <= 0)
-        return;
-    int slot = -1;
-    unsigned long oldest = 0;
-    for (int i = 0; i < VIDEO_LIST_CACHE_SIZE; i++) {
-        if (video_list_cache[i].entries == NULL) {
-            slot = i;
-            break;
-        }
-        if (slot < 0 || video_list_cache[i].age < oldest) {
-            slot = i;
-            oldest = video_list_cache[i].age;
-        }
-    }
-    if (slot < 0)
-        return;
-    VideoEntry *copy = malloc((size_t)games_count * sizeof(*copy));
-    if (copy == NULL)
-        return;
-    memcpy(copy, games, (size_t)games_count * sizeof(*copy));
-    free(video_list_cache[slot].entries);
-    snprintf(video_list_cache[slot].folder,
-             sizeof(video_list_cache[slot].folder), "%s", folder);
-    video_list_cache[slot].entries = copy;
-    video_list_cache[slot].count = games_count;
-    video_list_cache[slot].age = ++video_list_cache_age;
-}
-
 static void loadVideos(void)
 {
-    findSingleMediaRoot();
-    if (current_folder[0] == '\0' && single_media_root[0] != '\0') {
-        snprintf(current_folder, sizeof(current_folder), "%s", single_media_root);
-        const char *saved = rememberedFolderSelection(current_folder);
-        if (saved != NULL && (video_select_path[0] == '\0' ||
-                              strcmp(video_select_path, single_media_root) == 0))
-            snprintf(video_select_path, sizeof(video_select_path), "%s", saved);
-        video_selection = 0;
-    }
-    const char *browse_dir = current_folder[0] ? current_folder : videos_dir;
-    if (loadCachedVideoList(browse_dir))
-        return;
+    const char *browse_dir = current_folder[0] ? current_folder : VIDEOS_DIR;
     DIR *dir = opendir(browse_dir);
     if (dir == NULL)
         return;
@@ -1744,20 +833,17 @@ static void loadVideos(void)
             continue;
         char fullpath[STR_MAX];
         snprintf(fullpath, sizeof(fullpath), "%s/%s", browse_dir, de->d_name);
-        bool is_regular, is_directory;
-        if (!entryType(fullpath, de, &is_regular, &is_directory))
-            continue;
-        if (!current_folder[0] && is_directory &&
-            !rootCategoryVisible(de->d_name))
+        struct stat st;
+        if (lstat(fullpath, &st) != 0)
             continue;
         bool captionless_folder =
-            is_directory && de->d_name[0] == '_' &&
+            S_ISDIR(st.st_mode) && de->d_name[0] == '_' &&
             de->d_name[1] != '\0';
         if (de->d_name[0] == '.')
             continue;
-        bool is_media = is_regular && hasMediaExtension(de->d_name);
+        bool is_media = S_ISREG(st.st_mode) && hasMediaExtension(de->d_name);
         bool is_folder = false;
-        if (is_directory && strcasecmp(de->d_name, "Imgs") != 0)
+        if (S_ISDIR(st.st_mode) && strcasecmp(de->d_name, "Imgs") != 0)
             is_folder = directoryHasVideos(fullpath, 1);
         if (!is_media && !is_folder)
             continue;
@@ -1775,7 +861,6 @@ static void loadVideos(void)
         }
         findArtwork(browse_dir, fullpath, entry.label, is_folder,
                     entry.imgpath, sizeof(entry.imgpath));
-        normalizeDisplayTitle(entry.label, sizeof(entry.label));
         games[games_count].item = entry;
         games[games_count].is_folder = is_folder;
         games[games_count].hide_label = captionless_folder;
@@ -1783,7 +868,6 @@ static void loadVideos(void)
     }
     closedir(dir);
     qsort(games, games_count, sizeof(games[0]), compareVideos);
-    storeVideoList(browse_dir);
 }
 
 static void loadCurrentFloor(void)
@@ -1825,70 +909,6 @@ static void rememberSelection(void)
                                               : video_select_path,
                  STR_MAX, "%s", games[current].item.rompath);
     }
-    selection_state_dirty = true;
-    selection_changed_at = SDL_GetTicks();
-}
-
-static void writeFloorState(void);
-static void writeSelectionState(void);
-static void writeFolderState(void);
-
-static void rememberCurrentVideoFolder(void)
-{
-    if (current_floor != FLOOR_VIDEOS || games_count <= 0)
-        return;
-    rememberFolderInMemory(folderBrowsePath(), games[current].item.rompath,
-                           true);
-}
-
-static bool enterCurrentVideoFolder(void)
-{
-    if (current_floor != FLOOR_VIDEOS || games_count <= 0 ||
-        !games[current].is_folder)
-        return false;
-    char next_folder[STR_MAX];
-    snprintf(next_folder, sizeof(next_folder), "%s",
-             games[current].item.rompath);
-    rememberCurrentVideoFolder();
-    snprintf(current_folder, sizeof(current_folder), "%s", next_folder);
-    const char *saved = rememberedFolderSelection(current_folder);
-    video_selection = 0;
-    snprintf(video_select_path, sizeof(video_select_path), "%s",
-             saved != NULL ? saved : "");
-    loadCurrentFloor();
-    rememberSelection();
-    writeFloorState();
-    writeSelectionState();
-    writeFolderState();
-    dirty = true;
-    return true;
-}
-
-static bool leaveCurrentVideoFolder(void)
-{
-    if (current_floor != FLOOR_VIDEOS || !canLeaveVideoFolder())
-        return false;
-    rememberCurrentVideoFolder();
-    char leaving_folder[STR_MAX];
-    snprintf(leaving_folder, sizeof(leaving_folder), "%s", current_folder);
-    char *slash = strrchr(current_folder, '/');
-    if (slash == NULL)
-        current_folder[0] = '\0';
-    else {
-        *slash = '\0';
-        if (strcmp(current_folder, videos_dir) == 0)
-            current_folder[0] = '\0';
-    }
-    video_selection = 0;
-    snprintf(video_select_path, sizeof(video_select_path), "%s",
-             leaving_folder);
-    loadCurrentFloor();
-    rememberSelection();
-    writeFloorState();
-    writeSelectionState();
-    writeFolderState();
-    dirty = true;
-    return true;
 }
 
 static void writeFloorState(void)
@@ -1925,7 +945,6 @@ static void writeSelectionState(void)
         fprintf(fp, "%s\n", video_select_path);
         fclose(fp);
     }
-    selection_state_dirty = false;
 }
 
 static void writeFolderState(void)
@@ -1981,68 +1000,6 @@ static void drawText(const char *text, int center_x, int center_y,
 {
     drawTextAlign(text, center_x, center_y, font, color, max_width,
                   TEXT_CENTER);
-}
-
-// SDL_ttf's synthetic TTF_STYLE_ITALIC is ignored by the older SDL build on
-// some Miyoo installations. Slant the rendered pixels directly so the item
-// title is visibly italic on every theme and firmware version.
-static void drawSlantedText(const char *text, int center_x, int center_y,
-                            TTF_Font *font, SDL_Color color, int max_width)
-{
-    if (font == NULL || text == NULL || text[0] == '\0')
-        return;
-
-    char buf[STR_MAX];
-    snprintf(buf, sizeof(buf), "%s", text);
-    int estimated_shear = (TTF_FontHeight(font) + 3) / 4;
-    if (max_width > 0) {
-        int w = 0, h = 0;
-        TTF_SizeUTF8(font, buf, &w, &h);
-        while (w + estimated_shear > max_width && strlen(buf) > 4) {
-            buf[strlen(buf) - 4] = '\0';
-            strcat(buf, "...");
-            TTF_SizeUTF8(font, buf, &w, &h);
-        }
-    }
-
-    SDL_Surface *plain = TTF_RenderUTF8_Blended(font, buf, color);
-    if (plain == NULL)
-        return;
-    int shear = (plain->h + 3) / 4;
-    SDL_Surface *slanted = SDL_CreateRGBSurface(
-        SDL_SWSURFACE, plain->w + shear, plain->h, 32,
-        plain->format->Rmask, plain->format->Gmask, plain->format->Bmask,
-        plain->format->Amask);
-    if (slanted == NULL) {
-        SDL_FreeSurface(plain);
-        drawText(buf, center_x, center_y, font, color, max_width);
-        return;
-    }
-    SDL_FillRect(slanted, NULL,
-                 SDL_MapRGBA(slanted->format, 0, 0, 0, 0));
-    if (SDL_LockSurface(plain) == 0) {
-        if (SDL_LockSurface(slanted) == 0) {
-            for (int y = 0; y < plain->h; y++) {
-                int shift = plain->h > 1
-                                ? ((plain->h - 1 - y) * shear) /
-                                      (plain->h - 1)
-                                : 0;
-                uint8_t *source_row = (uint8_t *)plain->pixels +
-                                      y * plain->pitch;
-                uint8_t *target_row = (uint8_t *)slanted->pixels +
-                                      y * slanted->pitch + shift * 4;
-                memcpy(target_row, source_row, (size_t)plain->w * 4);
-            }
-            SDL_UnlockSurface(slanted);
-        }
-        SDL_UnlockSurface(plain);
-    }
-    SDL_SetAlpha(slanted, SDL_SRCALPHA, 255);
-    SDL_Rect pos = {center_x - slanted->w / 2,
-                    center_y - slanted->h / 2};
-    SDL_BlitSurface(slanted, NULL, screen, &pos);
-    SDL_FreeSurface(slanted);
-    SDL_FreeSurface(plain);
 }
 
 static void drawGlowingText(const char *text, int center_x, int center_y,
@@ -2354,248 +1311,6 @@ static SDL_Surface *createCrtSurface(int width, int height)
     return surface;
 }
 
-static SDL_Surface *cachedArtwork(const char *path)
-{
-    for (int i = 0; i < VIDEO_ARTWORK_CACHE_SIZE; i++) {
-        if (video_artwork_cache[i].surface != NULL &&
-            video_artwork_cache[i].floor == (int)current_floor &&
-            strcmp(video_artwork_cache[i].path, path) == 0) {
-            video_artwork_cache[i].age = ++video_artwork_cache_age;
-            return video_artwork_cache[i].surface;
-        }
-    }
-    return NULL;
-}
-
-static SDL_Surface *storeArtwork(const char *path, SDL_Surface *surface)
-{
-    int slot = -1;
-    unsigned long oldest = 0;
-    for (int i = 0; i < VIDEO_ARTWORK_CACHE_SIZE; i++) {
-        if (video_artwork_cache[i].surface == NULL) {
-            slot = i;
-            break;
-        }
-        if (slot < 0 || video_artwork_cache[i].age < oldest) {
-            slot = i;
-            oldest = video_artwork_cache[i].age;
-        }
-    }
-    if (slot < 0)
-        return surface;
-    if (video_artwork_cache[slot].surface != NULL)
-        SDL_FreeSurface(video_artwork_cache[slot].surface);
-    snprintf(video_artwork_cache[slot].path,
-             sizeof(video_artwork_cache[slot].path), "%s", path);
-    video_artwork_cache[slot].surface = surface;
-    video_artwork_cache[slot].floor = (int)current_floor;
-    video_artwork_cache[slot].age = ++video_artwork_cache_age;
-    return surface;
-}
-
-static unsigned long artworkPathHash(const char *path)
-{
-    unsigned long hash = 2166136261u;
-    for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
-        hash ^= *p;
-        hash *= 16777619u;
-        hash &= 0xffffffffu;
-    }
-    return hash;
-}
-
-static void ensureVideoThumbnailCacheDir(void)
-{
-    if (thumbnail_cache_dir_ready)
-        return;
-    mkdir("/mnt/SDCARD/Saves/KidsMode", 0777);
-    mkdir(video_thumbnail_cache_dir, 0777);
-    thumbnail_cache_dir_ready = true;
-}
-
-static bool videoThumbnailCachePaths(const char *source, int width, int height,
-                                     char *bitmap, size_t bitmap_size,
-                                     char *metadata, size_t metadata_size)
-{
-    int written = snprintf(bitmap, bitmap_size, "%s/cover-%08lx-%dx%d.bmp",
-                           video_thumbnail_cache_dir,
-                           artworkPathHash(source), width, height);
-    if (written < 0 || written >= (int)bitmap_size)
-        return false;
-    written = snprintf(metadata, metadata_size, "%s.meta", bitmap);
-    return written >= 0 && written < (int)metadata_size;
-}
-
-static bool videoThumbnailIsCurrent(const char *source, const char *bitmap,
-                                    const char *metadata)
-{
-    if (access(bitmap, R_OK) != 0)
-        return false;
-    struct stat source_state;
-    if (stat(source, &source_state) != 0)
-        return false;
-    FILE *fp = fopen(metadata, "r");
-    if (fp == NULL)
-        return false;
-    int render_version = 0;
-    long long source_size = -1;
-    long long source_mtime = -1;
-    int fields = fscanf(fp, "%d %lld %lld", &render_version, &source_size,
-                        &source_mtime);
-    fclose(fp);
-    return fields == 3 &&
-           render_version == VIDEO_THUMBNAIL_RENDER_VERSION &&
-           source_size == (long long)source_state.st_size &&
-           source_mtime == (long long)source_state.st_mtime;
-}
-
-static void saveVideoThumbnail(SDL_Surface *surface, const char *path,
-                               const char *metadata, const char *source)
-{
-    if (surface == NULL || path == NULL || path[0] == '\0' ||
-        metadata == NULL || metadata[0] == '\0')
-        return;
-    ensureVideoThumbnailCacheDir();
-    char temporary[STR_MAX];
-    if (snprintf(temporary, sizeof(temporary), "%s.tmp", path) >=
-        (int)sizeof(temporary))
-        return;
-    remove(temporary);
-    if (SDL_SaveBMP(surface, temporary) == 0) {
-        remove(path);
-        if (rename(temporary, path) != 0) {
-            remove(temporary);
-            return;
-        }
-        struct stat source_state;
-        if (stat(source, &source_state) != 0)
-            return;
-        char metadata_temporary[STR_MAX];
-        if (snprintf(metadata_temporary, sizeof(metadata_temporary),
-                     "%s.tmp", metadata) >= (int)sizeof(metadata_temporary))
-            return;
-        FILE *fp = fopen(metadata_temporary, "w");
-        if (fp != NULL) {
-            fprintf(fp, "%d %lld %lld\n", VIDEO_THUMBNAIL_RENDER_VERSION,
-                    (long long)source_state.st_size,
-                    (long long)source_state.st_mtime);
-            fclose(fp);
-            remove(metadata);
-            if (rename(metadata_temporary, metadata) != 0)
-                remove(metadata_temporary);
-        }
-    }
-}
-
-// KidsPlay already contains FFmpeg's demuxers, so use its lightweight
-// duration-only mode rather than starting a second FFprobe build. Durations
-// are cached beside the artwork cache and discovered in the background: a
-// long movie never makes left/right navigation wait.
-static bool videoDurationCachePath(const char *source, char *cache,
-                                   size_t cache_size)
-{
-    struct stat state;
-    if (source == NULL || stat(source, &state) != 0)
-        return false;
-    ensureVideoThumbnailCacheDir();
-    int written = snprintf(cache, cache_size,
-                           "%s/duration-%08lx-%lld-%lld.txt",
-                           video_thumbnail_cache_dir, artworkPathHash(source),
-                           (long long)state.st_size,
-                           (long long)state.st_mtime);
-    return written >= 0 && written < (int)cache_size;
-}
-
-static int readCachedVideoDuration(const char *source)
-{
-    char cache[STR_MAX];
-    if (!videoDurationCachePath(source, cache, sizeof(cache)))
-        return -1;
-    FILE *fp = fopen(cache, "r");
-    if (fp == NULL)
-        return -1;
-    int seconds = -1;
-    if (fscanf(fp, "%d", &seconds) != 1 || seconds < 0)
-        seconds = -1;
-    fclose(fp);
-    return seconds;
-}
-
-static void startVideoDurationProbe(const char *source)
-{
-    char cache[STR_MAX];
-    if (!videoDurationCachePath(source, cache, sizeof(cache)) ||
-        strcmp(duration_probe_path, cache) == 0)
-        return;
-
-    pid_t pid = fork();
-    if (pid < 0)
-        return;
-    if (pid == 0) {
-        int output = open(cache, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-        int nullout = open("/dev/null", O_WRONLY);
-        if (output < 0)
-            _exit(127);
-        dup2(output, STDOUT_FILENO);
-        if (nullout >= 0)
-            dup2(nullout, STDERR_FILENO);
-        close(output);
-        if (nullout >= 0)
-            close(nullout);
-        setenv("LD_LIBRARY_PATH", KIDSPLAY_LIB_DIR ":/config/lib:/customer/lib",
-               1);
-        execl(KIDSPLAY_PATH, "kidsplay", "-kidsplay-duration", source,
-              (char *)NULL);
-        _exit(127);
-    }
-    snprintf(duration_probe_path, sizeof(duration_probe_path), "%s", cache);
-    duration_probe_last_poll = SDL_GetTicks();
-}
-
-static int videoDurationSeconds(const char *source)
-{
-    int seconds = readCachedVideoDuration(source);
-    if (seconds >= 0) {
-        duration_probe_path[0] = '\0';
-        return seconds;
-    }
-    startVideoDurationProbe(source);
-    return -1;
-}
-
-static void drawOutlinedTextRight(const char *text, int right_x, int center_y,
-                                  TTF_Font *font, SDL_Color color)
-{
-    SDL_Color outline_color = {0, 0, 0, 255};
-    int outline = (int)(1.0 * g_scale + 0.5);
-    if (outline < 1)
-        outline = 1;
-    const int directions[][2] = {{-1, 0}, {1, 0},  {0, -1}, {0, 1},
-                                  {-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
-    for (size_t i = 0; i < sizeof(directions) / sizeof(directions[0]); i++)
-        drawTextAlign(text, right_x + directions[i][0] * outline,
-                      center_y + directions[i][1] * outline, font,
-                      outline_color, 0, TEXT_RIGHT);
-    drawTextAlign(text, right_x, center_y, font, color, 0, TEXT_RIGHT);
-}
-
-static void drawVideoDurationOnCard(const char *source, int right_x,
-                                    int bottom_y)
-{
-    int seconds = videoDurationSeconds(source);
-    if (seconds < 0)
-        return;
-    char duration[24];
-    if (seconds >= 3600)
-        snprintf(duration, sizeof(duration), "%d:%02d:%02d", seconds / 3600,
-                 (seconds / 60) % 60, seconds % 60);
-    else
-        snprintf(duration, sizeof(duration), "%d:%02d", seconds / 60,
-                 seconds % 60);
-    drawOutlinedTextRight(duration, right_x, bottom_y, resource_getFont(HINT),
-                          theme()->hint.color);
-}
-
 static void loadArtwork(void)
 {
     if (artwork_index == current && artwork != NULL)
@@ -2605,37 +1320,21 @@ static void loadArtwork(void)
     if (games_count == 0)
         return;
 
+    int cache_slot = (int)current_floor;
     const char *imgpath = games[current].item.imgpath;
-    // The same small LRU now serves both floors. Games previously kept only
-    // the latest prepared image, so moving back one item decoded, scaled and
-    // rotated it all over again. Twelve display-sized surfaces stay well
-    // within the Mini's memory budget and remove that repeated CPU burst.
-    if (imgpath[0] != '\0') {
-        artwork = cachedArtwork(imgpath);
-        if (artwork != NULL)
-            return;
-    }
-    if (imgpath[0] == '\0')
+    if (artwork_cache[cache_slot] != NULL && imgpath[0] != '\0' &&
+        strcmp(artwork_cache_path[cache_slot], imgpath) == 0) {
+        artwork = artwork_cache[cache_slot];
         return;
-    int target_h = (int)(g_display.height * 0.58);
-    int target_w = target_h;
-    char thumbnail_path[STR_MAX] = "";
-    char thumbnail_metadata[STR_MAX] = "";
-    if (current_floor == FLOOR_VIDEOS)
-        ensureVideoThumbnailCacheDir();
-    bool thumbnail_ready = current_floor == FLOOR_VIDEOS &&
-        videoThumbnailCachePaths(imgpath, target_w, target_h, thumbnail_path,
-                                 sizeof(thumbnail_path), thumbnail_metadata,
-                                 sizeof(thumbnail_metadata)) &&
-        videoThumbnailIsCurrent(imgpath, thumbnail_path, thumbnail_metadata);
-    SDL_Surface *raw = IMG_Load(thumbnail_ready ? thumbnail_path : imgpath);
-    if (raw == NULL && thumbnail_ready) {
-        // A partially written/corrupt cache must never hide the real poster.
-        remove(thumbnail_path);
-        remove(thumbnail_metadata);
-        thumbnail_ready = false;
-        raw = IMG_Load(imgpath);
     }
+    if (artwork_cache[cache_slot] != NULL) {
+        SDL_FreeSurface(artwork_cache[cache_slot]);
+        artwork_cache[cache_slot] = NULL;
+    }
+    artwork_cache_path[cache_slot][0] = '\0';
+    if (strlen(imgpath) == 0 || access(imgpath, F_OK) != 0)
+        return;
+    SDL_Surface *raw = IMG_Load(imgpath);
     if (raw == NULL)
         return;
 
@@ -2663,25 +1362,8 @@ static void loadArtwork(void)
             artwork = raw;
         else
             SDL_FreeSurface(raw);
-        storeArtwork(imgpath, artwork);
-        return;
-    }
-
-    if (thumbnail_ready && raw->w == target_w && raw->h == target_h) {
-        artwork = SDL_DisplayFormatAlpha(raw);
-        if (artwork == NULL)
-            artwork = raw;
-        else
-            SDL_FreeSurface(raw);
-#ifdef PLATFORM_MIYOOMINI
-        /* Cached covers are stored in normal file orientation.  Apply the
-         * Miyoo display correction only to the in-memory copy, exactly once.
-         * SDL_SaveBMP writes a 24-bit bitmap; convert it to the 32-bit display
-         * format first because rotate180InPlace deliberately ignores other
-         * pixel layouts. */
-        rotate180InPlace(artwork);
-#endif
-        storeArtwork(imgpath, artwork);
+        artwork_cache[cache_slot] = artwork;
+        snprintf(artwork_cache_path[cache_slot], STR_MAX, "%s", imgpath);
         return;
     }
 
@@ -2689,6 +1371,8 @@ static void loadArtwork(void)
     // Kids Mode art height. Give videos that same square footprint. Fit the
     // complete image without cropping or stretching, filling the unused area
     // with black (normally pillar-boxing around a portrait poster).
+    int target_h = (int)(g_display.height * 0.58);
+    int target_w = target_h;
     double scale_w = (double)target_w / raw->w;
     double scale_h = (double)target_h / raw->h;
     double scale = scale_w < scale_h ? scale_w : scale_h;
@@ -2715,20 +1399,6 @@ static void loadArtwork(void)
                           (target_h - scaled->h) / 2, 0, 0};
     SDL_BlitSurface(scaled, NULL, framed, &image_pos);
     SDL_FreeSurface(scaled);
-    // Bake the CRT reflection into the prepared tile once. Previously the
-    // launcher blended roughly 77k pixels again on every carousel redraw.
-    // Blend before the Miyoo image correction so artwork and reflection are
-    // rotated together; blending afterwards displayed only the reflection
-    // upside down on the physical panel.
-    SDL_Surface *reflection = loadScreenReflection(target_w);
-    if (reflection != NULL)
-        blendReflection(framed, reflection, 0, 0);
-    /* Keep the persistent bitmap canonical.  Older caches baked the Miyoo
-     * correction into the file itself, so freshly generated and reloaded
-     * artwork could take different paths and occasionally appear inverted. */
-    if (thumbnail_path[0] != '\0')
-        saveVideoThumbnail(framed, thumbnail_path, thumbnail_metadata,
-                           imgpath);
 #ifdef PLATFORM_MIYOOMINI
     rotate180InPlace(framed);
 #endif
@@ -2737,7 +1407,8 @@ static void loadArtwork(void)
         artwork = framed;
     else
         SDL_FreeSurface(framed);
-    storeArtwork(imgpath, artwork);
+    artwork_cache[cache_slot] = artwork;
+    snprintf(artwork_cache_path[cache_slot], STR_MAX, "%s", imgpath);
 }
 
 static SDL_Surface *loadCrtFallback(int width, int height)
@@ -2766,31 +1437,15 @@ static void fillRect(int x, int y, int w, int h, uint32_t color)
                             (color >> 8) & 0xFF, color & 0xFF));
 }
 
-static void drawLastPlayedMarker(int x, int y, int w, int h)
-{
-    if (w <= 0 || h <= 0)
-        return;
-    int border = (int)(1.0 * g_scale);
-    if (border < 1)
-        border = 1;
-    uint32_t color = markerAccentHex();
-    fillRect(x, y, w, border, color);
-    fillRect(x, y + h - border, w, border, color);
-    fillRect(x, y, border, h, color);
-    fillRect(x + w - border, y, border, h, color);
-}
-
 // Active theme background, like every native Onion screen (guarded: a
 // broken theme must not crash the kid launcher)
 static void renderBase(void)
 {
-    // Always clear the complete software surface first. Some theme
-    // backgrounds contain transparent pixels; blitting them directly over
-    // the previous folder left parts of its artwork visible as a ghost image.
-    fillRect(0, 0, g_display.width, g_display.height, FALLBACK_BG);
     SDL_Surface *bg = theme_background();
     if (bg != NULL)
         SDL_BlitSurface(bg, NULL, screen, NULL);
+    else
+        fillRect(0, 0, g_display.width, g_display.height, FALLBACK_BG);
 }
 
 // Remaining play time in seconds; -1 = timer off (file absent/invalid)
@@ -2808,235 +1463,31 @@ static int readRemaining(void)
     return result;
 }
 
-static long readTimesUpSince(void)
-{
-    FILE *fp = fopen(TIMESUP_SINCE_FILE, "r");
-    if (fp == NULL)
-        return 0;
-    char buffer[32] = "";
-    bool valid = fgets(buffer, sizeof(buffer), fp) != NULL;
-    fclose(fp);
-    if (!valid)
-        return 0;
-    char *end = NULL;
-    long value = strtol(buffer, &end, 10);
-    return end != buffer && value > 0 ? value : 0;
-}
-
-static long ensureTimesUpSince(void)
-{
-    long started = readTimesUpSince();
-    if (started > 0)
-        return started;
-    started = (long)time(NULL);
-    FILE *fp = fopen(TIMESUP_SINCE_FILE, "w");
-    if (fp != NULL) {
-        fprintf(fp, "%ld\n", started);
-        fclose(fp);
-    }
-    return started;
-}
-
-static bool batteryIsChargingFast(void)
-{
-    FILE *fp = fopen("/tmp/.axp_result", "r");
-    if (fp != NULL) {
-        char buf[160] = "";
-        bool charging = false;
-        if (fgets(buf, sizeof(buf), fp) != NULL) {
-            char *field = strstr(buf, "\"charging\"");
-            char *separator = field != NULL ? strchr(field, ':') : NULL;
-            charging = separator != NULL && atoi(separator + 1) != 0;
-            if (!charging)
-                charging = strstr(buf, "\"battery\":500") != NULL;
-        }
-        fclose(fp);
-        return charging;
-    }
-    return battery_isCharging();
-}
-
-static int batteryPercentageFast(void)
-{
-    int percentage = battery_getPercentage();
-    if (percentage >= 0 && percentage <= 100) {
-        s_battery = percentage;
-        return percentage;
-    }
-
-    // Charging can temporarily expose Onion's sentinel value (500).
-    // Recover the real percentage from axp_test's cached JSON when possible.
-    FILE *fp = fopen("/tmp/.axp_result", "r");
-    if (fp != NULL) {
-        char buf[160] = "";
-        if (fgets(buf, sizeof(buf), fp) != NULL) {
-            char *field = strstr(buf, "\"battery\"");
-            char *separator = field != NULL ? strchr(field, ':') : NULL;
-            if (separator != NULL) {
-                int axp_percentage = atoi(separator + 1);
-                if (axp_percentage >= 0 && axp_percentage <= 100) {
-                    fclose(fp);
-                    s_battery = axp_percentage;
-                    return axp_percentage;
-                }
-            }
-        }
-        fclose(fp);
-    }
-    return s_battery >= 0 && s_battery <= 100 ? s_battery : 0;
-}
-
-static bool carousel_battery_charging;
-static int carousel_battery_percentage;
-
-// This is Onion's normal battery-surface layout with one deliberate change:
-// BATTERY_CHARGING is used for the icon without hiding the percentage. Keeping
-// the composition inside one transparent surface makes charging pixel-for-
-// pixel identical to the normal gauge and avoids direct-TTF white rectangles.
-static SDL_Surface *batterySurfaceWithIcon(int percentage,
-                                           ThemeImages icon_request)
-{
-    SDL_Surface *icon = resource_getSurface(icon_request);
-    TTF_Font *font = resource_getFont(BATTERY);
-    BatteryPercentage_s *style = &theme()->batteryPercentage;
-    if (icon == NULL || font == NULL)
-        return NULL;
-
-    int offset_y = style->offsetY;
-    const char *family = TTF_FontFaceFamilyName(font);
-    if (family != NULL && strncmp(family, "Exo 2", 5) == 0)
-        offset_y -= (int)(0.075 * TTF_FontHeight(font));
-
-    char buffer[8];
-    snprintf(buffer, sizeof(buffer), "%d%%", percentage);
-    SDL_Surface *text =
-        TTF_RenderUTF8_Blended(font, buffer, style->color);
-    if (text == NULL)
-        return NULL;
-    SDL_SetAlpha(text, 0, SDL_ALPHA_TRANSPARENT);
-
-    bool visible = style->visible && icon->w <= 640;
-    const int spacer = 5;
-    int image_width = 2 * (text->w + spacer) + icon->w;
-    int image_height = text->h > icon->h ? text->h : icon->w;
-    if (!visible) {
-        image_width = icon->w;
-        image_height = icon->h;
-    }
-    else if (style->fixed || style->textAlign == CENTER) {
-        image_width = icon->w > text->w ? icon->w : text->w;
-    }
-    if (image_width % 2 != 0)
-        image_width++;
-    if (image_height % 2 != 0)
-        image_height++;
-    if (image_width < 48)
-        image_width = 48;
-    if (image_height < 48)
-        image_height = 48;
-
-    SDL_Surface *image = SDL_CreateRGBSurface(
-        0, image_width, image_height, 32, 0x00ff0000, 0x0000ff00,
-        0x000000ff, 0xff000000);
-    if (image == NULL) {
-        SDL_FreeSurface(text);
-        return NULL;
-    }
-    SDL_FillRect(image, NULL, SDL_MapRGBA(image->format, 0, 0, 0, 0));
-
-    SDL_Rect icon_pos = {0, (image_height - icon->h) / 2};
-    SDL_Rect text_pos = {0, (image_height - text->h) / 2 + offset_y};
-    if (visible) {
-        if (style->fixed) {
-            if (style->textAlign == RIGHT)
-                text_pos.x = icon->w - text->w + style->offsetX;
-            else if (style->textAlign == CENTER)
-                text_pos.x = (icon->w - text->w) / 2 + style->offsetX;
-            else
-                text_pos.x = style->offsetX;
-        }
-        else if (style->textAlign == RIGHT) {
-            icon_pos.x = text->w + spacer;
-            text_pos.x = style->offsetX;
-        }
-        else if (style->textAlign == CENTER) {
-            text_pos.x = (icon->w - text->w) / 2 + style->offsetX;
-        }
-        else {
-            text_pos.x = icon->w + spacer + style->offsetX;
-        }
-    }
-
-    SDL_Surface *converted_icon = SDL_ConvertSurface(icon, image->format, 0);
-    if (converted_icon != NULL) {
-        SDL_SetAlpha(converted_icon, 0, SDL_ALPHA_TRANSPARENT);
-        SDL_BlitSurface(converted_icon, NULL, image, &icon_pos);
-        SDL_FreeSurface(converted_icon);
-    }
-    if (visible)
-        SDL_BlitSurface(text, NULL, image, &text_pos);
-    SDL_FreeSurface(text);
-    return image;
-}
-
-static SDL_Surface *chargingBatterySurface(int percentage)
-{
-    return batterySurfaceWithIcon(percentage, BATTERY_CHARGING);
-}
-
-static SDL_Surface *criticalBatterySurface(int percentage)
-{
-    return batterySurfaceWithIcon(percentage, BATTERY_0);
-}
-
 // Small "12 min" chip in the top-right corner (where MainUI keeps its
-// battery), switching to the theme accent for the last 5 minutes
+// battery), switching to the accent color for the last 5 minutes
 static void renderTimeChip(int remaining)
 {
-    bool critical_battery = !carousel_battery_charging &&
-                            carousel_battery_percentage <= 5;
-    bool battery_peek = keystate[SW_BTN_Y] != RELEASED ||
-                        carousel_battery_charging || critical_battery;
+    bool battery_peek = keystate[SW_BTN_Y] != RELEASED &&
+                        keystate[SW_BTN_B] != RELEASED;
     if (remaining < 0 && !battery_peek)
         return;
 
     if (battery_peek) {
-        // Y held, or charging: show the theme's battery gauge in Onion's
-        // header area whether or not a timer is running.
+        // Y+B held: show the theme's own battery gauge (icon + %), at
+        // the exact same coordinates Onion's own MainUI header uses
+        // (theme_renderHeaderBattery: centered at 596*scale, 30*scale) —
+        // not a guessed position — whether or not a timer is running.
         // Read live rather than a cached value, since a play session can
         // run long enough for it to actually change. (Continued redraw
         // while held is re-armed in main()'s loop, same reasoning as the
         // scrolling title above.)
-        if (carousel_battery_charging)
-        {
-            SDL_Surface *batt =
-                chargingBatterySurface(carousel_battery_percentage);
-            if (batt != NULL) {
-                SDL_Rect pos = {(int)(590.0 * g_scale) - batt->w / 2,
-                                (int)(30.0 * g_scale) - batt->h / 2};
-                SDL_BlitSurface(batt, NULL, screen, &pos);
-                SDL_FreeSurface(batt);
-            }
-        }
-        else if (critical_battery) {
-            SDL_Surface *batt =
-                criticalBatterySurface(carousel_battery_percentage);
-            if (batt != NULL) {
-                SDL_Rect pos = {(int)(590.0 * g_scale) - batt->w / 2,
-                                (int)(30.0 * g_scale) - batt->h / 2};
-                SDL_BlitSurface(batt, NULL, screen, &pos);
-                SDL_FreeSurface(batt);
-            }
-        }
-        else {
-            int pct = carousel_battery_percentage;
-            SDL_Surface *batt = theme_batterySurface(pct);
-            if (batt != NULL) {
-                SDL_Rect pos = {(int)(590.0 * g_scale) - batt->w / 2,
-                                (int)(30.0 * g_scale) - batt->h / 2};
-                SDL_BlitSurface(batt, NULL, screen, &pos);
-                SDL_FreeSurface(batt);
-            }
+        int pct = battery_isCharging() ? 500 : battery_getPercentage();
+        SDL_Surface *batt = theme_batterySurface(pct);
+        if (batt != NULL) {
+            SDL_Rect pos = {(int)(596.0 * g_scale) - batt->w / 2,
+                            (int)(30.0 * g_scale) - batt->h / 2};
+            SDL_BlitSurface(batt, NULL, screen, &pos);
+            SDL_FreeSurface(batt);
         }
         return;
     }
@@ -3044,22 +1495,17 @@ static void renderTimeChip(int remaining)
     int mins = (remaining + 59) / 60;
     char chip[32];
     snprintf(chip, sizeof(chip), "%d min", mins);
-    SDL_Color color = mins <= 5 ? COLOR_WARNING_RED : theme()->hint.color;
-    TTF_Font *battery_font = resource_getFont(BATTERY);
-    int timer_y = (int)(30.0 * g_scale) + theme()->batteryPercentage.offsetY;
-    const char *family = battery_font != NULL
-                             ? TTF_FontFaceFamilyName(battery_font)
-                             : NULL;
-    if (family != NULL && strncmp(family, "Exo 2", 5) == 0)
-        timer_y -= (int)(0.075 * TTF_FontHeight(battery_font));
-    drawTextAlign(chip, (int)(620.0 * g_scale), timer_y,
-                  battery_font != NULL ? battery_font : resource_getFont(HINT),
-                  color, 0, TEXT_RIGHT);
+    SDL_Color color = mins <= 5 ? accentColor() : theme()->hint.color;
+    drawTextAlign(chip, (int)(620.0 * g_scale), (int)(30.0 * g_scale),
+                  resource_getFont(HINT), color, 0, TEXT_RIGHT);
 }
 
 static void renderFloorIndicator(void)
 {
-    if (!floor_locked) {
+    // A media folder is a child navigation level, not another floor. The
+    // user must return to the media root before GAMES becomes reachable.
+    if (!floor_locked &&
+        !(current_floor == FLOOR_VIDEOS && current_folder[0])) {
         if (!vertical_arrows_checked) {
             SDL_Surface *right = resource_getSurface(RIGHT_ARROW);
             if (right != NULL) {
@@ -3094,13 +1540,8 @@ static void renderCarousel(int remaining)
     loadArtwork();
 
     int cx = g_display.width / 2;
-    // The artwork and its caption form one vertical block. Lift both floors
-    // by the same amount to keep a clear gap above the lower floor arrow,
-    // without changing the artwork format used by the games carousel.
-    int content_lift = (int)(6.0 * g_scale);
-    int art_cy = (int)(g_display.height * 0.40) + content_offset_y -
-                 content_lift;
-    int fixed_art_cy = (int)(g_display.height * 0.40) - content_lift;
+    int art_cy = (int)(g_display.height * 0.40) + content_offset_y;
+    int fixed_art_cy = (int)(g_display.height * 0.40);
 
     if (artwork != NULL) {
         SDL_Rect pos = {cx - artwork->w / 2, art_cy - artwork->h / 2};
@@ -3145,47 +1586,15 @@ static void renderCarousel(int remaining)
 
     // Games already contain this highlight in their ScreenScraper artwork.
     // Add it only to video/folder squares (including the no-image fallback).
-    if (current_floor == FLOOR_VIDEOS && artwork == NULL) {
+    if (current_floor == FLOOR_VIDEOS) {
         int reflection_size = (int)(g_display.height * 0.58);
         SDL_Surface *reflection = loadScreenReflection(reflection_size);
         if (reflection != NULL) {
-            blendReflection(screen, reflection, cx - reflection->w / 2,
-                            art_cy - reflection->h / 2);
+            blendScreenReflection(reflection, cx - reflection->w / 2,
+                                  art_cy - reflection->h / 2);
         }
         // Supplied artwork, including an inherited folder cover, stays
         // untouched. The selected file or folder name is shown below it.
-    }
-
-    if (currentItemWasLastPlayed()) {
-        int card_w;
-        int card_h;
-        if (artwork != NULL) {
-            card_w = artwork->w;
-            card_h = artwork->h;
-        }
-        else if (current_floor == FLOOR_GAMES) {
-            card_w = (int)(g_display.width * 0.55);
-            card_h = (int)(g_display.height * 0.50);
-        }
-        else {
-            card_w = card_h = (int)(g_display.height * 0.58);
-        }
-        drawLastPlayedMarker(cx - card_w / 2, art_cy - card_h / 2,
-                             card_w, card_h);
-    }
-
-    // A media duration is read once in the background by KidsPlay, then
-    // cached. It appears on the lower-right corner of the selected artwork
-    // using the active theme's own hint font, without delaying navigation.
-    if (current_floor == FLOOR_VIDEOS && !games[current].is_folder) {
-        int card_height = artwork != NULL ? artwork->h
-                                          : (int)(g_display.height * 0.58);
-        int card_width = artwork != NULL ? artwork->w
-                                         : (int)(g_display.height * 0.58);
-        drawVideoDurationOnCard(games[current].item.rompath,
-                                cx + card_width / 2 - (int)(10.0 * g_scale),
-                                art_cy + card_height / 2 -
-                                    (int)(15.0 * g_scale));
     }
 
     // Game title in the theme's list font (big + bold). Short titles now
@@ -3194,10 +1603,7 @@ static void renderCarousel(int remaining)
     // unchanged) instead of scrolling or truncating.
     if (!(current_floor == FLOOR_VIDEOS && games[current].hide_label)) {
         int avail_w = g_display.width - (int)(90.0 * g_scale);
-        // Keep the caption visually attached to the card. Its baseline is
-        // lifted a little more than the artwork, leaving the larger safety
-        // gap on the lower floor arrow side.
-        int bottom_y = (int)(394.0 * g_scale) + content_offset_y - content_lift;
+        int bottom_y = (int)(400.0 * g_scale) + content_offset_y;
         int line_h = TTF_FontLineSkip(getFontGameLabel());
         int top_y = bottom_y - line_h;
         // Folder captions use only the folder name. Files always keep their
@@ -3259,7 +1665,7 @@ static void renderCarousel(int remaining)
         screen, games[current].is_folder ? "OPEN"
                 : current_floor == FLOOR_GAMES ? "PLAY"
                                                : "PLAY",
-        games[current].is_folder && canLeaveVideoFolder() ? "BACK" : NULL);
+        games[current].is_folder && current_folder[0] ? "BACK" : NULL);
     // No X-button icon ships with Onion's theme (only BUTTON_A/BUTTON_B),
     // so we draw a small badge ourselves. To guarantee it lands in the
     // right spot regardless of theme (icon size and "PLAY" label width
@@ -3300,7 +1706,7 @@ static void renderCarousel(int remaining)
 
         // Inside any media folder, B returns one level. Keep the kid-facing
         // order A:PLAY, X:RESTART, B:BACK.
-        if (current_floor == FLOOR_VIDEOS && canLeaveVideoFolder()) {
+        if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
             int restart_w = 0, restart_h = 0;
             TTF_SizeUTF8(resource_getFont(HINT), "RESTART", &restart_w,
                          &restart_h);
@@ -3347,60 +1753,23 @@ static void renderConfirmRestart(const char *label, int remaining)
 
     TTF_Font *title_font = resource_getFont(TITLE);
     int dialog_w = (int)(DIALOG_WIDTH * g_scale);
-    char label_line1[STR_MAX] = "";
-    char label_line2[STR_MAX] = "";
-    bool label_two_lines = false;
+    char wrapped_label[STR_MAX];
     int w = 0, h = 0;
     TTF_SizeUTF8(title_font, label, &w, &h);
     if (w <= dialog_w) {
-        snprintf(label_line1, sizeof(label_line1), "%s", label);
+        snprintf(wrapped_label, sizeof(wrapped_label), "%s", label);
     }
     else {
-        label_two_lines = true;
-        splitTwoLines(label, title_font, label_line1, sizeof(label_line1),
-                      label_line2, sizeof(label_line2));
+        char l1[STR_MAX], l2[STR_MAX];
+        splitTwoLines(label, title_font, l1, sizeof(l1), l2, sizeof(l2));
+        snprintf(wrapped_label, sizeof(wrapped_label), "%s\n%s", l1, l2);
     }
 
     char message[STR_MAX];
-    if (current_floor == FLOOR_GAMES)
-        snprintf(message, sizeof(message),
-                 label_two_lines
-                     ? " \n \n\nStart from the beginning?\nIn-game saves are kept."
-                     : " \n\nStart from the beginning?\nIn-game saves are kept.");
-    else
-        snprintf(message, sizeof(message),
-                 label_two_lines
-                     ? " \n \n\nStart from the beginning?\nSaved progress will be reset."
-                     : " \n\nStart from the beginning?\nSaved progress will be reset.");
-    // Let the native dialog draw its panel, message and button hints, then
-    // render this short confirmation title with the larger display face.
-    // The normal Onion dialog title is deliberately compact and made this
-    // important destructive action too easy to overlook.
-    theme_renderDialog(screen, " ", message, true);
-    SDL_Surface *pop_bg = resource_getSurface(POP_BG);
-    // The native +25 position hugs the upper edge. +50 centres this heading
-    // in the clear space above the selected content's title.
-    int title_y = (g_display.height - pop_bg->h) / 2 +
-                  (int)(50.0 * g_scale);
-    drawText("Start over?", g_display.width / 2, title_y,
-             getFontRestartTitle(), COLOR_WARNING_RED, dialog_w);
-
-    // Reserve the label's original lines in the native textbox above, then
-    // repaint only those lines with an italic font. This keeps Onion's exact
-    // message spacing and works identically for games, video and audio.
-    int line_height = (int)(1.2 * TTF_FontLineSkip(title_font));
-    int paragraph_spacing = (int)(0.5 * TTF_FontLineSkip(title_font));
-    int visible_lines = label_two_lines ? 4 : 3;
-    int textbox_height = visible_lines * line_height + paragraph_spacing;
-    int first_label_y = (g_display.height - pop_bg->h) / 2 +
-                        (int)(160.0 * g_scale) - textbox_height / 2 +
-                        line_height / 2 - (int)(8.0 * g_scale);
-    drawSlantedText(label_line1, g_display.width / 2, first_label_y,
-                    title_font, theme()->grid.color, dialog_w);
-    if (label_two_lines)
-        drawSlantedText(label_line2, g_display.width / 2,
-                        first_label_y + line_height, title_font,
-                        theme()->grid.color, dialog_w);
+    snprintf(message, sizeof(message),
+             "%s\n\nStart from the beginning?\nSaved progress will be reset.",
+             wrapped_label);
+    theme_renderDialog(screen, "Start over?", message, true);
 }
 
 static void renderTimesUp(void)
@@ -3412,7 +1781,7 @@ static void renderTimesUp(void)
     drawText("Time's up!", cx, (int)(g_display.height * 0.4),
              getFontBigValue(), accentColor(), g_display.width - 40);
     drawText("See you next time.", cx, (int)(g_display.height * 0.55),
-             getFontInfo(), COLOR_TIMESUP_GREEN, g_display.width - 40);
+             getFontInfo(), theme()->list.color, g_display.width - 40);
 
     theme_renderFooter(screen);
 }
@@ -3420,10 +1789,7 @@ static void renderTimesUp(void)
 static void formatAddMinutes(void *self, char *out_label)
 {
     ListItem *item = (ListItem *)self;
-    if (item->value == 0)
-        sprintf(out_label, "OFF");
-    else
-        sprintf(out_label, "+%d min", item->value * TIMER_STEP);
+    sprintf(out_label, "+%d min", item->value * TIMER_STEP);
 }
 
 static void onLockFloorToggle(void *self)
@@ -3434,55 +1800,6 @@ static void onLockFloorToggle(void *self)
         fprintf(fp, "%d\n", item->value);
         fclose(fp);
     }
-}
-
-static void formatCarouselFloors(void *self, char *out_label)
-{
-    int value = ((ListItem *)self)->value;
-    strcpy(out_label, value == 1 ? "Games only" : value == 2 ? "Media only" : "Games&Media");
-}
-
-static void onSaveStatesToggle(void *self)
-{
-    FILE *fp = fopen(SAVESTATES_RESULT_FILE, "w");
-    if (fp != NULL) {
-        fprintf(fp, "%d\n", ((ListItem *)self)->value ? 1 : 0);
-        fclose(fp);
-    }
-}
-
-static void writeCategoryToggle(const char *name, int value)
-{
-    FILE *fp = fopen(CATEGORIES_RESULT_FILE, "a");
-    if (fp != NULL) {
-        fprintf(fp, "%s=%d\n", name, value ? 1 : 0);
-        fclose(fp);
-    }
-}
-
-static void onStoriesToggle(void *self)
-{
-    writeCategoryToggle("stories", ((ListItem *)self)->value);
-}
-
-static void onMoviesToggle(void *self)
-{
-    writeCategoryToggle("movies", ((ListItem *)self)->value);
-}
-
-static void onSeriesToggle(void *self)
-{
-    writeCategoryToggle("series", ((ListItem *)self)->value);
-}
-
-static void onMusicToggle(void *self)
-{
-    writeCategoryToggle("music", ((ListItem *)self)->value);
-}
-
-static void onCartoonsToggle(void *self)
-{
-    writeCategoryToggle("cartoons", ((ListItem *)self)->value);
 }
 
 // The parent menu is a real Onion list: full-width rows, the theme's list
@@ -3496,24 +1813,23 @@ static void renderMenu(List *list, int remaining)
     theme_renderList(screen, list);
 
     // Status line: current remaining time, and — while the add-time row is
-    // selected — what it becomes when applied. Five menu rows leave the last
-    // native list row free for this information above the footer.
+    // selected — what it becomes when applied. Same font as the menu rows,
+    // tucked bottom-right above the footer.
     char info[STR_MAX] = "";
     int rem_min = remaining >= 0 ? (remaining + 59) / 60 : -1;
     if (list->active_pos == MENU_ADDTIME) {
         int add_min = list->items[MENU_ADDTIME].value * TIMER_STEP;
-        if (add_min == 0 && rem_min >= 0)
-            snprintf(info, sizeof(info),
-                     "Time left: %d min (no limit after)", rem_min);
-        else if (add_min == 0)
-            snprintf(info, sizeof(info), "No timer set");
-        else if (rem_min >= 0)
+        if (rem_min >= 0)
             snprintf(info, sizeof(info),
                      "Time left: %d min (%d min after adding)", rem_min,
                      rem_min + add_min);
         else
             snprintf(info, sizeof(info), "No timer (%d min after adding)",
                      add_min);
+    }
+    else if (list->active_pos == MENU_NOTIMER && rem_min >= 0) {
+        snprintf(info, sizeof(info), "Time left: %d min (no limit after)",
+                 rem_min);
     }
     else {
         if (rem_min >= 0)
@@ -3525,17 +1841,6 @@ static void renderMenu(List *list, int remaining)
                   resource_getFont(LIST), theme()->list.color,
                   g_display.width - 40, TEXT_RIGHT);
 
-    theme_renderFooter(screen);
-    theme_renderStandardHint(screen, "OK", "BACK");
-    theme_renderFooterStatus(screen, list->active_pos + 1, list->item_count);
-}
-
-static void renderSettingsList(List *list, const char *title)
-{
-    renderBase();
-    theme_renderHeader(screen, title, false);
-    theme_renderHeaderBattery(screen, batteryPercentage());
-    theme_renderList(screen, list);
     theme_renderFooter(screen);
     theme_renderStandardHint(screen, "OK", "BACK");
     theme_renderFooterStatus(screen, list->active_pos + 1, list->item_count);
@@ -3646,46 +1951,10 @@ static void renderPickTimer(const char *title, int minutes, bool no_off)
                              no_off ? "CANCEL" : "NO TIMER");
 }
 
-static void formatProfile(void *self, char *out_label)
-{
-    ListItem *item = (ListItem *)self;
-    sprintf(out_label, "%s", item->value == 0 ? "Main" : "Guest");
-}
-
-static void formatSessionTimer(void *self, char *out_label)
-{
-    ListItem *item = (ListItem *)self;
-    if (item->value == 0)
-        sprintf(out_label, "OFF");
-    else
-        sprintf(out_label, "%d min", item->value * TIMER_STEP);
-}
-
-static void renderPickProfile(List *list)
-{
-    renderBase();
-    theme_renderHeader(screen, "Start Kids Mode", false);
-    theme_renderHeaderBattery(screen, batteryPercentage());
-    theme_renderList(screen, list);
-    theme_renderFooter(screen);
-    theme_renderStandardHint(screen, "START", "CANCEL");
-}
-
 static void flip(void)
 {
     SDL_BlitSurface(screen, NULL, video, NULL);
     SDL_Flip(video);
-    // The Miyoo framebuffer has two pages. A previous FFplay audio screen is
-    // drawn in panel-native orientation and can otherwise resurface inverted
-    // on a later page change. Prime both pages with the first complete kidui
-    // frame instead of flipping FFplay's surface while it is being destroyed.
-    // Two identical kidui frames are safe and visually indistinguishable.
-    static bool framebuffer_primed = false;
-    if (!framebuffer_primed) {
-        SDL_BlitSurface(screen, NULL, video, NULL);
-        SDL_Flip(video);
-        framebuffer_primed = true;
-    }
 #ifdef KIDUI_SCREENSHOT_DIR
     // Dev/preview builds only (never defined on device): dump every
     // rendered frame so screens can be inspected without hardware
@@ -3734,8 +2003,9 @@ static bool switchFloor(ContentFloor target, int remaining)
 {
     if (target == current_floor)
         return games_count > 0;
-    if (current_floor == FLOOR_VIDEOS)
-        rememberCurrentVideoFolder();
+    if (current_floor == FLOOR_VIDEOS && current_folder[0] &&
+        target == FLOOR_GAMES)
+        return games_count > 0;
     rememberSelection();
     int direction = target == FLOOR_VIDEOS ? 1 : -1;
 
@@ -3752,7 +2022,6 @@ static bool switchFloor(ContentFloor target, int remaining)
     writeFloorState();
     writeFolderState();
     loadCurrentFloor();
-    writeFolderState(); // loadVideos may have skipped a single category root
     rememberSelection();
     writeSelectionState();
     if (games_count == 0) {
@@ -3812,24 +2081,14 @@ static bool switchFloor(ContentFloor target, int remaining)
 
 int main(int argc, char *argv[])
 {
-    // Duration probes are intentionally fire-and-forget. Do not retain a
-    // zombie process after a cover's duration has been cached.
-    signal(SIGCHLD, SIG_IGN);
-    loadRuntimePaths();
     bool set_pin_mode = false;
     bool menu_mode = false;
     bool pick_timer_mode = false;
-    bool pick_profile_mode = false;
     bool picker_no_off = false;
     bool start_on_pin = false;
     int menu_timer_minutes = 0;
     int menu_remaining = -1;
     int menu_lock_floor = 0;
-    int menu_allow_save_states = 0;
-    char menu_switch_profile[16] = "";
-    char current_profile[16] = "Main";
-    int main_profile_available = 1;
-    int guest_profile_available = 1;
     char pin_title[STR_MAX] = "";
     char select_rompath[STR_MAX] = "";
 
@@ -3840,14 +2099,6 @@ int main(int argc, char *argv[])
             menu_mode = true;
         else if (strcmp(argv[i], "--pick-timer") == 0)
             pick_timer_mode = true;
-        else if (strcmp(argv[i], "--pick-profile") == 0)
-            pick_profile_mode = true;
-        else if (strcmp(argv[i], "--current-profile") == 0 && i + 1 < argc)
-            strncpy(current_profile, argv[++i], sizeof(current_profile) - 1);
-        else if (strcmp(argv[i], "--main-available") == 0 && i + 1 < argc)
-            main_profile_available = atoi(argv[++i]) != 0;
-        else if (strcmp(argv[i], "--guest-available") == 0 && i + 1 < argc)
-            guest_profile_available = atoi(argv[++i]) != 0;
         else if (strcmp(argv[i], "--no-off") == 0)
             picker_no_off = true;
         else if (strcmp(argv[i], "--start-pin") == 0)
@@ -3860,21 +2111,6 @@ int main(int argc, char *argv[])
             menu_remaining = atoi(argv[++i]);
         else if (strcmp(argv[i], "--lock-floor") == 0 && i + 1 < argc)
             menu_lock_floor = atoi(argv[++i]);
-        else if (strcmp(argv[i], "--allow-save-states") == 0 && i + 1 < argc)
-            menu_allow_save_states = atoi(argv[++i]) != 0;
-        else if (strcmp(argv[i], "--switch-profile") == 0 && i + 1 < argc)
-            strncpy(menu_switch_profile, argv[++i],
-                    sizeof(menu_switch_profile) - 1);
-        else if (strcmp(argv[i], "--show-stories") == 0 && i + 1 < argc)
-            show_stories = atoi(argv[++i]) != 0;
-        else if (strcmp(argv[i], "--show-movies") == 0 && i + 1 < argc)
-            show_movies = atoi(argv[++i]) != 0;
-        else if (strcmp(argv[i], "--show-series") == 0 && i + 1 < argc)
-            show_series = atoi(argv[++i]) != 0;
-        else if (strcmp(argv[i], "--show-music") == 0 && i + 1 < argc)
-            show_music = atoi(argv[++i]) != 0;
-        else if (strcmp(argv[i], "--show-cartoons") == 0 && i + 1 < argc)
-            show_cartoons = atoi(argv[++i]) != 0;
         else if (strcmp(argv[i], "--floor-locked") == 0)
             floor_locked = true;
         else if (strcmp(argv[i], "--select") == 0 && i + 1 < argc)
@@ -3883,8 +2119,6 @@ int main(int argc, char *argv[])
             strncpy(game_select_path, argv[++i], STR_MAX - 1);
         else if (strcmp(argv[i], "--video-select") == 0 && i + 1 < argc)
             strncpy(video_select_path, argv[++i], STR_MAX - 1);
-        else if (strcmp(argv[i], "--last-game") == 0 && i + 1 < argc)
-            strncpy(last_game_path, argv[++i], STR_MAX - 1);
         else if (strcmp(argv[i], "--folder") == 0 && i + 1 < argc)
             strncpy(current_folder, argv[++i], STR_MAX - 1);
         else if (strcmp(argv[i], "--floor") == 0 && i + 1 < argc)
@@ -3910,13 +2144,6 @@ int main(int argc, char *argv[])
 
     if (!SDL_InitDefault())
         return 1;
-    // SDL 1.2 does not generate held-key events unless repetition is enabled.
-    // Repeats are accepted below for LEFT/RIGHT timer values and horizontal
-    // navigation on both carousels. PIN entry and ordinary menus still
-    // require individual presses.
-    // A single, steady repeat speed keeps long media lists and timer values
-    // quick to browse without the abrupt jumps of staged acceleration.
-    SDL_EnableKeyRepeat(350, 50);
     writeFloorState();
 
     Screen active_screen = SCREEN_CAROUSEL;
@@ -3924,99 +2151,42 @@ int main(int argc, char *argv[])
 
     // Parent menu list (native Onion list component)
     List menu_list = list_create(5, LIST_SMALL);
-    if (strcmp(menu_switch_profile, "Main") == 0)
-        list_addItem(&menu_list,
-                     (ListItem){.label = "Switch to Main profile",
-                                .item_type = ACTION});
-    else if (strcmp(menu_switch_profile, "Guest") == 0)
-        list_addItem(&menu_list,
-                     (ListItem){.label = "Switch to Guest profile",
-                                .item_type = ACTION});
-    else
-        list_addItem(&menu_list,
-                     (ListItem){.label = "Profile switch unavailable",
-                                .item_type = ACTION,
-                                .disabled = true});
-    list_addItem(&menu_list, (ListItem){.label = "Add play time",
-                                        .item_type = MULTIVALUE,
-                                        .value_min = 0,
-                                        .value_max = TIMER_MAX / TIMER_STEP,
-                                        .value = 1,
-                                        .value_formatter = formatAddMinutes});
-    list_addItem(&menu_list,
-                 (ListItem){.label = "Save/load states",
-                            .item_type = TOGGLE,
-                            .value = menu_allow_save_states,
-                            .action = onSaveStatesToggle});
-    list_addItem(&menu_list,
-                 (ListItem){.label = "Carousel settings",
-                            .item_type = ACTION});
     list_addItem(&menu_list,
                  (ListItem){.label = "Exit Kids Mode",
                             .item_type = ACTION});
-
-    List carousel_settings_list = list_create(2, LIST_SMALL);
-    list_addItem(&carousel_settings_list,
-                 (ListItem){.label = "Content access",
-                            .item_type = MULTIVALUE,
-                            .value_min = 0,
-                            .value_max = 2,
-                            .value = menu_lock_floor >= 0 && menu_lock_floor <= 2
-                                         ? menu_lock_floor : 0,
-                            .value_formatter = formatCarouselFloors,
-                            .action = onLockFloorToggle});
-    list_addItem(&carousel_settings_list,
-                 (ListItem){.label = "Media folders", .item_type = ACTION});
-
-    List category_list = list_create(5, LIST_SMALL);
-    list_addItem(&category_list,
-                 (ListItem){.label = "Movies",
-                            .item_type = TOGGLE,
-                            .value = show_movies ? 1 : 0,
-                            .action = onMoviesToggle});
-    list_addItem(&category_list,
-                 (ListItem){.label = "Music",
-                            .item_type = TOGGLE,
-                            .value = show_music ? 1 : 0,
-                            .action = onMusicToggle});
-    list_addItem(&category_list,
-                 (ListItem){.label = "Cartoons",
-                            .item_type = TOGGLE,
-                            .value = show_cartoons ? 1 : 0,
-                            .action = onCartoonsToggle});
-    list_addItem(&category_list,
-                 (ListItem){.label = "Series",
-                            .item_type = TOGGLE,
-                            .value = show_series ? 1 : 0,
-                            .action = onSeriesToggle});
-    list_addItem(&category_list,
-                 (ListItem){.label = "Stories",
-                            .item_type = TOGGLE,
-                            .value = show_stories ? 1 : 0,
-                            .action = onStoriesToggle});
-
-    List profile_list = list_create(2, LIST_SMALL);
-    list_addItem(&profile_list,
-                 (ListItem){.label = "Profile",
-                            .item_type = MULTIVALUE,
-                            .value_min = main_profile_available ? 0 : 1,
-                            .value_max = guest_profile_available ? 1 : 0,
-                            .value = strcmp(current_profile, "Guest") == 0 ? 1 : 0,
-                            .value_formatter = formatProfile});
-    list_addItem(&profile_list,
-                 (ListItem){.label = "Play timer",
-                            .item_type = MULTIVALUE,
-                            .value_min = 0,
-                            .value_max = TIMER_MAX / TIMER_STEP,
-                            .value = 0,
-                            .value_formatter = formatSessionTimer});
+    list_addItem(&menu_list, (ListItem){.label = "Add play time",
+                                        .item_type = MULTIVALUE,
+                                        .value_min = 1,
+                                        .value_max = TIMER_MAX / TIMER_STEP,
+                                        .value = 1,
+                                        .value_formatter = formatAddMinutes});
+    // Faded and skipped while no timer is running — nothing to turn off
+    list_addItem(&menu_list, (ListItem){.label = "Turn off timer",
+                                        .item_type = ACTION,
+                                        .disabled = menu_remaining < 0});
+    // Use separate fixed strings rather than a conditional label inside the
+    // initializer: this is safer with Onion's copied ListItem representation
+    // and the shorter wording leaves ample room for the toggle on every theme.
+    if (current_floor == FLOOR_VIDEOS)
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Videos only",
+                                .item_type = TOGGLE,
+                                .value = menu_lock_floor ? 1 : 0,
+                                .action = onLockFloorToggle});
+    else
+        list_addItem(&menu_list,
+                     (ListItem){.label = "Games only",
+                                .item_type = TOGGLE,
+                                .value = menu_lock_floor ? 1 : 0,
+                                .action = onLockFloorToggle});
+    list_addItem(&menu_list,
+                 (ListItem){.label = "Back", .item_type = ACTION});
 
     if (set_pin_mode) {
         active_screen = SCREEN_PIN;
     }
     else if (menu_mode) {
         active_screen = SCREEN_MENU;
-        remaining = menu_remaining;
     }
     else if (pick_timer_mode) {
         active_screen = SCREEN_PICKTIMER;
@@ -4024,39 +2194,13 @@ int main(int argc, char *argv[])
         menu_timer_minutes = picker_no_off ? TIMER_STEP : 0;
         if (strlen(pin_title) == 0)
             strncpy(pin_title, "Play timer", STR_MAX - 1);
-        if (picker_no_off)
-            remaining = readRemaining();
-    }
-    else if (pick_profile_mode) {
-        active_screen = SCREEN_PICKPROFILE;
     }
     else {
-        loadPersistedFolderSelections();
-        loadLastMediaSelections();
         if (select_rompath[0] != '\0')
             snprintf(current_floor == FLOOR_GAMES ? game_select_path
                                                   : video_select_path,
                      STR_MAX, "%s", select_rompath);
-        if (current_floor == FLOOR_VIDEOS && video_select_path[0] != '\0')
-            rememberFolderInMemory(folderBrowsePath(), video_select_path,
-                                   false);
         loadCurrentFloor();
-
-        // An empty floor must not prevent Kids Mode from opening when the
-        // other floor contains usable content. Respect an explicit parent
-        // lock, but otherwise start directly on the non-empty floor.
-        if (games_count == 0 && !floor_locked) {
-            ContentFloor requested_floor = current_floor;
-            current_floor = current_floor == FLOOR_GAMES
-                                ? FLOOR_VIDEOS
-                                : FLOOR_GAMES;
-            loadCurrentFloor();
-            if (games_count == 0) {
-                current_floor = requested_floor;
-                loadCurrentFloor();
-            }
-        }
-
         fprintf(stderr, "kidui: loaded %d entries on %s floor\n",
                 games_count,
                 current_floor == FLOOR_VIDEOS ? "VIDEOS" : "GAMES");
@@ -4083,94 +2227,28 @@ int main(int argc, char *argv[])
     uint32_t last_hold_ms = 0;
     uint32_t pin_last_input = SDL_GetTicks();
     uint32_t last_remaining_poll = SDL_GetTicks();
-    uint32_t last_charging_poll = 0;
-    long timesup_since = remaining == 0 ? ensureTimesUpSince() : 0;
-    carousel_battery_charging = batteryIsChargingFast();
-    carousel_battery_percentage = batteryPercentageFast();
+    uint32_t timesup_since = 0; // ticks when the Time's up screen appeared
 
     while (!quit) {
         SDLKey changed_key = SDLK_UNKNOWN;
         uint32_t ticks = SDL_GetTicks();
-        if (ticks - last_charging_poll >= 2000) {
-            last_charging_poll = ticks;
-            bool charging = batteryIsChargingFast();
-            int percentage = batteryPercentageFast();
-            if (charging != carousel_battery_charging ||
-                percentage != carousel_battery_percentage) {
-                carousel_battery_charging = charging;
-                carousel_battery_percentage = percentage;
-                if (active_screen == SCREEN_CAROUSEL)
-                    dirty = true;
-            }
-        }
 
         bool key_changed = updateKeystate(keystate, &quit, true, &changed_key);
-
-        // Make the visual transition to Onion sleep immediate and uniform.
-        // Only the PWM is changed here: no clear, render or framebuffer flip.
-        // The POWER event itself continues untouched to Onion's keymon.
-        if (key_changed && active_screen == SCREEN_CAROUSEL &&
-            changed_key == SW_BTN_POWER &&
-            keystate[changed_key] == PRESSED &&
-            carousel_backlight_stage == 0) {
-            long current = display_getBrightnessRaw();
-            if (carousel_saved_brightness <= 0 && current > 0)
-                carousel_saved_brightness = current;
-            display_setBrightnessRaw(0);
-            carousel_backlight_stage = 2;
-            carousel_last_activity = ticks;
-        }
-
-        // While merely dimmed, any ordinary button restores the backlight.
-        // Once fully black, only MENU does; POWER is handled separately by
-        // Onion's Kids Mode keymon. The waking press is always swallowed so
-        // it cannot also act on the carousel behind the dimmed display.
-        if (key_changed && active_screen == SCREEN_CAROUSEL &&
-            carousel_backlight_stage != 0 &&
-            keystate[changed_key] == PRESSED &&
-            changed_key != SW_BTN_POWER) {
-            if (carousel_backlight_stage == 1 ||
-                changed_key == SW_BTN_MENU) {
-                restoreCarouselBacklight();
-                carousel_last_activity = ticks;
-            }
-            keystate[changed_key] = RELEASED;
-            key_changed = false;
-        }
-        if (key_changed && changed_key == SW_BTN_Y)
-            dirty = true;
-        bool timer_repeat_context =
-            (active_screen == SCREEN_PICKTIMER ||
-             (active_screen == SCREEN_PICKPROFILE &&
-              profile_list.active_pos == 1) ||
-             (active_screen == SCREEN_MENU &&
-              menu_list.active_pos == MENU_ADDTIME));
-        bool carousel_repeat_context = active_screen == SCREEN_CAROUSEL;
-        bool timer_value_repeat =
-            key_changed && keystate[changed_key] == REPEATING &&
-            (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT) &&
-            timer_repeat_context;
-        bool carousel_navigation_repeat =
-            key_changed && keystate[changed_key] == REPEATING &&
-            (changed_key == SW_BTN_LEFT || changed_key == SW_BTN_RIGHT) &&
-            carousel_repeat_context;
-        if (key_changed &&
-            (keystate[changed_key] == PRESSED || timer_value_repeat ||
-             carousel_navigation_repeat)) {
+        if (key_changed && keystate[changed_key] == PRESSED) {
             pin_last_input = ticks;
-            if (active_screen == SCREEN_CAROUSEL)
-                carousel_last_activity = ticks;
 
             if (active_screen == SCREEN_CAROUSEL && games_count > 0) {
                 switch (changed_key) {
                 case SW_BTN_RIGHT:
                     current = (current + 1) % games_count;
                     rememberSelection();
+                    writeSelectionState();
                     dirty = true;
                     break;
                 case SW_BTN_LEFT:
                     current = (current + games_count - 1) % games_count;
                     rememberSelection();
+                    writeSelectionState();
                     dirty = true;
                     break;
                 case SW_BTN_UP:
@@ -4180,7 +2258,8 @@ int main(int argc, char *argv[])
                                             : SCREEN_EMPTY;
                     break;
                 case SW_BTN_DOWN:
-                    if (!floor_locked && current_floor == FLOOR_VIDEOS)
+                    if (!floor_locked && current_floor == FLOOR_VIDEOS &&
+                        !current_folder[0])
                         active_screen = switchFloor(FLOOR_GAMES, remaining)
                                             ? SCREEN_CAROUSEL
                                             : SCREEN_EMPTY;
@@ -4189,13 +2268,12 @@ int main(int argc, char *argv[])
                     if (current_floor == FLOOR_GAMES)
                         writeResult("LAUNCH", games[current].item.launch,
                                     games[current].item.rompath);
-                    else if (games[current].is_folder) {
-                        enterCurrentVideoFolder();
-                        break;
-                    }
                     else
-                        writeResult("PLAY", games[current].item.rompath,
-                                    games[current].item.imgpath);
+                        writeResult(games[current].is_folder ? "FOLDER" : "PLAY",
+                                    games[current].item.rompath,
+                                    games[current].is_folder
+                                        ? NULL
+                                        : games[current].item.imgpath);
                     exit_code = 0;
                     quit = true;
                     break;
@@ -4206,8 +2284,11 @@ int main(int argc, char *argv[])
                     }
                     break;
                 case SW_BTN_B:
-                    if (current_floor == FLOOR_VIDEOS && current_folder[0])
-                        leaveCurrentVideoFolder();
+                    if (current_floor == FLOOR_VIDEOS && current_folder[0]) {
+                        writeResult("BACK", current_folder, NULL);
+                        exit_code = 0;
+                        quit = true;
+                    }
                     break;
                 case SW_BTN_MENU:
                     // Carousel: MENU is intentionally ignored. Parent exit
@@ -4221,7 +2302,9 @@ int main(int argc, char *argv[])
             else if (active_screen == SCREEN_EMPTY) {
                 if (changed_key == SW_BTN_B && current_floor == FLOOR_VIDEOS &&
                     current_folder[0]) {
-                    leaveCurrentVideoFolder();
+                    writeResult("BACK", current_folder, NULL);
+                    exit_code = 0;
+                    quit = true;
                 }
                 else if (!floor_locked && changed_key == SW_BTN_UP &&
                     current_floor == FLOOR_GAMES)
@@ -4229,7 +2312,7 @@ int main(int argc, char *argv[])
                                         ? SCREEN_CAROUSEL
                                         : SCREEN_EMPTY;
                 else if (!floor_locked && changed_key == SW_BTN_DOWN &&
-                         current_floor == FLOOR_VIDEOS)
+                         current_floor == FLOOR_VIDEOS && !current_folder[0])
                     active_screen = switchFloor(FLOOR_GAMES, remaining)
                                         ? SCREEN_CAROUSEL
                                         : SCREEN_EMPTY;
@@ -4247,6 +2330,8 @@ int main(int argc, char *argv[])
                     quit = true;
                     break;
                 case SW_BTN_B:
+                case SW_BTN_X:
+                case SW_BTN_MENU:
                     active_screen = SCREEN_CAROUSEL;
                     dirty = true;
                     break;
@@ -4297,45 +2382,6 @@ int main(int argc, char *argv[])
                     break;
                 }
             }
-            else if (active_screen == SCREEN_PICKPROFILE) {
-                switch (changed_key) {
-                case SW_BTN_UP:
-                    list_keyUp(&profile_list, false);
-                    dirty = true;
-                    break;
-                case SW_BTN_DOWN:
-                    list_keyDown(&profile_list, false);
-                    dirty = true;
-                    break;
-                case SW_BTN_LEFT:
-                    if (list_keyLeft(&profile_list, false))
-                        dirty = true;
-                    break;
-                case SW_BTN_RIGHT:
-                    if (list_keyRight(&profile_list, false))
-                        dirty = true;
-                    break;
-                case SW_BTN_A:
-                case SW_BTN_START:
-                    {
-                    char minutes_str[16];
-                    snprintf(minutes_str, sizeof(minutes_str), "%d",
-                             profile_list.items[1].value * TIMER_STEP);
-                    writeResult("PROFILE",
-                                profile_list.items[0].value == 0 ? "Main" : "Guest",
-                                minutes_str);
-                    exit_code = 5;
-                    quit = true;
-                    break;
-                    }
-                case SW_BTN_B:
-                    exit_code = 1;
-                    quit = true;
-                    break;
-                default:
-                    break;
-                }
-            }
             else if (active_screen == SCREEN_MENU) {
                 switch (changed_key) {
                 case SW_BTN_UP:
@@ -4363,104 +2409,31 @@ int main(int argc, char *argv[])
                         quit = true;
                     }
                     else if (menu_list.active_pos == MENU_ADDTIME) {
-                        int add_minutes =
-                            menu_list.items[MENU_ADDTIME].value * TIMER_STEP;
-                        if (add_minutes == 0) {
-                            writeResult("MENU", "NOTIMER", NULL);
-                        }
-                        else {
-                            char minutes_str[16];
-                            snprintf(minutes_str, sizeof(minutes_str), "%d",
-                                     add_minutes);
-                            writeResult("MENU", "ADDTIME", minutes_str);
-                        }
+                        char minutes_str[16];
+                        snprintf(minutes_str, sizeof(minutes_str), "%d",
+                                 menu_list.items[MENU_ADDTIME].value *
+                                     TIMER_STEP);
+                        writeResult("MENU", "ADDTIME", minutes_str);
                         exit_code = 5;
                         quit = true;
                     }
-                    else if (menu_list.active_pos == MENU_SAVESTATES) {
+                    else if (menu_list.active_pos == MENU_NOTIMER) {
+                        writeResult("MENU", "NOTIMER", NULL);
+                        exit_code = 5;
+                        quit = true;
+                    }
+                    else if (menu_list.active_pos == MENU_LOCKFLOOR) {
                         list_activateItem(&menu_list);
                         dirty = true;
                     }
-                    else if (menu_list.active_pos == MENU_CAROUSEL_SETTINGS) {
-                        active_screen = SCREEN_CAROUSEL_SETTINGS;
-                        dirty = true;
-                    }
-                    else if (menu_list.active_pos == MENU_SWITCHPROFILE &&
-                             menu_switch_profile[0] != '\0') {
-                        writeResult("MENU", "SWITCHPROFILE",
-                                    menu_switch_profile);
-                        exit_code = 5;
+                    else if (menu_list.active_pos == MENU_BACK) {
+                        exit_code = 1;
                         quit = true;
                     }
                     break;
                 case SW_BTN_B:
                     exit_code = 1;
                     quit = true;
-                    break;
-                default:
-                    break;
-                }
-            }
-            else if (active_screen == SCREEN_CAROUSEL_SETTINGS) {
-                switch (changed_key) {
-                case SW_BTN_UP:
-                    list_keyUp(&carousel_settings_list, false);
-                    dirty = true;
-                    break;
-                case SW_BTN_DOWN:
-                    list_keyDown(&carousel_settings_list, false);
-                    dirty = true;
-                    break;
-                case SW_BTN_LEFT:
-                    if (list_keyLeft(&carousel_settings_list, false))
-                        dirty = true;
-                    break;
-                case SW_BTN_RIGHT:
-                    if (list_keyRight(&carousel_settings_list, false))
-                        dirty = true;
-                    break;
-                case SW_BTN_A:
-                case SW_BTN_START:
-                    if (carousel_settings_list.active_pos == CAROUSEL_CATEGORIES)
-                        active_screen = SCREEN_CATEGORIES;
-                    else
-                        list_activateItem(&carousel_settings_list);
-                    dirty = true;
-                    break;
-                case SW_BTN_B:
-                    active_screen = SCREEN_MENU;
-                    dirty = true;
-                    break;
-                default:
-                    break;
-                }
-            }
-            else if (active_screen == SCREEN_CATEGORIES) {
-                switch (changed_key) {
-                case SW_BTN_UP:
-                    list_keyUp(&category_list, false);
-                    dirty = true;
-                    break;
-                case SW_BTN_DOWN:
-                    list_keyDown(&category_list, false);
-                    dirty = true;
-                    break;
-                case SW_BTN_LEFT:
-                    if (list_keyLeft(&category_list, false))
-                        dirty = true;
-                    break;
-                case SW_BTN_RIGHT:
-                    if (list_keyRight(&category_list, false))
-                        dirty = true;
-                    break;
-                case SW_BTN_A:
-                case SW_BTN_START:
-                    list_activateItem(&category_list);
-                    dirty = true;
-                    break;
-                case SW_BTN_B:
-                    active_screen = SCREEN_CAROUSEL_SETTINGS;
-                    dirty = true;
                     break;
                 default:
                     break;
@@ -4521,7 +2494,6 @@ int main(int argc, char *argv[])
 
         // SELECT+START held: parent unlock gesture (any kid-facing screen)
         if (!set_pin_mode && !menu_mode && !pick_timer_mode &&
-            !pick_profile_mode &&
             active_screen != SCREEN_PIN) {
             bool combo_held = keystate[SW_BTN_SELECT] != RELEASED &&
                               keystate[SW_BTN_START] != RELEASED;
@@ -4564,7 +2536,6 @@ int main(int argc, char *argv[])
 
         // Poll the play-timer file and switch screens on expiry/refill
         if (!set_pin_mode && !menu_mode && !pick_timer_mode &&
-            !pick_profile_mode &&
             ticks - last_remaining_poll > REMAINING_POLL_MS) {
             last_remaining_poll = ticks;
             int prev_remaining = remaining;
@@ -4588,53 +2559,22 @@ int main(int argc, char *argv[])
                 dirty = true;
         }
 
-        // A duration probe is a one-shot child process. Poll its tiny cache
-        // file a few times per second so the duration appears on the card as
-        // soon as it is known, without forcing continuous carousel redraws.
-        if (active_screen == SCREEN_CAROUSEL && duration_probe_path[0] != '\0' &&
-            ticks - duration_probe_last_poll >= 250) {
-            duration_probe_last_poll = ticks;
-            dirty = true;
-        }
-
-        // Parent screens run in their own kidui process. Keep observing the
-        // shared timer there as well, otherwise entering the menu just before
-        // zero could postpone the absolute power-off deadline indefinitely.
-        if ((menu_mode || (pick_timer_mode && picker_no_off)) &&
-            ticks - last_remaining_poll > REMAINING_POLL_MS) {
-            last_remaining_poll = ticks;
-            int previous = remaining;
-            remaining = readRemaining();
-            if (menu_mode) {
-                menu_remaining = remaining;
-                if ((previous + 59) / 60 != (remaining + 59) / 60)
-                    dirty = true;
-            }
-        }
-
-        // Five minutes after the timer reaches zero, power off regardless of
-        // button activity or navigation through PIN/parent screens. Selecting
-        // OFF or adding time exits this UI first; the shell then removes the
-        // deadline together with the expired timer state.
-        if (!quit && remaining == 0) {
+        // Nobody turned the device off after "Time's up!": power off after
+        // 5 idle minutes so the battery isn't drained overnight. The
+        // SELECT+START parent gesture still interrupts this (PIN screen
+        // pauses the timer; it restarts fresh on return).
+        if (active_screen == SCREEN_TIMESUP) {
             if (timesup_since == 0)
-                timesup_since = ensureTimesUpSince();
-            long now = (long)time(NULL);
-            if (now >= timesup_since + TIMESUP_OFF_SECONDS) {
+                timesup_since = ticks;
+            if (ticks - timesup_since >= TIMESUP_OFF_MS) {
                 writeResult("POWEROFF", NULL, NULL);
                 exit_code = 7;
                 quit = true;
             }
         }
-        else if (remaining != 0) {
+        else {
             timesup_since = 0;
         }
-
-        if (selection_state_dirty &&
-            ticks - selection_changed_at >= SELECTION_WRITE_DELAY_MS)
-            writeSelectionState();
-
-        updateCarouselDimmer(ticks, active_screen == SCREEN_CAROUSEL);
 
         if (quit)
             break;
@@ -4656,17 +2596,8 @@ int main(int argc, char *argv[])
             case SCREEN_MENU:
                 renderMenu(&menu_list, menu_remaining);
                 break;
-            case SCREEN_CATEGORIES:
-                renderSettingsList(&category_list, "Visible media folders");
-                break;
-            case SCREEN_CAROUSEL_SETTINGS:
-                renderSettingsList(&carousel_settings_list, "Carousel settings");
-                break;
             case SCREEN_PICKTIMER:
                 renderPickTimer(pin_title, menu_timer_minutes, picker_no_off);
-                break;
-            case SCREEN_PICKPROFILE:
-                renderPickProfile(&profile_list);
                 break;
             case SCREEN_CONFIRM_RESTART:
                 renderConfirmRestart(games[current].item.label, remaining);
@@ -4677,24 +2608,23 @@ int main(int argc, char *argv[])
             flip();
             dirty = false;
         }
-        // OnionPlus uses an idle frame deadline instead of spinning at full
-        // speed. kidui already redraws only when dirty, so a 15 ms input poll
-        // keeps controls effectively instantaneous while cutting idle loop
-        // wake-ups from roughly 100 to 67 per second.
-        msleep(15);
+        // dirty=false above would otherwise cancel the battery chip's
+        // need to keep checking whether Y+B is still held — re-arm it
+        // here, after that reset, so the next loop tick redraws and the
+        // display swaps back the instant the combo is released.
+        if (keystate[SW_BTN_Y] != RELEASED && keystate[SW_BTN_B] != RELEASED &&
+            (active_screen == SCREEN_CAROUSEL ||
+             active_screen == SCREEN_CONFIRM_RESTART))
+            dirty = true;
+
+        msleep(10);
     }
 
-    stopCarouselDimmer();
-    if (selection_state_dirty)
-        writeSelectionState();
     artwork = NULL;
-    for (int i = 0; i < VIDEO_ARTWORK_CACHE_SIZE; i++)
-        if (video_artwork_cache[i].surface != NULL)
-            SDL_FreeSurface(video_artwork_cache[i].surface);
-    for (int i = 0; i < artwork_dir_cache_count; i++)
-        free(artwork_dir_cache[i].entries);
-    for (int i = 0; i < VIDEO_LIST_CACHE_SIZE; i++)
-        free(video_list_cache[i].entries);
+    for (int i = 0; i < 2; i++) {
+        if (artwork_cache[i] != NULL)
+            SDL_FreeSurface(artwork_cache[i]);
+    }
     if (crt_fallback != NULL)
         SDL_FreeSurface(crt_fallback);
     if (screen_reflection != NULL)
@@ -4714,14 +2644,9 @@ int main(int argc, char *argv[])
     }
     if (font_bigvalue != NULL)
         TTF_CloseFont(font_bigvalue);
-    if (font_restart_title != NULL)
-        TTF_CloseFont(font_restart_title);
     if (font_info != NULL)
         TTF_CloseFont(font_info);
     list_free(&menu_list);
-    list_free(&carousel_settings_list);
-    list_free(&category_list);
-    list_free(&profile_list);
     resources_free();
 
     // NB: deliberately no final clear+flip here — an extra page flip on the
