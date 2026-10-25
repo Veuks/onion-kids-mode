@@ -18,21 +18,8 @@ sections use the active Onion theme and slide smoothly between each other.
 
 - One protected app for favorite games, children's videos and audio.
 - Games are taken directly from Onion's Favorites list.
-- After the Favorites list changes, Kids Mode runs Onion's Favorites repair
-  once and sorts the resulting carousel automatically from A to Z.
-- Videos, audio files and nested folders for movies, series, cartoons, music
-  or stories are supported.
-- Built-in KidsPlay media engine with synchronized frame presentation for
-  tear-free video playback on the Miyoo Mini Plus.
-- Video and audio durations are prepared in the background and displayed on
-  carousel artwork without slowing down navigation.
-- A single startup screen selects the Main or Guest environment and an
-  optional play timer before opening the carousel.
-- Onion-themed playback OSD with elapsed and remaining time, battery and timer
-  information, and centred media titles that wrap across up to four lines.
-- Holding LEFT or RIGHT auto-scrolls through games, media and timer values.
-- Stable mute, volume and brightness handling across rapid adjustments,
-  playback transitions and profile changes.
+- Videos, audio files and nested folders for movies, series, music or stories
+  are supported.
 - Automatic resume follows the real shutdown state:
   - shut down while playing and that game or video resumes;
   - shut down from a carousel and the same section and selection return;
@@ -46,19 +33,16 @@ sections use the active Onion theme and slide smoothly between each other.
 - Onion-style artwork, controls, colors and menus.
 - ScreenScraper Mix V1-inspired reflection on video artwork for visual
   consistency with game thumbnails.
-- Fully separate Main and Guest kid environments. Each has its own game saves,
-  media library, playback positions, carousel selections and artwork cache.
-- The same parent PIN and session timer are shared by both environments.
-- The PIN-protected parent menu can switch directly between Main and Guest
-  without leaving Kids Mode. This option appears only when the other Onion
-  profile is available.
+- Separate child save profile for games; the parent's saves and states are
+  restored when leaving the mode.
 
 ## Requirements
 
 - Miyoo Mini or Miyoo Mini Plus.
 - Onion OS 4.3 or newer.
-- At least one game marked as a Favorite in Onion.
-- No separate media player is required: KidsPlay is included with Kids Mode.
+- Games and media are optional. Kids Mode can start with an empty library;
+  add games to Onion's Favorites and/or media files if you want them to appear.
+- Onion's FFplay binary, included with normal Onion installations.
 
 The current version was tested on real Miyoo Mini Plus hardware. Mini and Mini
 V4 display sizes are supported in the code, but feedback is welcome.
@@ -77,27 +61,19 @@ V4 display sizes are supported in the code, but feedback is welcome.
    /mnt/SDCARD/App/KidsMode/
    ```
 
-4. Add the games intended for the child to Onion's Favorites list.
+4. Optionally add the games intended for the child to Onion's Favorites list.
 5. Add videos and audio to the included category folders as described in the
    Media section below.
 6. Reinsert the SD card, refresh the Apps list or reboot, then open
    **Apps → Kids Mode**.
-7. On first launch, choose and confirm a four-digit PIN. On the next screen,
-   choose the Main or Guest profile and optionally set a play timer (`OFF` by
-   default). Kids Mode then opens directly on the matching carousel.
+7. On first launch, choose and confirm a four-digit PIN, then select a session
+   timer or choose `OFF`.
 
 Kids Mode remains active after a reboot until it is exited through the
 parent menu.
 
-The Main or Guest environment is chosen when Kids Mode starts. PIN and timer
-state are shared under `Saves/KidsMode`; profile-bound state is stored under
-`Saves/KidsMode/Main` or `Saves/KidsMode/Guest`.
-
-After entering the PIN, the parent menu displays **Switch to Main profile** or
-**Switch to Guest profile** when the other Onion profile exists. Switching
-stores the current child's saves and carousel state, loads the other profile's
-favorites, media, saves and state, and returns directly to Kids Mode. The
-active timer continues unchanged.
+PIN, timer state, selections and playback positions are stored under
+`Saves/KidsMode`.
 
 ### Clean installation and manual file move
 
@@ -109,63 +85,47 @@ place would reuse the former PIN, timer and state instead of starting clean.
 
 Do **not** remove `Saves/KidsProfile`, `Saves/CurrentProfile`,
 `Saves/MainProfile` or `Saves/GuestProfile`. `KidsProfile` contains the
-children's game saves. New sessions use `Saves/KidsProfile/Main` or
-`Saves/KidsProfile/Guest`, depending on the Onion profile of origin. Existing
-saves can be moved there manually; this release does not copy or merge them.
+child's game saves and remains separate from the app settings.
 
 Copy the new `App/KidsMode` folder and launch it once. Kids Mode creates a
-fresh `Saves/KidsMode` folder, PIN, timer state and profile-specific playback
-history. Move the videos, series folders and `Imgs` folder manually from
-whichever former media folder exists into either `Main` or `Guest`:
+fresh `Saves/KidsMode` folder, PIN, timer state and playback history. Move
+the videos, series folders and `Imgs` folder manually from whichever former
+media folder exists:
 
 ```text
-Media/VideoKidsMode        → Media/KidsMode/Main
-Media/SuperKidsMode        → Media/KidsMode/Main
+Media/VideoKidsMode        → Media/KidsMode
+Media/SuperKidsMode        → Media/KidsMode
 ```
 
-Move the **contents**, not the former media folder itself. Nothing is migrated
-automatically. Copy other media to `Media/KidsMode/Guest` only if it should be
-available when Kids Mode is launched from Onion Guest. The old
+Move the **contents**, not the former media folder itself, to avoid creating
+`Media/KidsMode/VideoKidsMode` or `Media/KidsMode/SuperKidsMode`. The old
 `Saves/VideoCarousel` folder is not used and may be removed after testing.
 The historical `v1.0.0` GitHub release itself is not changed.
 
 ## Media folders and local artwork
 
-If only one visible root folder contains playable media, Kids Mode opens its
-contents directly instead of showing the category root. Nested folders still
-work normally; B returns to that category, without an unnecessary root screen.
-When multiple categories are available, the root carousel remains visible.
-
-Each Onion profile has its own media root:
+All media belongs under:
 
 ```text
-/mnt/SDCARD/Media/KidsMode/Main/
-/mnt/SDCARD/Media/KidsMode/Guest/
+/mnt/SDCARD/Media/KidsMode/
 ```
-
-Launching Kids Mode from Onion Main displays only `Main`; launching it from
-Onion Guest displays only `Guest`. The supplied category structure and generic
-artwork are included in both. Files placed directly in the older common
-`Media/KidsMode` root are intentionally ignored.
 
 Supported video formats are MP4, MKV, AVI, MOV, M4V and WebM. Supported audio
 formats are MP3, M4A, AAC, FLAC, OGG, OPUS, WAV and WMA. Media can be organised
 through multiple folder levels. A folder appears when it contains at least one
-supported file, either directly or in one of its subfolders. Entries inside a
-folder are sorted alphabetically. The supplied root categories use the fixed
-order Movies, Music, Cartoons, Series and Stories.
+supported file, either directly or in one of its subfolders. Entries are sorted
+alphabetically.
 
 Each directory can have its own `Imgs` folder. An image uses the same base name
 as the media file beside it. PNG, JPG and JPEG are accepted. The complete
-package includes five ready-to-use category folders with generic 256 × 256
+package includes four ready-to-use category folders and their 256 × 256
 artwork. This organisation is recommended:
 
 ```text
-Media/KidsMode/Main/
+Media/KidsMode/
 ├── Imgs/
 │   ├── Movies.png
 │   ├── Music.png
-│   ├── Cartoons.png
 │   ├── Series.png
 │   └── Stories.png
 ├── Movies/
@@ -174,15 +134,6 @@ Media/KidsMode/Main/
 │   └── Imgs/
 │       ├── The Lion King.png
 │       └── The Visitors.jpg
-├── Music/
-│   ├── Song 01.mp3
-│   ├── Music video 01.mp4
-│   └── Imgs/
-│       └── Song 01.png
-├── Cartoons/
-│   ├── Cartoon 01.mp4
-│   └── Imgs/
-│       └── Cartoon 01.jpg
 ├── Series/
 │   └── Ulysses 31/
 │       ├── Episode 01.mp4
@@ -190,6 +141,11 @@ Media/KidsMode/Main/
 │       └── Imgs/
 │           ├── Ulysses 31.png
 │           └── Episode 02.jpg
+├── Music/
+│   ├── Song 01.mp3
+│   ├── Music video 01.mp4
+│   └── Imgs/
+│       └── Song 01.png
 └── Stories/
     ├── Story 01.mp3
     └── Imgs/
@@ -208,100 +164,61 @@ cover, Kids Mode searches its parent folders up to the category at the media
 root. For example, content under `Series/Ulysses 31` can fall back to
 `Series/Imgs/Series.png` when `Ulysses 31/Imgs/Ulysses 31.png` does not exist.
 At every level, a folder cover may also be stored in its parent's `Imgs`
-directory, such as `Media/KidsMode/Main/Imgs/Series.png`; both layouts are
-inherited.
+directory, such as `Media/KidsMode/Imgs/Series.png`; both layouts are inherited.
 
 The same rule can give category folders their own artwork:
-`Movies/Imgs/Movies.png`, `Series/Imgs/Series.png`, `Music/Imgs/Music.png` or
-`Cartoons/Imgs/Cartoons.png`.
+`Movies/Imgs/Movies.png`, `Series/Imgs/Series.png` or `Music/Imgs/Music.png`.
 Without one, Kids Mode creates an automatic black folder card. The older
-shared `Media/KidsMode/Main/Imgs` layout remains accepted as a fallback, but
-local `Imgs` folders take priority and prevent identical filenames in different
-categories from sharing the wrong image. The Guest tree follows the same rule.
+shared `Media/KidsMode/Imgs` layout remains accepted as a fallback, but local
+`Imgs` folders take priority and prevent identical filenames in different
+categories from sharing the wrong image.
 
 Artwork is fitted inside a square without stretching, with black side bars
 when necessary. Portrait cinema posters are recommended for movies. If no
 image exists, the app creates a black card and wraps its title over up to six
 balanced lines before reducing the font size.
 
-The first time a new or modified poster is displayed, Kids Mode creates a
-device-sized thumbnail under the active profile's
-`Saves/KidsMode/Main/artwork_cache` or `Saves/KidsMode/Guest/artwork_cache`.
-Later navigation
-loads that prepared thumbnail instead of decoding and resizing the original
-again. Replacing the source image overwrites the same cached thumbnail instead
-of accumulating versions. When updating from an older test build, its former
-`v1-`, `v2-` or `v3-` files can be deleted once manually from that cache folder.
-
 Press A to descend into a folder and B to return exactly one level. Every
 folder remembers its own last selected video or subfolder, including after a
 reboot. Folder nesting is supported up to sixteen levels, which is effectively
 unlimited for normal use.
 
-### Recommended video encoding
-
-For the best balance of compatibility, image quality and decoding performance
-on the Miyoo Mini and Miyoo Mini Plus, use:
-
-- MP4 container;
-- H.264/x264 video, 8-bit 4:2:0;
-- a maximum resolution of 640 x 480 (or 640 x 360 for widescreen content);
-- a constant frame rate identical to the source;
-- RF 20 and the Medium encoder preset;
-- limited colour range;
-- AAC audio.
-
-An accepted filename extension does not guarantee that every codec inside the
-file can be decoded. MP4 with H.264 and AAC remains the safest combination.
-
 ## Carousel controls
 
 | Button | Action |
 | --- | --- |
-| LEFT / RIGHT | Browse the current section; hold to auto-scroll through games or media |
+| LEFT / RIGHT | Browse the current section |
 | UP | Move from Games to Videos |
 | DOWN | Move from Videos to Games |
 | A | Launch/resume a game, play/resume a video, or open a folder |
 | X | Restart the selected game or video after confirmation |
-| Hold Y | Temporarily show the battery level |
 | B | Return to the previous folder level |
 | Hold SELECT + START for 3 seconds | Open the PIN screen and parent menu |
 | MENU | No action in the carousel |
 
-UP and DOWN are unavailable while a section is locked. Floor switching remains
-available inside media folders; returning to Videos restores the same folder
-and selection.
+UP and DOWN are unavailable while a section is locked. DOWN is also disabled
+inside any media folder; press B as needed to return to the media root first.
 
 ## While playing a game
 
 The game itself keeps its normal controls. A single press of MENU saves and
 returns directly to the Kids Mode carousel. RetroArch configuration and
 dangerous hotkeys are hidden while the mode is active and restored on exit.
-Gambatte's built-in R2 fast-forward shortcut is also disabled for Game Boy and
-Game Boy Color games; R2 remains available normally on other systems.
-Holding MENU does nothing: its long-press action and vibration are disabled
-while Kids Mode is active.
 
 Restarting with X skips Onion's automatic resume state but does not erase
 normal in-game save data.
 
 ## Media player controls
 
-KidsPlay is included in the application and replaces the normal FFplay user
-interface. Its video frames are presented in sync with the Miyoo display to
-prevent the horizontal tearing that is especially visible during camera pans,
-flashes and other fast changes. The child-facing controls, OSD, audio artwork,
-screenshots and power-saving behaviour are handled directly by the player.
-
 | Button | Action |
 | --- | --- |
-| A | Resume playback; while already playing, show progress for 2 seconds |
+| A | Resume playback, or wake the screen during audio playback |
 | B | Pause playback |
 | MENU + LEFT | Rewind progressively |
 | MENU + RIGHT | Fast-forward progressively |
-| MENU + DOWN | Rewind progressively: 5, then 10 minutes |
-| MENU + UP | Fast-forward progressively: 5, then 10 minutes |
-| MENU + X + Y while paused | Capture the current frame for the carousel |
+| MENU + DOWN | Rewind 10 minutes |
+| MENU + UP | Fast-forward 10 minutes |
+| MENU + X while paused | Capture the current frame for the carousel |
 | MENU alone | Save the position and return to the carousel |
 | Other buttons | Ignored by the player |
 
@@ -312,42 +229,19 @@ rewinding and at the bottom-right when moving forward.
 
 Audio playback shows the selected file's artwork, or the nearest inherited
 folder artwork, with a thin progress line and elapsed/remaining time. After
-30 seconds without input the display changes to minimum brightness; 15
+10 seconds without input the display changes to minimum brightness; five
 seconds later the backlight turns off while playback and the timer continue.
-Press A, B, X, Y, a direction, START, SELECT, MENU, POWER or either volume
-button to restore the display. That first press is consumed: it only wakes the
-screen and cannot pause, resume, seek, change the volume, leave the player,
-open the parent menu or put the console into standby.
+Press A, B or MENU to restore the display. That first press only wakes it and
+does not pause, resume, seek or leave the player.
 
-During video playback, the same progress line appears while paused, while
-seeking and for two seconds after seeking or resuming. Pressing A while the
-video is already playing also shows it for two seconds.
+During video playback, the same progress line appears while paused and while
+seeking. It disappears after seeking resumes and immediately when A resumes a
+paused video.
 
-The media filename is centred immediately above the progress bar using the
-active Onion theme font. Long titles wrap across up to four lines, growing
-upward while preserving clear margins around the left and right seek
-indicators. The complete OSD is also shown for two seconds when a file starts
-or resumes automatically after boot. Seek indicators disappear after two
-seconds in both playback and pause states.
+Volume and brightness shortcuts remain usable. Releasing MENU after using a
+combination does not accidentally leave the video.
 
-While Y is held during media playback, the top-right indicator shows the
-remaining play-timer value first, then alternates every second with the
-battery level. If no timer is active, only the battery level is displayed.
-During the final five minutes, the timer value is displayed in red.
-Because it is already visible, pressing Y then shows the battery immediately
-before continuing the one-second alternation.
-
-Volume and brightness shortcuts remain usable. Their latest value is preserved
-when switching rapidly between the two controls. The volume OSD is orange at
-high levels, red at very high levels and purple while muted. VOL- and VOL+
-still adjust the selected level while muted, but do not restore audible sound;
-mute remains active until it is explicitly toggled off. Releasing MENU after
-using a combination does not accidentally leave the video.
-
-KidsPlay uses an increased audio safety buffer to reduce crackling and brief
-dropouts on demanding files without changing the media's decoded sound.
-
-To create a carousel image from a video, pause with B and press MENU + X + Y.
+To create a carousel image from a video, pause with B and press MENU + X.
 Kids Mode saves `Imgs/Video name.bmp` beside that video. A later capture
 replaces the BMP. Captured BMP files take priority over supplied PNG/JPG
 posters; deleting the BMP restores the former poster or inherited folder
@@ -359,32 +253,18 @@ Hold SELECT + START for about three seconds, enter the four-digit PIN, then
 choose:
 
 - **Exit Kids Mode** — restore Onion and return to its normal interface.
-- **Add play time** — select `OFF` to remove the time limit, or add 5 to 120
-  minutes to the current session.
-- **Save/load states** — allow manual save states, load states and previous/next
-  save-slot shortcuts using your existing RetroArch mappings. Disabled by default;
-  automatic save/resume remains unchanged. Other locked hotkeys stay disabled.
-- **Carousel settings** — select **Games&Media**, **Games only** or **Media only** under
-  **Content access**, and choose the visible categories under **Media folders**.
-  The vertical navigation arrow disappears when only one floor is available.
-  These choices and the save/load option are stored separately for Main and Guest.
-- **Switch to Main/Guest profile** — safely load the other Onion profile's
-  Kids Mode environment when it is available.
-
-Press B to return one level from each submenu, or leave the Parent menu.
+- **Add play time** — add 5 to 120 minutes to the current session.
+- **Turn off timer** — continue without a time limit.
+- **Games only / Videos only** — lock the section currently being viewed. The
+  vertical navigation arrow disappears while the lock is enabled.
+- **Back** — return to the child interface.
 
 ## Timer and resume behavior
 
 The same timer is shared by games, video, audio and both carousels. When it reaches
 zero, the running content closes and the child sees **Time's up!** and
-**See you next time**. Five minutes later, the device powers off cleanly even
-if buttons were pressed or the parent screens were opened. Selecting `OFF` or
-adding more play time before that deadline cancels the automatic power-off.
-
-During the final five minutes, the remaining time stays visible in red at
-the top-right on the carousel and during audio/video playback.
-Games use
-RetroArch's native countdown notification.
+**See you next time**. If that screen is left untouched for five minutes, the
+device powers off cleanly.
 
 The current floor, folder and selection are saved. Media playback is
 checkpointed approximately every five seconds. A file that reaches its natural
@@ -396,10 +276,6 @@ real state at shutdown.
 ## PIN reset and recovery
 
 Nothing on the SD card is permanently locked.
-
-The included `App/KidsMode/CHANGE-PIN.txt` guide provides the same PIN-change
-and recovery instructions in a short file that can be read directly from the
-SD card.
 
 - **Forgotten PIN:** edit `App/KidsMode/kidmode.json`, clear `pin_hash`
   and `pin_salt`, and set `pin_plain` to a new four-digit PIN. Also delete
@@ -418,9 +294,9 @@ To uninstall, exit through the parent menu first, then remove
 ## Building from source
 
 Every push starts the GitHub Actions workflow. It cross-compiles
-`src/kidsMode`, places `kidui` and the patched `keymon` inside
-`App/KidsMode/bin`, and packages them with the included SDL2 KidsPlay engine.
-The green artifact is named `Kids-Mode-build`.
+`src/kidsMode`, places `kidui` and `libvcinput.so` inside
+`App/KidsMode/bin`, and uploads the green artifact named
+`Kids-Mode-build`.
 
 Tagged builds additionally create `Kids-Mode.zip` and attach it to the
 GitHub Release.
