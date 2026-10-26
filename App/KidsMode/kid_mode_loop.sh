@@ -1566,17 +1566,33 @@ repair_onion_favorites_if_needed() {
     repaired_signature="$(sed -n 1p "$favorites_signature_file" 2> /dev/null)"
     if [ -z "$current_signature" ] || [ "$current_signature" != "$repaired_signature" ]; then
         started_at="$(date +%s)"
+
+        # Onion's FavFix treats App entries as invalid game favorites. Save
+        # them first, then restore them after its game-artwork repair.
+        saved_apps=/tmp/kidsmode_app_favorites.$$
+        if ! jq -c 'select(((.launch // "") | contains("/App/")) or
+                         ((.rompath // "") | contains("/App/")))' \
+            "$favfile" > "$saved_apps" 2> /dev/null; then
+            rm -f "$saved_apps"
+            log "Skipped favorites repair because favourite.json has an invalid record."
+            return 0
+        fi
         if command -v tools > /dev/null 2>&1; then
             tools favfix > /dev/null 2>&1
         fi
         sorted_favorites=/tmp/kidsmode_favorites_sorted.$$
-        if jq -sc 'sort_by((.label // "") | ascii_downcase)[]' \
+        if jq -sc --slurpfile apps "$saved_apps" '
+            map(select(((((.launch // "") | contains("/App/")) or
+                         ((.rompath // "") | contains("/App/"))) | not))) +
+            $apps[0] |
+            sort_by((.label // "") | ascii_downcase)[]' \
             "$favfile" > "$sorted_favorites" 2> /dev/null; then
             mv -f "$sorted_favorites" "$favfile"
         else
             rm -f "$sorted_favorites"
         fi
-        log "Onion favorites repaired and sorted A-Z after a favorites change."
+        rm -f "$saved_apps"
+        log "Onion game favorites repaired and all favorites sorted A-Z after a change."
         mkdir -p "$backupdir"
         favorites_signature > "$favorites_signature_file.tmp" &&
             mv -f "$favorites_signature_file.tmp" "$favorites_signature_file"
@@ -1589,14 +1605,13 @@ remove_fav_shortcut() {
     [ -f "$favfile" ] || return 0
     grep -qF "$fav_launch" "$favfile" 2> /dev/null || return 0
 
-    # Favorites are a stream of JSON records. Filter by the launch field so
-    # another favorite on the same line is preserved as its own record.
+    # Filter the JSON record by its exact launch path. A line-based removal
+    # could discard another App if two entries were written on one line.
     tmp="$favfile.tmp.$$"
-    cp -p "$favfile" "$tmp" 2> /dev/null || return 0
-    if ! jq -c --arg path "$fav_launch" \
-        'select(.launch != $path)' "$favfile" > "$tmp" 2> /dev/null; then
+    if ! jq -c --arg path "$fav_launch" 'select(.launch != $path)' \
+        "$favfile" > "$tmp" 2> /dev/null; then
         rm -f "$tmp"
-        log "Skipped Kids Mode favorite cleanup because favourite.json has an invalid record."
+        log "Skipped Kids Mode shortcut cleanup because favourite.json has an invalid record."
         return 0
     fi
     if mv -f "$tmp" "$favfile"; then
@@ -2098,10 +2113,13 @@ disarm() {
     restore_blf_lock
     restore_profile_isolation
     restore_onion_battery_warning
+    # Finish every favorites write before Onion's keymon is restarted. Its
+    # automatic FavFix watches mtime and would otherwise treat our cleanup as
+    # a new user edit on the first B/X press after leaving Kids Mode.
+    ensure_fav_shortcut
     restore_keymap_override
     restore_configured_brightness
     rm -f "$game_environment_marker"
-    ensure_fav_shortcut
     rm -f "$sysdir/cmd_to_run.sh" "$uiresult"
     sync
     log "Kids Mode disarmed."
@@ -2585,6 +2603,9 @@ cmd_run() {
     # Suppress Onion's flashing low-battery image before the Kids Mode keymon
     # and first carousel are started. Kids Mode supplies its own fixed gauge.
     suppress_onion_battery_warning
+    # Do this before starting the Kids Mode keymon too, for the same reason:
+    # its mtime watcher must see the repaired favorites as its baseline.
+    repair_onion_favorites_if_needed
     # Reapply the complete keymap lock on every launch. This is intentionally
     # not gated by game_environment_ready: an app update can add a new lock
     # while Kids Mode is already armed and that persistent marker still exists.
@@ -2601,7 +2622,6 @@ cmd_run() {
     # complete. Reapply the current profile's permission in that case too.
     [ -f "$game_environment_marker" ] && apply_ra_lock
     prepare_game_environment_async
-    repair_onion_favorites_if_needed
 
     ui_fails=0
     pin_fails=0

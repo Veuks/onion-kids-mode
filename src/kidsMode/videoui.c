@@ -1151,6 +1151,15 @@ static void normalizeDisplayTitle(char *text, size_t text_size)
     snprintf(text, text_size, "%s", normalized);
 }
 
+// Onion's Favorites can include Apps as well as games. Apps stay in Onion's
+// list, but never belong on Kids Mode's games floor.
+static int compareFavoriteGames(const void *a, const void *b)
+{
+    const VideoEntry *left = (const VideoEntry *)a;
+    const VideoEntry *right = (const VideoEntry *)b;
+    return strcasecmp(left->item.label, right->item.label);
+}
+
 static void loadFavorites(void)
 {
     FILE *fp = fopen(FAVORITES_PATH, "r");
@@ -1164,8 +1173,6 @@ static void loadFavorites(void)
         JsonGameEntry entry = JsonGameEntry_fromJson(line);
         if (entry.launch[0] == '\0' || entry.rompath[0] == '\0')
             continue;
-        // MainUI Favorites also contains Apps. Keep those records in Onion's
-        // file but exclude them from Kids Mode's game floor.
         if (strstr(entry.launch, "/App/") != NULL ||
             strstr(entry.rompath, "/App/") != NULL ||
             access(entry.rompath, F_OK) != 0)
@@ -1179,6 +1186,7 @@ static void loadFavorites(void)
         games_count++;
     }
     fclose(fp);
+    qsort(games, games_count, sizeof(games[0]), compareFavoriteGames);
 }
 
 static int compareVideos(const void *a, const void *b)
